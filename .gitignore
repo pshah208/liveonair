@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.azure/
+coverage/
+*.log
+playwright-output/
+deployment.local.json
+infra/*.json
+!infra/*.parameters.example.json

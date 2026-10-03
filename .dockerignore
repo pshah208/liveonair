@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.env
+.env.*
+.azure
+*.log
+deployment.local.json
+playwright-output
+tests
+infra
+scripts
+.github
