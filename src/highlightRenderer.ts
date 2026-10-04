@@ -55,7 +55,9 @@ export interface Palette {
   text: string;
   textMuted: string;
   accent: string;
+  accentText: string;
   accentFg: string;
+  home: string;
   away: string;
   success: string;
   danger: string;
@@ -65,18 +67,20 @@ export function readPalette(): Palette {
   const styles = getComputedStyle(document.documentElement);
   const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
   return {
-    bg: read("--cp-bg", "#3d3b3a"),
-    surface: read("--cp-surface", "#292929"),
-    surfaceSoft: read("--cp-surface-soft", "#2e2e2e"),
-    border: read("--cp-border", "#474747"),
-    borderStrong: read("--cp-border-strong", "#5f5f5f"),
-    text: read("--cp-text", "#dedede"),
-    textMuted: read("--cp-text-muted", "#919191"),
-    accent: read("--cp-accent", "#fd8ea1"),
-    accentFg: read("--cp-accent-fg", "#1a1a1a"),
-    away: read("--cp-warning", "#fbbf24"),
-    success: read("--cp-success", "#4ade80"),
-    danger: read("--cp-danger", "#f87171")
+    bg: read("--cp-bg", "#09090b"),
+    surface: read("--cp-surface-solid", "#18181b"),
+    surfaceSoft: read("--cp-surface-soft", "rgba(255,255,255,0.04)"),
+    border: read("--cp-border", "rgba(255,255,255,0.09)"),
+    borderStrong: read("--cp-border-strong", "rgba(255,255,255,0.2)"),
+    text: read("--cp-text", "#fafafa"),
+    textMuted: read("--cp-text-muted", "#a1a1aa"),
+    accent: read("--cp-accent", "#0c5cab"),
+    accentText: read("--cp-accent-text", "#6cb2f5"),
+    accentFg: read("--cp-accent-fg", "#ffffff"),
+    home: read("--team-home", "#4f9fec"),
+    away: read("--team-away", "#f59e0b"),
+    success: read("--cp-success", "#10b981"),
+    danger: read("--cp-danger", "#ef4444")
   };
 }
 
@@ -110,7 +114,7 @@ function toCanvas(x: number, y: number): [number, number] {
 }
 
 function teamColor(model: ReelModel, teamId: TeamId): string {
-  return teamId === "home" ? model.palette.accent : model.palette.away;
+  return teamId === "home" ? model.palette.home : model.palette.away;
 }
 
 function ease(value: number): number {
@@ -169,13 +173,13 @@ function drawPitch(ctx: CanvasRenderingContext2D, model: ReelModel) {
   ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, REEL_WIDTH, REEL_HEIGHT);
   roundRect(ctx, PITCH.x, PITCH.y, PITCH.w, PITCH.h, 18);
-  ctx.fillStyle = palette.surfaceSoft;
+  ctx.fillStyle = palette.surface;
   ctx.fill();
   ctx.lineWidth = 3;
   ctx.strokeStyle = palette.borderStrong;
   ctx.stroke();
   ctx.lineWidth = 2;
-  ctx.strokeStyle = palette.border;
+  ctx.strokeStyle = palette.borderStrong;
   const line = (x1: number, y1: number, x2: number, y2: number) => {
     const [ax, ay] = toCanvas(x1, y1);
     const [bx, by] = toCanvas(x2, y2);
@@ -200,7 +204,7 @@ function drawPitch(ctx: CanvasRenderingContext2D, model: ReelModel) {
 }
 
 function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string, weight = 600, align: CanvasTextAlign = "left") {
-  ctx.font = `${weight} ${size}px "Segoe UI", Aptos, Calibri, sans-serif`;
+  ctx.font = `${weight} ${size}px "IBM Plex Sans", "Segoe UI", sans-serif`;
   ctx.fillStyle = color;
   ctx.textAlign = align;
   ctx.textBaseline = "alphabetic";
@@ -208,7 +212,7 @@ function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: num
 }
 
 function wrap(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, size: number, weight = 500): string[] {
-  ctx.font = `${weight} ${size}px "Segoe UI", Aptos, Calibri, sans-serif`;
+  ctx.font = `${weight} ${size}px "IBM Plex Sans", "Segoe UI", sans-serif`;
   const words = text.split(/\s+/u);
   const lines: string[] = [];
   let current = "";
@@ -235,14 +239,14 @@ function drawScorebug(ctx: CanvasRenderingContext2D, model: ReelModel, second: n
   ctx.fillStyle = palette.accent;
   ctx.fillRect(24, 20, 6, 52);
   drawText(ctx, fixture.home.shortName, 48, 55, 22, palette.text, 700);
-  drawText(ctx, `${score.home} – ${score.away}`, 180, 55, 26, palette.text, 800, "center");
+  drawText(ctx, `${score.home} – ${score.away}`, 180, 55, 26, palette.text, 700, "center");
   drawText(ctx, fixture.away.shortName, 236, 55, 22, palette.text, 700);
   drawText(ctx, `${Math.floor(second / 60)}'`, 368, 55, 20, palette.textMuted, 700, "right");
 }
 
 function drawBrand(ctx: CanvasRenderingContext2D, model: ReelModel, subtitle = REEL_TEXT[model.reel.language].dataReel) {
   const { palette } = model;
-  drawText(ctx, "MatchLens", REEL_WIDTH - 24, 46, 24, palette.text, 800, "right");
+  drawText(ctx, "MatchLens", REEL_WIDTH - 24, 46, 24, palette.text, 700, "right");
   drawText(ctx, subtitle, REEL_WIDTH - 24, 68, 12, palette.textMuted, 700, "right");
 }
 
@@ -289,7 +293,7 @@ function drawBall(ctx: CanvasRenderingContext2D, model: ReelModel, ball: { x: nu
   if (!ball.event) return;
   const name = model.players.get(ball.event.playerId) ?? "";
   const label = `${name} · ${actionLabel(ball.event)}`;
-  ctx.font = `600 18px "Segoe UI", Aptos, Calibri, sans-serif`;
+  ctx.font = `600 18px "IBM Plex Sans", "Segoe UI", sans-serif`;
   const width = ctx.measureText(label).width + 20;
   const lx = Math.min(Math.max(x - width / 2, PITCH.x + 8), PITCH.x + PITCH.w - width - 8);
   const ly = y - 46 < PITCH.y + 8 ? y + 22 : y - 46;
@@ -344,7 +348,7 @@ function drawLowerThird(ctx: CanvasRenderingContext2D, model: ReelModel, clip: H
   ctx.stroke();
   ctx.fillStyle = clip.kind === "disallowed_goal" || clip.kind === "red_card" ? palette.danger : palette.accent;
   ctx.fillRect(x, y, 8, height);
-  drawText(ctx, clip.title, x + 28, y + 40, 26, palette.text, 800);
+  drawText(ctx, clip.title, x + 28, y + 40, 26, palette.text, 700);
   lines.forEach((line, index) => drawText(ctx, line, x + 28, y + 76 + index * 32, 24, palette.textMuted, 500));
   ctx.globalAlpha = 1;
 }
@@ -355,8 +359,8 @@ function drawCenterCard(ctx: CanvasRenderingContext2D, model: ReelModel, eyebrow
   ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, REEL_WIDTH, REEL_HEIGHT);
   ctx.globalAlpha = Math.min(1, appear * 2);
-  drawText(ctx, eyebrow, REEL_WIDTH / 2, REEL_HEIGHT / 2 - 64, 18, palette.accent, 800, "center");
-  drawText(ctx, title, REEL_WIDTH / 2, REEL_HEIGHT / 2, 44, palette.text, 800, "center");
+  drawText(ctx, eyebrow, REEL_WIDTH / 2, REEL_HEIGHT / 2 - 64, 18, palette.accentText, 700, "center");
+  drawText(ctx, title, REEL_WIDTH / 2, REEL_HEIGHT / 2, 44, palette.text, 700, "center");
   drawText(ctx, subtitle, REEL_WIDTH / 2, REEL_HEIGHT / 2 + 48, 22, palette.textMuted, 500, "center");
   ctx.globalAlpha = 1;
 }
@@ -441,13 +445,13 @@ function drawVideoCover(ctx: CanvasRenderingContext2D, video: HTMLVideoElement) 
 function drawMomentChip(ctx: CanvasRenderingContext2D, model: ReelModel, frame: FootageFrame) {
   const { palette } = model;
   const label = `${text(model).moment(frame.clipIndex + 1, frame.clipCount)} · ${kindLabel(frame.clip, model)}`;
-  ctx.font = `800 14px "Segoe UI", Aptos, Calibri, sans-serif`;
+  ctx.font = `700 14px "IBM Plex Sans", "Segoe UI", sans-serif`;
   const width = ctx.measureText(label).width + 32;
   const x = (REEL_WIDTH - width) / 2;
   roundRect(ctx, x, 28, width, 34, 10);
   ctx.fillStyle = palette.surface;
   ctx.fill();
-  drawText(ctx, label, REEL_WIDTH / 2, 50, 14, palette.accent, 800, "center");
+  drawText(ctx, label, REEL_WIDTH / 2, 50, 14, palette.accentText, 700, "center");
 }
 
 /** Composites licensed or self-recorded footage with MatchLens overlays driven by the synthetic events. */
@@ -456,7 +460,7 @@ export function renderFootageFrame(ctx: CanvasRenderingContext2D, model: ReelMod
   ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, REEL_WIDTH, REEL_HEIGHT);
   if (video) drawVideoCover(ctx, video);
-  ctx.font = `700 12px "Segoe UI", Aptos, Calibri, sans-serif`;
+  ctx.font = `700 12px "IBM Plex Sans", "Segoe UI", sans-serif`;
   const plateWidth = Math.max(180, ctx.measureText(text(model).footageReel).width + 32);
   roundRect(ctx, REEL_WIDTH - 12 - plateWidth, 20, plateWidth, 58, 10);
   ctx.fillStyle = palette.surface;

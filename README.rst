@@ -214,7 +214,7 @@ Provisioning
    npx tsx scripts/eventstream-smoke.ts
 
    # App-only update
-   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-3-3 -UseExistingInfrastructure
+   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-4-0 -UseExistingInfrastructure
 
 ``deploy.ps1`` reads ``fabric/.secrets.local.json`` and stores the Eventstream connection strings
 as Container Apps secrets. Re-running ``provision-fabric.ps1`` rotates those endpoints, so redeploy

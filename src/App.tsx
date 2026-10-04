@@ -19,6 +19,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    try { window.localStorage.setItem("matchlens.theme", theme); } catch { /* storage unavailable */ }
   }, [theme]);
 
   useEffect(() => {

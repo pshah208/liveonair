@@ -25,10 +25,10 @@ import {
 export function BrandMark() {
   return (
     <svg viewBox="0 0 220 44" className="brandmark" role="img" aria-label="MatchLens">
-      <rect x="2" y="4" width="36" height="36" rx="10" fill="var(--cp-surface)" stroke="var(--cp-accent)" strokeWidth="3" />
-      <path d="M11 30 19 17l8 13 6-9" fill="none" stroke="var(--cp-accent)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3.5" />
-      <circle cx="30" cy="14" r="4.5" fill="var(--cp-warning)" />
-      <text x="50" y="30" fill="var(--cp-text)" fontSize="24" fontWeight="800" letterSpacing="-0.5">MatchLens</text>
+      <rect x="2" y="4" width="36" height="36" rx="8" fill="var(--cp-accent)" />
+      <path d="M11 30 19 17l8 13 6-9" fill="none" stroke="var(--cp-accent-fg)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3.5" />
+      <circle cx="30" cy="14" r="4.5" fill="var(--team-away)" />
+      <text x="50" y="30" fill="var(--cp-text)" fontSize="24" fontWeight="700" letterSpacing="-0.5" fontFamily="var(--font)">MatchLens</text>
     </svg>
   );
 }

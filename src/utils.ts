@@ -48,7 +48,7 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export function teamTint(teamId: TeamId): string {
-  return teamId === "home" ? "var(--cp-accent)" : "var(--cp-warning)";
+  return teamId === "home" ? "var(--team-home)" : "var(--team-away)";
 }
 
 export function outcomeLabel(event: MatchEvent): string {

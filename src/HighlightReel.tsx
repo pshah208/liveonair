@@ -63,6 +63,9 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
 
   useEffect(() => { if (source === "data") draw(timeRef.current); }, [source]);
 
+  // Canvas text uses IBM Plex; redraw once the web font has loaded.
+  useEffect(() => { void document.fonts?.ready.then(() => draw(timeRef.current)); }, []);
+
   useEffect(() => {
     if (!playing || !model) return;
     let last = performance.now();

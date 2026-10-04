@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <script>(()=>{const param=new URLSearchParams(window.location.search).get('scoutTheme');const theme=param||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',theme);})();</script>
+    <script>(()=>{let stored=null;try{stored=localStorage.getItem('matchlens.theme');}catch{}const param=new URLSearchParams(window.location.search).get('scoutTheme');document.documentElement.setAttribute('data-theme',param||stored||'dark');})();</script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
