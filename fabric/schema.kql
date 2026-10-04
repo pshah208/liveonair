@@ -1,0 +1,241 @@
+// MatchLens live schema and producer functions.
+// Commands are delimited by a line containing only: // ---
+
+// ---
+.create-merge table MatchEvents
+(
+  Kind:string,
+  MatchId:string,
+  Sequence:long,
+  PublishedAt:datetime,
+  EventId:string,
+  Revision:int,
+  Minute:int,
+  Second:int,
+  Type:string,
+  TeamId:string,
+  PlayerId:string,
+  Outcome:string,
+  X:real,
+  Y:real,
+  Xg:real,
+  RelatedEventId:string,
+  Rescinded:bool,
+  Raw:dynamic,
+  IngestedAt:datetime
+)
+
+// ---
+.alter table MatchEvents policy ingestiontime true
+
+// ---
+.create-or-alter table MatchEvents ingestion json mapping 'MatchEventsMapping' '[{"column":"Kind","datatype":"string","Properties":{"Path":"$.kind"}},{"column":"MatchId","datatype":"string","Properties":{"Path":"$.matchId"}},{"column":"Sequence","datatype":"long","Properties":{"Path":"$.sequence"}},{"column":"PublishedAt","datatype":"datetime","Properties":{"Path":"$.publishedAt"}},{"column":"EventId","datatype":"string","Properties":{"Path":"$.event.id"}},{"column":"Revision","datatype":"int","Properties":{"Path":"$.event.revision"}},{"column":"Minute","datatype":"int","Properties":{"Path":"$.event.minute"}},{"column":"Second","datatype":"int","Properties":{"Path":"$.event.second"}},{"column":"Type","datatype":"string","Properties":{"Path":"$.event.type"}},{"column":"TeamId","datatype":"string","Properties":{"Path":"$.event.teamId"}},{"column":"PlayerId","datatype":"string","Properties":{"Path":"$.event.playerId"}},{"column":"Outcome","datatype":"string","Properties":{"Path":"$.event.outcome"}},{"column":"X","datatype":"real","Properties":{"Path":"$.event.x"}},{"column":"Y","datatype":"real","Properties":{"Path":"$.event.y"}},{"column":"Xg","datatype":"real","Properties":{"Path":"$.event.xg"}},{"column":"RelatedEventId","datatype":"string","Properties":{"Path":"$.event.relatedEventId"}},{"column":"Rescinded","datatype":"bool","Properties":{"Path":"$.event.rescinded"}},{"column":"Raw","datatype":"dynamic","Properties":{"Path":"$"}},{"column":"IngestedAt","datatype":"datetime","Properties":{"Path":"$.EventProcessedUtcTime"}}]'
+
+// Eventstream (ProcessedIngestion) lands envelopes in MatchEventsRaw using their JSON field names;
+// the update policy below projects them into the typed MatchEvents table.
+// ---
+.create-merge table MatchEventsRaw
+(
+  ['kind']:string,
+  matchId:string,
+  sequence:long,
+  publishedAt:datetime,
+  ['event']:dynamic,
+  fixture:dynamic,
+  EventProcessedUtcTime:datetime,
+  PartitionId:long,
+  EventEnqueuedUtcTime:datetime
+)
+
+// ---
+.create-or-alter function with (folder = "matchlens/live", docstring = "Projects raw Eventstream envelopes into MatchEvents.")
+ExpandMatchEventsRaw()
+{
+  MatchEventsRaw
+  | project Kind = ['kind'],
+            MatchId = matchId,
+            Sequence = sequence,
+            PublishedAt = publishedAt,
+            EventId = tostring(['event'].id),
+            Revision = toint(['event'].revision),
+            Minute = toint(['event'].minute),
+            Second = toint(['event'].second),
+            Type = tostring(['event'].type),
+            TeamId = tostring(['event'].teamId),
+            PlayerId = tostring(['event'].playerId),
+            Outcome = tostring(['event'].outcome),
+            X = toreal(['event'].x),
+            Y = toreal(['event'].y),
+            Xg = toreal(['event'].xg),
+            RelatedEventId = tostring(['event'].relatedEventId),
+            Rescinded = tobool(['event'].rescinded),
+            Raw = bag_pack("kind", ['kind'], "matchId", matchId, "sequence", sequence, "publishedAt", publishedAt, "event", ['event'], "fixture", fixture),
+            IngestedAt = coalesce(EventProcessedUtcTime, ingestion_time())
+}
+
+// ---
+.alter table MatchEvents policy update @'[{"IsEnabled": true, "Source": "MatchEventsRaw", "Query": "ExpandMatchEventsRaw()", "IsTransactional": false}]'
+
+// ---
+.create-merge table Clubs
+(
+  Id:string,
+  Name:string,
+  ShortName:string,
+  City:string,
+  Stadium:string,
+  Founded:int
+)
+
+// ---
+.create-merge table People
+(
+  Id:string,
+  Name:string,
+  BirthYear:int,
+  Hometown:string,
+  Position:string,
+  CurrentClubId:string,
+  Retired:bool,
+  Career:dynamic
+)
+
+// ---
+.create-merge table HistoricMatches
+(
+  Id:string,
+  Date:datetime,
+  Season:string,
+  Competition:string,
+  Stage:string,
+  HomeClubId:string,
+  AwayClubId:string,
+  HomeScore:int,
+  AwayScore:int,
+  Venue:string
+)
+
+// ---
+.create-merge table HistoricGoals
+(
+  MatchId:string,
+  PersonId:string,
+  ClubId:string,
+  Minute:int
+)
+
+// ---
+.create-merge table Honours
+(
+  Id:string,
+  ClubId:string,
+  Competition:string,
+  Season:string,
+  Result:string,
+  FinalMatchId:string
+)
+
+// ---
+.create-merge table Relations
+(
+  PersonId:string,
+  RelatedPersonId:string,
+  Kind:string
+)
+
+// ---
+.create-or-alter function with (folder = "matchlens/live", docstring = "Latest revision per live event.")
+LatestMatchEventRevisions()
+{
+  MatchEvents
+  | where isnotempty(EventId)
+  | summarize arg_max(Revision, *) by MatchId, EventId
+  | extend IngestedAt = coalesce(IngestedAt, ingestion_time())
+}
+
+// ---
+.create-or-alter function with (folder = "matchlens/live", docstring = "Timeline for one live match.")
+LiveTimeline(matchId:string)
+{
+  let controlRows =
+    MatchEvents
+    | where MatchId == matchId and isempty(EventId)
+    | summarize arg_max(Sequence, *) by MatchId, Sequence;
+  let latestRows =
+    LatestMatchEventRevisions()
+    | where MatchId == matchId;
+  union controlRows, latestRows
+  | extend IngestedAt = coalesce(IngestedAt, ingestion_time())
+  | project Kind, MatchId, Sequence, PublishedAt, EventId, Revision, Minute, Second, Type, TeamId, PlayerId, Outcome, X, Y, Xg, RelatedEventId, Rescinded, Raw, IngestedAt
+  | order by Sequence asc
+}
+
+// ---
+.create-or-alter function with (folder = "matchlens/live", docstring = "Current score for a live match, excluding rescinded goals.")
+LiveScore(matchId:string)
+{
+  LatestMatchEventRevisions()
+  | where MatchId == matchId and Type == "goal" and coalesce(Rescinded, false) == false
+  | summarize HomeGoals = countif(TeamId == "home"), AwayGoals = countif(TeamId == "away"), LastGoalAt = max(PublishedAt)
+  | extend MatchId = matchId
+}
+
+// ---
+.create-or-alter function with (folder = "matchlens/archive", docstring = "Head-to-head historic matches between two clubs.")
+HeadToHead(clubA:string, clubB:string)
+{
+  HistoricMatches
+  | where (HomeClubId == clubA and AwayClubId == clubB) or (HomeClubId == clubB and AwayClubId == clubA)
+  | extend Winner = case(HomeScore > AwayScore, HomeClubId, AwayScore > HomeScore, AwayClubId, "draw")
+  | project MatchId = Id, Date, Season, Competition, Stage, HomeClubId, AwayClubId, HomeScore, AwayScore, Venue, Winner
+  | order by Date desc
+}
+
+// ---
+.create-or-alter function with (folder = "matchlens/archive", docstring = "Career spell summary for one archived player.")
+PlayerCareer(personId:string)
+{
+  People
+  | where Id == personId
+  | mv-expand Career to typeof(dynamic)
+  | project PersonId = Id,
+            PersonName = Name,
+            ClubId = tostring(Career.clubId),
+            FromYear = toint(Career.fromYear),
+            ToYear = toint(Career.toYear),
+            Appearances = toint(Career.appearances),
+            Goals = toint(Career.goals)
+  | order by FromYear asc
+}
+
+// ---
+.create-or-alter function with (folder = "matchlens/archive", docstring = "Family relationships for one archived player.")
+FamilyLinks(personId:string)
+{
+  let direct =
+    Relations
+    | where PersonId == personId
+    | project SubjectPersonId = PersonId, RelatedPersonId, Kind;
+  let inverse =
+    Relations
+    | where RelatedPersonId == personId
+    | extend Kind = case(Kind == "parent", "child", Kind == "child", "parent", Kind)
+    | project SubjectPersonId = RelatedPersonId, RelatedPersonId = PersonId, Kind;
+  union direct, inverse
+  | join kind = leftouter (
+      People
+      | project RelatedPersonId = Id, RelatedName = Name, RelatedCurrentClubId = CurrentClubId, RelatedPosition = Position, RelatedRetired = Retired
+    ) on RelatedPersonId
+  | project SubjectPersonId, RelatedPersonId, Kind, RelatedName, RelatedCurrentClubId, RelatedPosition, RelatedRetired
+}
+
+// ---
+.create-or-alter function with (folder = "matchlens/archive", docstring = "Historic finals played between two clubs.")
+FinalsBetween(clubA:string, clubB:string)
+{
+  HistoricMatches
+  | where Stage == "final"
+  | where (HomeClubId == clubA and AwayClubId == clubB) or (HomeClubId == clubB and AwayClubId == clubA)
+  | project MatchId = Id, Date, Season, Competition, HomeClubId, AwayClubId, HomeScore, AwayScore, Venue
+  | order by Date desc
+}

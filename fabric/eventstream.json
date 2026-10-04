@@ -1,0 +1,55 @@
+{
+  "sources": [
+    {
+      "name": "matchlens-feed-in",
+      "type": "CustomEndpoint",
+      "properties": {}
+    }
+  ],
+  "destinations": [
+    {
+      "name": "matchlens-eventhouse",
+      "type": "Eventhouse",
+      "properties": {
+        "dataIngestionMode": "ProcessedIngestion",
+        "workspaceId": "__WORKSPACE_ID__",
+        "itemId": "__KQL_DATABASE_ITEM_ID__",
+        "databaseName": "__DATABASE_NAME__",
+        "tableName": "MatchEventsRaw",
+        "inputSerialization": {
+          "type": "Json",
+          "properties": { "encoding": "UTF8" }
+        }
+      },
+      "inputNodes": [
+        {
+          "name": "matchlens-live-stream"
+        }
+      ]
+    },
+    {
+      "name": "matchlens-app-out",
+      "type": "CustomEndpoint",
+      "properties": {},
+      "inputNodes": [
+        {
+          "name": "matchlens-live-stream"
+        }
+      ]
+    }
+  ],
+  "streams": [
+    {
+      "name": "matchlens-live-stream",
+      "type": "DefaultStream",
+      "properties": {},
+      "inputNodes": [
+        {
+          "name": "matchlens-feed-in"
+        }
+      ]
+    }
+  ],
+  "operators": [],
+  "compatibilityLevel": "1.1"
+}

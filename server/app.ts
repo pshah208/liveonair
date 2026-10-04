@@ -15,8 +15,13 @@ import type {
   NarrativeRequest,
 } from "../shared/types.js";
 import { createNarrator, hashInlineScript, type Narrator } from "./narrator.js";
-import { analyzeMatch } from "./engine.js";
-import { getFixture, listFixtures } from "./fixtures.js";
+import { analyzeFixture, analyzeMatch } from "./engine.js";
+import { getFixture, listFixtures, registerFixture } from "./fixtures.js";
+import { generateMatch } from "./matchlab/generator.js";
+import { createPlatform, type Platform } from "./platform.js";
+import { createArchiveRouter } from "./routes/archive.js";
+import { createLiveRouter } from "./routes/live.js";
+import { createStudioRouter } from "./routes/studio.js";
 import {
   HttpError,
   assertFixtureWindow,
@@ -36,6 +41,7 @@ export type EngineAdapter = {
 type CreateAppOptions = {
   narrator?: Narrator;
   engine?: EngineAdapter;
+  platform?: Platform;
   staticDir?: string;
   logger?: (entry: { level: "error"; requestId: string; reason: string; path: string }) => void;
   version?: string;
@@ -228,6 +234,11 @@ export function createApp(options: CreateAppOptions = {}) {
       next(error);
     }
   });
+
+  app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch }));
+  const platform = options.platform ?? createPlatform();
+  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture }));
+  app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
 
   app.use("/api", (_request, response) => {
     sendJsonError(response, 404, "Not found");

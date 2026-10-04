@@ -142,6 +142,9 @@ export function reconcileEvents(
 }
 
 function assertRequest(request: AnalysisRequest, fixture: MatchFixture): void {
+  if (request.fixtureId !== fixture.id) {
+    throw new RangeError(`fixtureId ${request.fixtureId} does not match fixture ${fixture.id}`);
+  }
   if (!Number.isInteger(request.atSecond) || request.atSecond < 0 || request.atSecond > fixture.durationSeconds) {
     throw new RangeError(`atSecond must be between 0 and ${fixture.durationSeconds}`);
   }
@@ -427,30 +430,56 @@ function buildStories(
     );
   }
 
-  const setPiecePairs = currentWindowEvents
+  const allSetPiecePairs = activeEvents
     .filter((e) => e.type === "shot" && e.relatedEventId)
     .map((shot) => ({ shot, corner: activeById.get(shot.relatedEventId ?? "") }))
     .filter((pair): pair is { shot: MatchEvent; corner: MatchEvent } => Boolean(pair.corner && pair.corner.type === "corner"))
     .filter((pair) => {
       const cornerSecond = eventSecond(pair.corner);
-      return cornerSecond >= currentWindowStart && cornerSecond <= currentWindowEnd;
+      return cornerSecond <= atSecond;
     });
+  const setPiecePairs = allSetPiecePairs.filter((pair) => {
+    const cornerSecond = eventSecond(pair.corner);
+    return cornerSecond >= currentWindowStart && cornerSecond <= currentWindowEnd;
+  });
   if (setPiecePairs.length > 0) {
     const homeLinks = setPiecePairs.filter((pair) => pair.shot.teamId === "home").length;
     const awayLinks = setPiecePairs.filter((pair) => pair.shot.teamId === "away").length;
-    const evidenceIds = setPiecePairs.flatMap((pair) => [pair.corner.id, pair.shot.id]);
+    const evidenceIds = new Set(setPiecePairs.flatMap((pair) => [pair.corner.id, pair.shot.id]));
+    const homeLinksSoFar = allSetPiecePairs.filter((pair) => pair.shot.teamId === "home");
+    const awayLinksSoFar = allSetPiecePairs.filter((pair) => pair.shot.teamId === "away");
+    const homeCornersSoFar = activeEvents.filter((event) => event.type === "corner" && event.teamId === "home").length;
+    const awayCornersSoFar = activeEvents.filter((event) => event.type === "corner" && event.teamId === "away").length;
+    let radarCueEn = "";
+    let radarCueEs = "";
+    let radarCueFr = "";
+    const radarTeamId = homeLinksSoFar.length >= 2 && homeLinksSoFar.length >= awayLinksSoFar.length
+      ? "home"
+      : awayLinksSoFar.length >= 2 ? "away" : undefined;
+    if (radarTeamId) {
+      const radarPairs = radarTeamId === "home" ? homeLinksSoFar : awayLinksSoFar;
+      const cornerCount = radarTeamId === "home" ? homeCornersSoFar : awayCornersSoFar;
+      const teamName = radarTeamId === "home" ? homeName : awayName;
+      radarCueEn = ` Watch ${teamName}'s next corner: ${radarPairs.length} of their ${cornerCount} corners so far led directly to a shot.`;
+      radarCueEs = ` Vigila el próximo córner de ${teamName}: ${radarPairs.length} de sus ${cornerCount} córners hasta ahora terminaron directamente en un tiro.`;
+      radarCueFr = ` Surveillez le prochain corner de ${teamName} : ${radarPairs.length} de leurs ${cornerCount} corners jusque-là ont mené directement à un tir.`;
+      for (const pair of radarPairs) {
+        evidenceIds.add(pair.corner.id);
+        evidenceIds.add(pair.shot.id);
+      }
+    }
     const setPieceSummaryEn =
       homeLinks === awayLinks
-        ? `Window ${currentWindowLabel}: corner-shot links are tied at ${homeLinks}-${awayLinks}.`
-        : `Window ${currentWindowLabel}: corner-shot links are ${homeLinks}-${awayLinks} (${homeName}-${awayName}).`;
+        ? `Window ${currentWindowLabel}: corner-shot links are tied at ${homeLinks}-${awayLinks}.${radarCueEn}`
+        : `Window ${currentWindowLabel}: corner-shot links are ${homeLinks}-${awayLinks} (${homeName}-${awayName}).${radarCueEn}`;
     const setPieceSummaryEs =
       homeLinks === awayLinks
-        ? `Ventana ${currentWindowLabel}: enlaces córner-tiro empatados ${homeLinks}-${awayLinks}.`
-        : `Ventana ${currentWindowLabel}: enlaces córner-tiro ${homeLinks}-${awayLinks} (${homeName}-${awayName}).`;
+        ? `Ventana ${currentWindowLabel}: enlaces córner-tiro empatados ${homeLinks}-${awayLinks}.${radarCueEs}`
+        : `Ventana ${currentWindowLabel}: enlaces córner-tiro ${homeLinks}-${awayLinks} (${homeName}-${awayName}).${radarCueEs}`;
     const setPieceSummaryFr =
       homeLinks === awayLinks
-        ? `Fenêtre ${currentWindowLabel} : liens corner-tir à égalité ${homeLinks}-${awayLinks}.`
-        : `Fenêtre ${currentWindowLabel} : liens corner-tir ${homeLinks}-${awayLinks} (${homeName}-${awayName}).`;
+        ? `Fenêtre ${currentWindowLabel} : liens corner-tir à égalité ${homeLinks}-${awayLinks}.${radarCueFr}`
+        : `Fenêtre ${currentWindowLabel} : liens corner-tir ${homeLinks}-${awayLinks} (${homeName}-${awayName}).${radarCueFr}`;
     stories.push(
       localizedStory(
         "setpiece-pattern",
@@ -458,7 +487,7 @@ function buildStories(
         request.language,
         request.persona,
         80,
-        evidenceIds,
+        [...evidenceIds],
         [
           { label: tr(request.language, "metricSetPieceLinksHome"), value: homeLinks, unit: "links" },
           { label: tr(request.language, "metricSetPieceLinksAway"), value: awayLinks, unit: "links" },
@@ -741,8 +770,7 @@ function computeStateVersion(events: MatchEvent[], request: AnalysisRequest): st
   return createHash("sha256").update(payload).digest("hex");
 }
 
-export function analyzeMatch(request: AnalysisRequest): MatchSnapshot {
-  const fixture = getFixture(request.fixtureId);
+export function analyzeFixture(fixture: MatchFixture, request: AnalysisRequest): MatchSnapshot {
   assertRequest(request, fixture);
   const ingested = fixture.events.filter((evt) => eventSecond(evt) <= request.atSecond);
   const { activeEvents, corrections } = reconcileEvents(ingested, fixture, request.atSecond, Boolean(request.correction));
@@ -778,4 +806,9 @@ export function analyzeMatch(request: AnalysisRequest): MatchSnapshot {
     evidenceCoverage,
     synthetic: true
   };
+}
+
+export function analyzeMatch(request: AnalysisRequest): MatchSnapshot {
+  const fixture = getFixture(request.fixtureId);
+  return analyzeFixture(fixture, request);
 }

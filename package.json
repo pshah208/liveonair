@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Evidence-first live match intelligence from original synthetic football events.",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "dev:ui": "vite --host 127.0.0.1",
@@ -14,7 +16,10 @@
     "start": "node dist/server/index.js"
   },
   "dependencies": {
+    "@azure/ai-projects": "^2.7.1",
+    "@azure/event-hubs": "^6.0.4",
     "@azure/identity": "^4.13.0",
+    "@azure/search-documents": "^13.0.0",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",

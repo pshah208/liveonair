@@ -8,5 +8,7 @@ coverage/
 *.log
 playwright-output/
 deployment.local.json
+fabric/.secrets.local.json
+.desk.local.json
 infra/*.json
 !infra/*.parameters.example.json

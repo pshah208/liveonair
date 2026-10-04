@@ -11,3 +11,6 @@ tests
 infra
 scripts
 .github
+fabric/.secrets.local.json
+**/*.secrets*.json
+**/.secrets*

@@ -1,16 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyzeMatch, reconcileEvents } from "../server/engine.js";
-import { getFixture, listFixtures } from "../server/fixtures.js";
-import type { AnalysisRequest } from "../shared/types.js";
+
+import { analyzeFixture, analyzeMatch, reconcileEvents } from "../server/engine.js";
+import { getFixture, listFixtures, resetGeneratedFixturesForTests } from "../server/fixtures.js";
+import type { AnalysisRequest, MatchEvent, MatchFixture } from "../shared/types.js";
 
 const baseRequest: AnalysisRequest = {
   fixtureId: "rivergate-comeback",
   atSecond: 72 * 60,
   correction: false,
   persona: "analyst",
-  language: "en"
+  language: "en",
 };
+
+function secondOf(event: MatchEvent): number {
+  return event.minute * 60 + event.second;
+}
+
+test.beforeEach(() => {
+  resetGeneratedFixturesForTests();
+});
 
 test("deterministic snapshot output for same input", () => {
   const a = analyzeMatch(baseRequest);
@@ -21,23 +30,23 @@ test("deterministic snapshot output for same input", () => {
 test("future events are excluded from evidence and recent events", () => {
   const fixture = getFixture(baseRequest.fixtureId);
   const snap = analyzeMatch({ ...baseRequest, atSecond: 10 * 60 });
-  assert.ok(Object.values(snap.evidence).every((e) => e.minute * 60 + e.second <= 10 * 60));
-  assert.ok(snap.recentEvents.every((e) => e.minute * 60 + e.second <= 10 * 60));
+  assert.ok(Object.values(snap.evidence).every((event) => secondOf(event) <= 10 * 60));
+  assert.ok(snap.recentEvents.every((event) => secondOf(event) <= 10 * 60));
   assert.ok(Object.keys(snap.evidence).length < fixture.events.length);
 });
 
 test("score equals active non-rescinded goals and stats are internally consistent", () => {
   const snap = analyzeMatch(baseRequest);
-  const activeGoals = Object.values(snap.evidence).filter((e) => e.type === "goal" && !e.rescinded);
-  const homeGoals = activeGoals.filter((e) => e.teamId === "home").length;
-  const awayGoals = activeGoals.filter((e) => e.teamId === "away").length;
+  const activeGoals = Object.values(snap.evidence).filter((event) => event.type === "goal" && !event.rescinded);
+  const homeGoals = activeGoals.filter((event) => event.teamId === "home").length;
+  const awayGoals = activeGoals.filter((event) => event.teamId === "away").length;
   assert.equal(snap.score.home, homeGoals);
   assert.equal(snap.score.away, awayGoals);
   assert.equal(snap.stats.home.goals, homeGoals);
   assert.equal(snap.stats.away.goals, awayGoals);
   assert.equal(
     snap.stats.home.shots + snap.stats.away.shots,
-    Object.values(snap.evidence).filter((e) => e.type === "shot").length
+    Object.values(snap.evidence).filter((event) => event.type === "shot").length,
   );
 });
 
@@ -50,18 +59,18 @@ test("correction applies as revision 2 and retracts goal impact without mutating
   assert.equal(preGoal.revision, 1);
   assert.equal(postGoal.revision, 2);
   assert.equal(postGoal.rescinded, true);
-  assert.ok(post.corrections.some((c) => c.eventId === correctedId));
+  assert.ok(post.corrections.some((correction) => correction.eventId === correctedId));
   assert.equal(post.score.away, pre.score.away - 1);
 
   const stableId = "r1-goal-home-1";
   assert.deepEqual(post.evidence[stableId], pre.evidence[stableId]);
-  const postStoryEvidence = new Set(post.stories.flatMap((s) => s.evidenceIds));
+  const postStoryEvidence = new Set(post.stories.flatMap((story) => story.evidenceIds));
   assert.ok(!postStoryEvidence.has(correctedId));
 });
 
 test("correction toggle does not mutate fixture arrays or event objects", () => {
   const fixture = getFixture(baseRequest.fixtureId);
-  const before = fixture.events.map((e) => ({ ...e }));
+  const before = fixture.events.map((event) => ({ ...event }));
   analyzeMatch({ ...baseRequest, atSecond: 70 * 60, correction: true });
   const after = getFixture(baseRequest.fixtureId).events;
   assert.deepEqual(after, before);
@@ -70,23 +79,23 @@ test("correction toggle does not mutate fixture arrays or event objects", () => 
 test("window boundaries include exactly the last eight minutes", () => {
   const snap = analyzeMatch({ ...baseRequest, atSecond: 61 * 60 + 57, fixtureId: "setpiece-pattern" });
   const cutoff = 61 * 60 + 57 - 8 * 60;
-  const passingStory = snap.stories.find((s) => s.id === "passing-window");
+  const passingStory = snap.stories.find((story) => story.id === "passing-window");
   assert.ok(passingStory);
   assert.equal(passingStory?.windowStart, cutoff);
   assert.equal(passingStory?.windowEnd, 61 * 60 + 57);
   const passIds = Object.values(snap.evidence)
-    .filter((e) => e.type === "pass" && e.minute * 60 + e.second >= cutoff && e.minute * 60 + e.second <= 61 * 60 + 57)
-    .map((e) => e.id)
+    .filter((event) => event.type === "pass" && secondOf(event) >= cutoff && secondOf(event) <= 61 * 60 + 57)
+    .map((event) => event.id)
     .sort();
   assert.deepEqual([...(passingStory?.evidenceIds ?? [])].sort(), passIds);
 });
 
 test("reconcileEvents merges duplicate ids by latest revision", () => {
   const fixture = getFixture(baseRequest.fixtureId);
-  const seed = fixture.events.filter((e) => e.id === "r1-goal-away-1");
+  const seed = fixture.events.filter((event) => event.id === "r1-goal-away-1");
   const synthetic = [...seed, { ...seed[0], revision: 3 }];
   const { activeEvents } = reconcileEvents(synthetic, fixture, 90 * 60, false);
-  const merged = activeEvents.find((e) => e.id === "r1-goal-away-1");
+  const merged = activeEvents.find((event) => event.id === "r1-goal-away-1");
   assert.equal(merged?.revision, 3);
 });
 
@@ -100,25 +109,31 @@ test("persona and language affect content and stateVersion", () => {
   assert.match(casualEs.corrections[0]?.message ?? "n/a", /anulado|Actualización|rev/i);
 });
 
-test("favorite player validation rejects unknown player id", () => {
+test("favorite player validation and mismatched fixture ids reject", () => {
   assert.throws(
     () => analyzeMatch({ ...baseRequest, favoritePlayerId: "bad-player-id" }),
-    (error: unknown) => error instanceof RangeError && /Unknown favorite player/.test(error.message)
+    (error: unknown) => error instanceof RangeError && /Unknown favorite player/.test(error.message),
+  );
+
+  const fixture = getFixture(baseRequest.fixtureId);
+  assert.throws(
+    () => analyzeFixture(fixture, { ...baseRequest, fixtureId: "wrong-id" }),
+    (error: unknown) => error instanceof RangeError && /does not match fixture/.test(error.message),
   );
 });
 
 test("unknown fixture and invalid clock throw range errors", () => {
   assert.throws(
     () => analyzeMatch({ ...baseRequest, fixtureId: "does-not-exist" }),
-    (error: unknown) => error instanceof RangeError
+    (error: unknown) => error instanceof RangeError,
   );
   assert.throws(
     () => analyzeMatch({ ...baseRequest, atSecond: -1 }),
-    (error: unknown) => error instanceof RangeError
+    (error: unknown) => error instanceof RangeError,
   );
   assert.throws(
     () => analyzeMatch({ ...baseRequest, atSecond: 999999 }),
-    (error: unknown) => error instanceof RangeError
+    (error: unknown) => error instanceof RangeError,
   );
 });
 
@@ -132,14 +147,14 @@ test("early clock behavior returns neutral no-attack card", () => {
   assert.ok(/no attacking evidence|sin evidencia de ataque|aucune preuve d'attaque/i.test(snap.stories[0]?.summary ?? ""));
 });
 
-test("all fixtures are analyzable and return bounded story count and evidence coverage", () => {
-  for (const fx of listFixtures()) {
+test("all built-in fixtures are analyzable and return bounded story count and evidence coverage", () => {
+  for (const fixture of listFixtures()) {
     const snap = analyzeMatch({
-      fixtureId: fx.id,
-      atSecond: fx.durationSeconds,
+      fixtureId: fixture.id,
+      atSecond: fixture.durationSeconds,
       correction: true,
       persona: "analyst",
-      language: "en"
+      language: "en",
     });
     assert.ok(snap.stories.length >= 0 && snap.stories.length <= 7);
     assert.ok(snap.evidenceCoverage >= 0 && snap.evidenceCoverage <= 100);
@@ -149,12 +164,12 @@ test("all fixtures are analyzable and return bounded story count and evidence co
 
 test("pressure story reports tie explicitly when both sides have equal pressure", () => {
   let found = false;
-  for (let sec = 8 * 60; sec <= 90 * 60; sec += 30) {
-    const snap = analyzeMatch({ ...baseRequest, fixtureId: "discipline-swing", atSecond: sec });
+  for (let second = 8 * 60; second <= 90 * 60; second += 30) {
+    const snap = analyzeMatch({ ...baseRequest, fixtureId: "discipline-swing", atSecond: second });
     const pressureStory = snap.stories.find((story) => story.id === "pressure-window");
     if (!pressureStory) continue;
-    const homePressure = pressureStory.metrics.find((m) => /Home pressure|Presiones local|Pressings domicile/.test(m.label))?.value;
-    const awayPressure = pressureStory.metrics.find((m) => /Away pressure|Presiones visitante|Pressings extérieur/.test(m.label))?.value;
+    const homePressure = pressureStory.metrics.find((metric) => /Home pressure|Presiones local|Pressings domicile/.test(metric.label))?.value;
+    const awayPressure = pressureStory.metrics.find((metric) => /Away pressure|Presiones visitante|Pressings extérieur/.test(metric.label))?.value;
     if (typeof homePressure === "number" && homePressure === awayPressure) {
       found = true;
       assert.match(pressureStory.summary, /tie|empat|égalité/i);
@@ -164,25 +179,43 @@ test("pressure story reports tie explicitly when both sides have equal pressure"
   assert.equal(found, true);
 });
 
-test("set piece story cites linked corner and shot events from story window", () => {
+test("set piece radar cue uses exact so-far counts and cites linked corners and shots", () => {
   const snap = analyzeMatch({ ...baseRequest, fixtureId: "setpiece-pattern", atSecond: 62 * 60 });
   const setPieceStory = snap.stories.find((story) => story.id === "setpiece-pattern");
   assert.ok(setPieceStory);
-  const eventMap = new Map(Object.values(snap.evidence).map((evt) => [evt.id, evt]));
-  for (const evidenceId of setPieceStory?.evidenceIds ?? []) {
-    const event = eventMap.get(evidenceId);
-    assert.ok(event);
-    const sec = (event?.minute ?? 0) * 60 + (event?.second ?? 0);
-    assert.ok(sec >= (setPieceStory?.windowStart ?? 0) && sec <= (setPieceStory?.windowEnd ?? 0));
-  }
-  const types = new Set((setPieceStory?.evidenceIds ?? []).map((id) => eventMap.get(id)?.type));
-  assert.ok(types.has("corner"));
-  assert.ok(types.has("shot"));
+  assert.match(setPieceStory?.summary ?? "", /Watch Rivergate FC's next corner: 3 of their 3 corners so far led directly to a shot\./);
+
+  const evidence = Object.values(snap.evidence);
+  const evidenceById = new Map(evidence.map((event) => [event.id, event]));
+  const homeCornerLinks = evidence
+    .filter((event) => event.type === "shot" && event.teamId === "home" && event.relatedEventId && evidenceById.get(event.relatedEventId)?.type === "corner")
+    .flatMap((event) => [event.relatedEventId as string, event.id])
+    .sort();
+  assert.ok(homeCornerLinks.length >= 6);
+  assert.deepEqual(
+    [...new Set(homeCornerLinks)].sort(),
+    [...new Set((setPieceStory?.evidenceIds ?? []).filter((id) => homeCornerLinks.includes(id)))].sort(),
+  );
+});
+
+test("analyzeFixture reconciles partial fixtures with rescinded revisions already in the feed", () => {
+  const fixture = getFixture(baseRequest.fixtureId);
+  const partialEvents = fixture.events.filter((event) => secondOf(event) <= 60 * 60);
+  const correctionTarget = partialEvents.find((event) => event.id === fixture.correctionEventId)!;
+  const partialFixture: MatchFixture = {
+    ...fixture,
+    events: [...partialEvents, { ...correctionTarget, revision: correctionTarget.revision + 1, rescinded: true }],
+  };
+
+  const snapshot = analyzeFixture(partialFixture, { ...baseRequest, atSecond: 60 * 60, correction: false });
+  assert.equal(snapshot.evidence[fixture.correctionEventId]?.revision, 2);
+  assert.equal(snapshot.evidence[fixture.correctionEventId]?.rescinded, true);
+  assert.equal(snapshot.score.away, 1);
 });
 
 test("recent events exclude rescinded goals while evidence retains corrected revision", () => {
   const snap = analyzeMatch({ ...baseRequest, atSecond: 60 * 60, correction: true });
   const correctedId = getFixture(baseRequest.fixtureId).correctionEventId;
   assert.equal(snap.evidence[correctedId]?.rescinded, true);
-  assert.ok(!snap.recentEvents.some((evt) => evt.id === correctedId));
+  assert.ok(!snap.recentEvents.some((event) => event.id === correctedId));
 });

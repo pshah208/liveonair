@@ -12,6 +12,8 @@ export interface Player {
   number: number;
   position: string;
   teamId: TeamId;
+  /** Global synthetic archive person ID (stable across matches and clubs). */
+  archiveId?: string;
 }
 
 export interface Team {
@@ -19,6 +21,8 @@ export interface Team {
   name: string;
   shortName: string;
   players: Player[];
+  /** Global synthetic archive club ID. */
+  archiveClubId?: string;
 }
 
 export interface MatchEvent {

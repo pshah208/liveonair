@@ -10,6 +10,36 @@ param imageTag string
 param aiEndpoint string
 param deploymentName string = 'matchlens-narrator'
 param aiMaxRequestsPerHour int = 60
+param projectEndpoint string = ''
+param searchEndpoint string = ''
+param searchIndex string = 'matchlens-archive'
+param searchKnowledgeBase string = 'matchlens-archive-kb'
+param searchKnowledgeSource string = 'matchlens-archive'
+@secure()
+param eventstreamSourceConnectionString string = ''
+@secure()
+param eventstreamDestinationConnectionString string = ''
+param eventstreamConsumerGroup string = '$Default'
+
+var eventstreamConfigured = !empty(eventstreamSourceConnectionString) && !empty(eventstreamDestinationConnectionString)
+var eventstreamSecrets = eventstreamConfigured ? [
+  { name: 'eventstream-source', value: eventstreamSourceConnectionString }
+  { name: 'eventstream-destination', value: eventstreamDestinationConnectionString }
+] : []
+var eventstreamEnv = eventstreamConfigured ? [
+  { name: 'EVENTSTREAM_SOURCE_CONNECTION_STRING', secretRef: 'eventstream-source' }
+  { name: 'EVENTSTREAM_DESTINATION_CONNECTION_STRING', secretRef: 'eventstream-destination' }
+  { name: 'EVENTSTREAM_CONSUMER_GROUP', value: eventstreamConsumerGroup }
+] : []
+var deskEnv = empty(projectEndpoint) ? [] : [
+  { name: 'PROJECT_ENDPOINT', value: projectEndpoint }
+]
+var searchEnv = empty(searchEndpoint) ? [] : [
+  { name: 'AZURE_SEARCH_ENDPOINT', value: searchEndpoint }
+  { name: 'AZURE_SEARCH_INDEX', value: searchIndex }
+  { name: 'AZURE_SEARCH_KNOWLEDGE_BASE', value: searchKnowledgeBase }
+  { name: 'AZURE_SEARCH_KNOWLEDGE_SOURCE', value: searchKnowledgeSource }
+]
 
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = { name: environmentName }
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: identityName }
@@ -26,13 +56,14 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: { external: true, targetPort: 3000, transport: 'http', allowInsecure: false }
       registries: [{ server: registryServer, identity: identity.id }]
+      secrets: eventstreamSecrets
     }
     template: {
       containers: [{
         name: 'matchlens'
         image: '${registryServer}/matchlens:${imageTag}'
         resources: { cpu: json('0.5'), memory: '1Gi' }
-        env: [
+        env: concat([
           { name: 'NODE_ENV', value: 'production' }
           { name: 'PORT', value: '3000' }
           { name: 'AZURE_CLIENT_ID', value: identityClientId }
@@ -41,7 +72,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'AZURE_OPENAI_API_VERSION', value: '2024-10-21' }
           { name: 'AI_MAX_REQUESTS_PER_HOUR', value: string(aiMaxRequestsPerHour) }
           { name: 'AI_MAX_CONCURRENT', value: '2' }
-        ]
+        ], deskEnv, searchEnv, eventstreamEnv)
         probes: [
           {
             type: 'Startup'
@@ -63,7 +94,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         ]
       }]
       scale: {
-        minReplicas: 0
+        // One always-on replica: the live match, SSE fan-out and desk state are in-process, and
+        // the Eventstream consumer must keep running between HTTP requests.
+        minReplicas: 1
         maxReplicas: 1
         rules: [{ name: 'http', http: { metadata: { concurrentRequests: '20' } } }]
       }
