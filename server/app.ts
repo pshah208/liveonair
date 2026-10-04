@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -22,6 +23,10 @@ import { createPlatform, type Platform } from "./platform.js";
 import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
 import { createStudioRouter } from "./routes/studio.js";
+import { createVideoRouter } from "./routes/video.js";
+import type { RunCommand } from "./video/ffmpeg.js";
+import { createVisionAnalyzerFromEnv, type VisionAnalyzer } from "./video/vision.js";
+import { createVideoWorker, type VideoWorker } from "./video/worker.js";
 import {
   HttpError,
   assertFixtureWindow,
@@ -42,6 +47,7 @@ type CreateAppOptions = {
   narrator?: Narrator;
   engine?: EngineAdapter;
   platform?: Platform;
+  video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand };
   staticDir?: string;
   logger?: (entry: { level: "error"; requestId: string; reason: string; path: string }) => void;
   version?: string;
@@ -276,6 +282,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture }));
   app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
+
+  const vision = options.video?.vision ?? createVisionAnalyzerFromEnv();
+  const videoWorker = options.video?.worker ?? createVideoWorker({
+    vision,
+    registerFixture,
+    workRoot: resolve(tmpdir(), `matchlens-video-${process.pid}`),
+  });
+  app.use(createVideoRouter({ worker: videoWorker, live: platform.live, visionConfigured: vision.configured, run: options.video?.run }));
 
   app.use("/api", (_request, response) => {
     sendJsonError(response, 404, "Not found");

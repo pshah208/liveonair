@@ -80,7 +80,8 @@ const OUTPUTS = [
   "Narrated recap: analyst or casual, English, Spanish or French",
   "Highlight reel ranked from verified events, captioned by approved storylines",
   "Reel rendered from data, or cut from footage you own (stays in the browser)",
-  "Cut list and ffmpeg script for an edit suite"
+  "Cut list and ffmpeg script for an edit suite",
+  "Video lab: events tagged from your own clip by a vision model, streamed like a live feed"
 ];
 
 const PHASE_TWO = [
@@ -88,7 +89,7 @@ const PHASE_TWO = [
   "Entra ID sign-in with producer and editor roles",
   "Shared state for many concurrent matches",
   "Graphics-engine output and live video sync",
-  "Video auto-eventing worker with a vision model"
+  "Video lab worker on Blob Storage, Service Bus and Container Apps Jobs, with player tracking"
 ];
 
 const HOSTING = [

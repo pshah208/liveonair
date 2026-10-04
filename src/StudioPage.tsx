@@ -6,6 +6,7 @@ import { BroadcastBar, EventFeed, FactTicker, LiveStats, MatchIntelligence, Over
 import { HighlightReelPanel } from "./HighlightReel.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
+import { VideoLab } from "./VideoLab.js";
 import {
   clamp,
   computeScoreFromEvents,
@@ -22,7 +23,7 @@ import {
   type Theme
 } from "./utils.js";
 
-type Tab = "live" | "recap";
+type Tab = "live" | "recap" | "video";
 type StartMode = "fixture" | "matchlab";
 type Audience = "analyst" | "casual";
 
@@ -179,6 +180,13 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
     }
   }
 
+  async function handleVideoStreamed(next: LiveStatus) {
+    resetMatchState();
+    matchIdRef.current = next.matchId;
+    setStatus(next);
+    try { setFixture(await api.getLiveFixture()); } catch { /* the stream refreshes it */ }
+  }
+
   async function handleStop() {
     setSubmitting(true);
     try {
@@ -260,11 +268,19 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
         <button type="button" className={`tabs__item${tab === "recap" ? " is-active" : ""}`} onClick={() => setTab("recap")} aria-current={tab === "recap" ? "page" : undefined}>
           Recap and highlights
         </button>
+        <button type="button" className={`tabs__item${tab === "video" ? " is-active" : ""}`} onClick={() => setTab("video")} aria-current={tab === "video" ? "page" : undefined}>
+          Video lab <span className="tag tag--accent">Beta</span>
+        </button>
       </nav>
 
       {pageError && <div className="banner banner--danger" role="alert">{pageError} <button type="button" className="link-button" onClick={() => setPageError(null)}>Dismiss</button></div>}
 
-      {tab === "live" ? (
+      {/* Kept mounted so an uploaded clip and its job survive switching tabs. */}
+      <div hidden={tab !== "video"}>
+        <VideoLab status={status} liveFixture={fixture} onStreamed={(next) => void handleVideoStreamed(next)} onOpenDesk={() => setTab("live")} />
+      </div>
+
+      {tab === "video" ? null : tab === "live" ? (
         <div className="desk-grid">
           <div className="desk-col">
             <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>

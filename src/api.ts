@@ -19,6 +19,7 @@ import type {
   Storyline,
   VerifiedFact
 } from "../shared/platform.js";
+import type { VideoJob, VideoJobRequest } from "../shared/video.js";
 
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -70,5 +71,30 @@ export const api = {
   reviewStoryline(id: string, body: ReviewStorylineRequest, signal?: AbortSignal) { return requestJson<Storyline>(`/api/studio/storylines/${id}/review`, { method: "POST", body, signal }); },
   getStudioFacts(signal?: AbortSignal) { return requestJson<VerifiedFact[]>("/api/studio/facts", { signal }); },
   getStudioStoryboard(signal?: AbortSignal) { return requestJson<RecapStoryboard>("/api/studio/storyboard", { signal, allowNotFound: true }); },
-  getStudioHealth(signal?: AbortSignal) { return requestJson<{ mode: "foundry-agents" | "unconfigured"; agents: string[]; retrieval: string }>("/api/studio/health", { signal }); }
+  getStudioHealth(signal?: AbortSignal) { return requestJson<{ mode: "foundry-agents" | "unconfigured"; agents: string[]; retrieval: string }>("/api/studio/health", { signal }); },
+  getVideoHealth(signal?: AbortSignal) { return requestJson<VideoHealth>("/api/video/health", { signal }); },
+  getVideoJob(id: string, signal?: AbortSignal) { return requestJson<VideoJob>(`/api/video/jobs/${id}`, { signal }); },
+  startVideoLive(id: string) { return requestJson<LiveStatus>(`/api/video/jobs/${id}/live`, { method: "POST" }); },
+  swapVideoTeams(id: string) { return requestJson<VideoJob>(`/api/video/jobs/${id}/swap-teams`, { method: "POST" }); }
 };
+
+export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number };
+
+/** Streams the file to the video worker. XHR rather than fetch so the UI can show upload progress. */
+export function uploadVideo(file: File, request: VideoJobRequest, onProgress: (fraction: number) => void): Promise<VideoJob> {
+  const query = new URLSearchParams({ fileName: file.name, homeName: request.home.name, homeKit: request.home.kit, awayName: request.away.name, awayKit: request.away.kit });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/video/jobs?${query.toString()}`);
+    xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
+    xhr.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
+    xhr.onload = () => {
+      let payload: unknown = null;
+      try { payload = JSON.parse(xhr.responseText); } catch { /* non-JSON error */ }
+      if (xhr.status === 202) resolve(payload as VideoJob);
+      else reject(new Error((payload as { error?: string } | null)?.error ?? `Upload failed with ${xhr.status}`));
+    };
+    xhr.send(file);
+  });
+}

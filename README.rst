@@ -49,6 +49,11 @@ top shows each pipeline stage with live health.
   from the live view so manual corrections are reflected.
 * **Recap chapters** that link each phase of the match to its storylines.
 
+**Video lab (beta)**
+
+* Upload a short clip you own. The video worker samples frames, a vision model tags events and
+  deterministic rules turn them into a match that streams through Eventstream to the live desk.
+
 How it works
 ------------
 
@@ -115,6 +120,33 @@ The same clip list drives every output:
 Synthetic matches have no footage of their own. Captions only describe what is on screen when
 the events and the footage come from the same match.
 
+Video lab (beta)
+~~~~~~~~~~~~~~~~
+
+The Video lab turns a short clip you own into match events, the way a vision feed could replace a
+data provider. It follows the PlayerIQ worker pattern, in-process for this demo:
+
+1. **Upload.** The browser streams the clip (MP4, MOV or WebM, at most 100 MB and 3 minutes) to
+   ``POST /api/video/jobs``. Uploading requires confirming you filmed it or have a licence.
+2. **Probe and sample.** ffprobe checks the stream; ffmpeg extracts up to 60 frames (one every 1–3
+   seconds) at 768 px.
+3. **Tag.** Batches of 12 frames go to gpt-4.1-mini with a strict JSON schema. The model reports
+   event type, team (by kit), legible shirt number, frame position and confidence, plus a footage
+   check. Test patterns, animations and games are rejected after the first batch.
+4. **Apply rules.** Deterministic code keeps detections at 50% confidence or more with a known team,
+   merges repeats, adds a shot before every goal, links saves to shots and registers a fixture.
+5. **Stream.** *Stream to live desk* publishes the events through Fabric Eventstream at real time
+   while the clip plays with a scorebug and event overlays. Storyline agents, stats and the
+   highlight reel then run on what the camera saw.
+
+Each detected event shows the model's description, its confidence and the exact frame it saw.
+*Swap teams* fixes a clip where the model put the kits on the wrong sides.
+
+Limits: sampled stills miss quick passes; there is no player tracking, so positions are frame
+positions; players are identified only by legible numbers. A fan-filmed clip that cuts away at the
+goal produces a shot, not a goal. In production a licensed event feed such as Opta replaces this
+step; the rest of the pipeline is unchanged.
+
 Microsoft and Azure services
 ----------------------------
 
@@ -125,7 +157,7 @@ Microsoft Fabric Eventstream       Real-time event ingestion and fan-out
 Fabric Eventhouse (KQL)            Event store, update policy, archive, producer KQL functions
 Microsoft Foundry Agent Service    Researcher, producer, fact-checker and localizer agents
 Foundry IQ and Azure AI Search     Knowledge base over the synthetic archive
-Azure OpenAI (gpt-4.1-mini)        Agents and recap narration
+Azure OpenAI (gpt-4.1-mini)        Agents, recap narration and Video lab frame tagging (vision)
 Azure Container Apps               API and studio UI, server-sent events for live updates
 Azure Container Registry           Image builds (``az acr build``)
 Managed identity and RBAC          Keyless access to Foundry, Search and the registry
@@ -140,7 +172,10 @@ Trust and guardrails
 * Agent copy that adds names or numbers not in its verified claims is rejected and retried.
 * Nothing goes on air without producer approval. Edits are recorded in the trace.
 * A goal correction keeps the original event in the audit trail and retracts dependent output.
-* Footage is never uploaded. Loading it requires confirming you filmed it or have a licence.
+* Footage loaded into the highlight reel is never uploaded. Loading any footage, here or in the
+  Video lab, requires confirming you filmed it or have a licence.
+* The video worker fails closed: frames that are not real football footage stop the job before any
+  events exist, and only detections that cite a sampled frame are kept.
 * When the model is unavailable, AI features say so; there is no hidden mock narration.
 
 Synthetic data and footage policy
@@ -214,7 +249,7 @@ Provisioning
    npx tsx scripts/eventstream-smoke.ts
 
    # App-only update
-   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-4-0 -UseExistingInfrastructure
+   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-5-0 -UseExistingInfrastructure
 
 ``deploy.ps1`` reads ``fabric/.secrets.local.json`` and stores the Eventstream connection strings
 as Container Apps secrets. Re-running ``provision-fabric.ps1`` rotates those endpoints, so redeploy
@@ -253,6 +288,12 @@ API
      - Verified facts; recap chapters
    * - ``GET /api/archive/summary``, ``/players/{id}``, ``/export``
      - Synthetic archive
+   * - ``POST /api/video/jobs``
+     - Upload a clip (raw MP4, MOV or WebM body, at most 100 MB and 3 minutes; team names and kits as query parameters)
+   * - ``GET /api/video/jobs/{id}``, ``/frames/{n}``
+     - Worker progress, detected events with evidence; the exact frame the model saw
+   * - ``POST /api/video/jobs/{id}/swap-teams``, ``/live``
+     - Flip home and away kits; stream the detected events through the live pipeline at real time
 
 Request and response contracts are in ``shared/types.ts`` and ``shared/platform.ts``. Inputs are
 validated with zod; bodies, request rates and AI concurrency are bounded.
@@ -297,9 +338,10 @@ Live video                      Recorded file in the browser               Sync 
                                                                            by timecode
 Highlights                      WebM export and ffmpeg cut list            Media-asset-management integration and
                                                                            server-side rendering (Container Apps Jobs)
-Video auto-eventing             Not built                                  Worker samples frames and uses a Foundry
-                                                                           vision model to tag shots, passes and
-                                                                           speeds into Eventstream
+Video auto-eventing             Video lab: in-process worker, short        Blob upload, Service Bus queue and a
+                                clips, frame sampling and a vision model   Container Apps Job worker (as in
+                                                                           PlayerIQ); player tracking for passes
+                                                                           and speeds
 Languages                       English, Spanish, French                   More localizer languages and translated
                                                                            studio UI
 Secrets and operations          Container Apps secrets, Log Analytics      Key Vault, alerts, dashboards, budgets
