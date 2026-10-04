@@ -3,7 +3,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import type { MatchFixture } from "../../shared/types.js";
-import { MAX_MANUAL_TAGS, type ManualTagInput, type VideoFrame, type VideoJob, type VideoJobRequest, type VideoJobStage, type VisionDetection } from "../../shared/video.js";
+import { MAX_MANUAL_TAGS, type ManualTagInput, type VideoFrame, type VideoJob, type VideoJobRequest, type VideoJobStage, type VideoJobSummary, type VisionDetection } from "../../shared/video.js";
 import { buildVideoFixture } from "./events.js";
 import { extractFrames, framePath, probeVideo, sampleTimestamps, type ProbeResult, type RunCommand } from "./ffmpeg.js";
 import type { VisionAnalyzer } from "./vision.js";
@@ -19,6 +19,7 @@ const MAX_LOG = 40;
 export interface VideoWorkerDeps {
   vision: VisionAnalyzer;
   registerFixture(fixture: MatchFixture): unknown;
+  unregisterFixture?(fixtureId: string): unknown;
   workRoot: string;
   probe?: (filePath: string) => Promise<ProbeResult>;
   extract?: typeof extractFrames;
@@ -40,6 +41,10 @@ export interface VideoWorker {
   jobDirectory(jobId: string): string;
   submit(input: SubmitVideoJob): VideoJob;
   get(jobId: string): VideoJob | undefined;
+  /** Newest first. */
+  list(): VideoJobSummary[];
+  /** Deletes a finished job: its frames, detections, tags and registered fixture. */
+  remove(jobId: string): Promise<void>;
   frameFile(jobId: string, index: number): string | undefined;
   /** Flips which kit is home and which is away, then rebuilds and re-registers the fixture. */
   swapTeams(jobId: string): VideoJob;
@@ -230,6 +235,30 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
     get(jobId) {
       const job = jobs.get(jobId);
       return job ? structuredClone(job) : undefined;
+    },
+    list() {
+      return [...jobs.values()]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map((job) => ({
+          id: job.id,
+          fileName: job.fileName,
+          createdAt: job.createdAt,
+          stage: job.stage,
+          title: `${job.request.home.name} vs ${job.request.away.name}`,
+          durationSeconds: job.durationSeconds,
+          eventCount: job.events.filter((event) => event.type !== "kickoff" && event.type !== "fulltime").length,
+          manualTagCount: job.manualTags.length,
+          fixtureId: job.fixtureId,
+        }));
+    },
+    async remove(jobId) {
+      const job = jobs.get(jobId);
+      if (!job) return;
+      if (!["ready", "rejected", "failed"].includes(job.stage)) throw new VideoJobConflict("The clip is still processing; delete it when it finishes.");
+      jobs.delete(jobId);
+      detectionsByJob.delete(jobId);
+      if (job.fixtureId) deps.unregisterFixture?.(job.fixtureId);
+      await rm(directory(jobId), { recursive: true, force: true }).catch(() => undefined);
     },
     frameFile(jobId, index) {
       const job = jobs.get(jobId);

@@ -64,6 +64,19 @@ export interface VideoEventEvidence {
   tagId?: string;
 }
 
+/** What the clip library shows for each processed or failed upload. */
+export interface VideoJobSummary {
+  id: string;
+  fileName: string;
+  createdAt: string;
+  stage: VideoJobStage;
+  title: string;
+  durationSeconds?: number;
+  eventCount: number;
+  manualTagCount: number;
+  fixtureId?: string;
+}
+
 export interface VideoJob {
   id: string;
   createdAt: string;

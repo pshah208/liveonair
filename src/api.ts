@@ -19,7 +19,7 @@ import type {
   Storyline,
   VerifiedFact
 } from "../shared/platform.js";
-import type { ManualTagInput, VideoJob, VideoJobRequest } from "../shared/video.js";
+import type { ManualTagInput, VideoJob, VideoJobRequest, VideoJobSummary } from "../shared/video.js";
 
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -77,7 +77,9 @@ export const api = {
   startVideoLive(id: string) { return requestJson<LiveStatus>(`/api/video/jobs/${id}/live`, { method: "POST" }); },
   swapVideoTeams(id: string) { return requestJson<VideoJob>(`/api/video/jobs/${id}/swap-teams`, { method: "POST" }); },
   addVideoTag(id: string, body: Omit<ManualTagInput, "note"> & { note?: string }) { return requestJson<VideoJob>(`/api/video/jobs/${id}/tags`, { method: "POST", body }); },
-  removeVideoTag(id: string, tagId: string) { return requestJson<VideoJob>(`/api/video/jobs/${id}/tags/${tagId}`, { method: "DELETE" }); }
+  removeVideoTag(id: string, tagId: string) { return requestJson<VideoJob>(`/api/video/jobs/${id}/tags/${tagId}`, { method: "DELETE" }); },
+  listVideoJobs(signal?: AbortSignal) { return requestJson<VideoJobSummary[]>("/api/video/jobs", { signal }); },
+  deleteVideoJob(id: string) { return requestJson<null>(`/api/video/jobs/${id}`, { method: "DELETE" }); }
 };
 
 export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number };

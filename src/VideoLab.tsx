@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveStatus } from "../shared/platform.js";
 import type { MatchEvent, MatchFixture, TeamId } from "../shared/types.js";
-import { DETECTABLE_EVENT_TYPES, MAX_MANUAL_TAGS, type DetectableEventType, type VideoJob, type VideoJobStage } from "../shared/video.js";
+import { DETECTABLE_EVENT_TYPES, MAX_MANUAL_TAGS, type DetectableEventType, type VideoJob, type VideoJobStage, type VideoJobSummary } from "../shared/video.js";
 import { api, uploadVideo, type VideoHealth } from "./api.js";
 import { Panel } from "./components.js";
 import { formatClock, getErrorMessage, labelize } from "./utils.js";
@@ -83,6 +83,28 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk, onFootag
   const [tagShirt, setTagShirt] = useState("");
   const [tagNote, setTagNote] = useState("");
   const [tagging, setTagging] = useState(false);
+  const [library, setLibrary] = useState<VideoJobSummary[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  function refreshLibrary() {
+    api.listVideoJobs().then((list) => setLibrary(list ?? [])).catch(() => undefined);
+  }
+
+  async function deleteClip(id: string) {
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteVideoJob(id);
+      if (job?.id === id) { setJob(null); setFile(null); setFileUrl(null); setFrameIndex(null); }
+      setConfirmDelete(null);
+      refreshLibrary();
+    } catch (reason: unknown) {
+      setError(getErrorMessage(reason));
+    } finally {
+      setDeleting(false);
+    }
+  }
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -97,6 +119,9 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk, onFootag
   useEffect(() => {
     onFootage(readyFixtureId && fileUrl && file ? { fixtureId: readyFixtureId, url: fileUrl, name: file.name } : null);
   }, [readyFixtureId, fileUrl, file]);
+
+  // The library refreshes on open and whenever a job is created or settles.
+  useEffect(() => { refreshLibrary(); }, [job?.id, job?.stage, job?.manualTags.length]);
 
   // Poll the worker until the job reaches a terminal stage.
   useEffect(() => {
@@ -398,6 +423,41 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk, onFootag
               <ol className="worker-log">{job.log.map((entry, index) => <li key={index}><span className="mono subtle-text">{new Date(entry.at).toLocaleTimeString()}</span> {entry.message}</li>)}</ol>
             </details>
           )}
+        </Panel>
+
+        <Panel eyebrow="Library" title="Uploaded clips" aside={<span className="tag">{library.length}</span>}>
+          {library.length > 0 ? (
+            <ul className="clip-library">
+              {library.map((item) => {
+                const locked = (status?.state === "running" && item.fixtureId !== undefined && status.fixtureId === item.fixtureId) || !TERMINAL.includes(item.stage);
+                return (
+                  <li key={item.id} className={`clip-library__item${item.id === job?.id ? " is-current" : ""}`}>
+                    <div className="clip-library__main">
+                      <strong>{item.title}</strong>
+                      <span className="subtle-text">{item.fileName} · {new Date(item.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span>
+                      <span className="chips chips--start">
+                        <span className={`tag${item.stage === "ready" ? " tag--success" : item.stage === "failed" || item.stage === "rejected" ? " tag--danger" : ""}`}>{labelize(item.stage)}</span>
+                        {item.durationSeconds !== undefined && <span className="tag mono">{Math.round(item.durationSeconds)} s</span>}
+                        {item.stage === "ready" && <span className="tag">{item.eventCount} events{item.manualTagCount ? ` · ${item.manualTagCount} yours` : ""}</span>}
+                        {item.id === job?.id && <span className="tag tag--accent">Open</span>}
+                      </span>
+                    </div>
+                    {confirmDelete === item.id ? (
+                      <div className="clip-library__actions">
+                        <button type="button" className="button button--small button--danger" onClick={() => void deleteClip(item.id)} disabled={deleting}>{deleting ? "Deleting…" : "Delete"}</button>
+                        <button type="button" className="button button--small button--ghost" onClick={() => setConfirmDelete(null)} disabled={deleting}>Cancel</button>
+                      </div>
+                    ) : (
+                      <button type="button" className="button button--small button--ghost" onClick={() => setConfirmDelete(item.id)} disabled={locked} title={locked ? "Stop the stream or wait for processing to finish" : "Delete the frames, events and fixture for this clip"} aria-label={`Delete ${item.title} (${item.fileName})`}>Delete</button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="empty-state">No clips yet. Processed clips stay here (frames, events and the match) until you delete them or the server restarts.</div>
+          )}
+          <p className="subtle-text">The source video is already removed after processing. Deleting a clip also removes its sampled frames, detected events, your tags and its match from the fixture list. The worker keeps the six most recent clips.</p>
         </Panel>
 
         <Panel eyebrow="Honest limits" title="What the worker can and can't see">

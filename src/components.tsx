@@ -33,19 +33,27 @@ export function BrandMark() {
   );
 }
 
-type AppHeaderProps = { theme: Theme; onToggleTheme: () => void; infraOpen: boolean; onToggleInfra: () => void };
-export function AppHeader({ theme, onToggleTheme, infraOpen, onToggleInfra }: AppHeaderProps) {
+type AppHeaderProps = { theme: Theme; onToggleTheme: () => void; infraOpen: boolean; onToggleInfra: () => void; desk: "studio" | "var"; onDesk: (desk: "studio" | "var") => void };
+export function AppHeader({ theme, onToggleTheme, infraOpen, onToggleInfra, desk, onDesk }: AppHeaderProps) {
   return (
     <header className="app-header">
       <div className="app-header__brand">
         <BrandMark />
-        <span className="app-header__tagline">Live storylines, recaps and highlights from a verified match feed</span>
+        <div className="desk-switch" role="group" aria-label="Desk">
+          <button type="button" className={`desk-switch__item${desk === "studio" ? " is-active" : ""}`} aria-pressed={desk === "studio"} onClick={() => onDesk("studio")}>Studio Desk</button>
+          <button type="button" className={`desk-switch__item${desk === "var" ? " is-active" : ""}`} aria-pressed={desk === "var"} onClick={() => onDesk("var")}>
+            VAR Desk <span className="desk-switch__badge">Next</span>
+          </button>
+        </div>
+        <span className="app-header__tagline">{desk === "studio" ? "Live storylines, recaps and highlights from a verified match feed" : "Cited, Laws-based support for VAR reviews"}</span>
       </div>
       <div className="app-header__actions">
         <span className="tag tag--accent">Synthetic data</span>
-        <button type="button" className="button button--ghost" onClick={onToggleInfra} aria-pressed={infraOpen}>
-          {infraOpen ? "Hide architecture" : "How it works"}
-        </button>
+        {desk === "studio" && (
+          <button type="button" className="button button--ghost" onClick={onToggleInfra} aria-pressed={infraOpen}>
+            {infraOpen ? "Hide architecture" : "How it works"}
+          </button>
+        )}
         <button type="button" className="button button--ghost" onClick={onToggleTheme} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>
           {theme === "dark" ? "Light theme" : "Dark theme"}
         </button>

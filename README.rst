@@ -20,8 +20,15 @@ Live demo: https://matchlens.whiteisland-f5b236ef.eastus2.azurecontainerapps.io
 What you can do
 ---------------
 
-The app is one **Producer Studio** with two tabs. A collapsible **How MatchLens works** panel at the
-top shows each pipeline stage with live health.
+The app has two desks, switched at the top of the page:
+
+* **Studio Desk**: the producer studio described below, with three tabs (Live desk, Recap and
+  highlights, Video lab).
+* **VAR Desk** (next phase): a design preview of an assistant for VAR reviews. See `VAR Desk
+  (next phase)`_.
+
+A collapsible **How MatchLens works** panel at the top of the Studio Desk shows each pipeline stage
+with live health.
 
 **Live desk**
 
@@ -259,7 +266,7 @@ Provisioning
    npx tsx scripts/eventstream-smoke.ts
 
    # App-only update
-   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-5-1 -UseExistingInfrastructure
+   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-6-0 -UseExistingInfrastructure
 
 ``deploy.ps1`` reads ``fabric/.secrets.local.json`` and stores the Eventstream connection strings
 as Container Apps secrets. Re-running ``provision-fabric.ps1`` rotates those endpoints, so redeploy
@@ -306,6 +313,8 @@ API
      - Flip home and away kits; stream the detected events through the live pipeline at real time
    * - ``POST /api/video/jobs/{id}/tags``, ``DELETE .../tags/{tagId}``
      - Add or remove a producer tag (at most five per clip; ``type``, ``team``, ``second``, optional ``shirtNumber`` and ``note``)
+   * - ``GET /api/video/jobs``, ``DELETE /api/video/jobs/{id}``
+     - Clip library, newest first; delete a finished clip with its frames, events, tags and fixture
 
 Request and response contracts are in ``shared/types.ts`` and ``shared/platform.ts``. Inputs are
 validated with zod; bodies, request rates and AI concurrency are bounded.
@@ -361,6 +370,28 @@ Fabric capacity                 Trial capacity                             Paid 
 Governance                      Producer approval                          Rights checks for footage and data;
                                                                            responsible-AI review for on-air copy
 ==============================  =========================================  ==========================================
+
+VAR Desk (next phase)
+---------------------
+
+A second desk that stays idle until a VAR check or review is called in the live feed. It reuses
+the Studio Desk pipeline:
+
+1. **Trigger.** A ``var_check`` or ``var_review`` event in Eventstream (or a producer pressing
+   Review) wakes the desk.
+2. **Clip.** The video worker cuts the seconds around the incident from each licensed angle and
+   samples frames.
+3. **Read.** A Foundry vision agent describes the incident and cites the frames it used.
+4. **Check the Laws.** Foundry IQ retrieves the relevant Law and VAR protocol passages from an Azure
+   AI Search index over the current rulebook.
+5. **Recommend.** An agent combines both into a cited recommendation with confidence; the
+   deterministic guard rejects claims without a frame or Law passage behind them.
+6. **Human decides.** Officials confirm or overturn. The outcome flows back to the Studio Desk as a
+   correction, storyline and fan-facing explainer.
+
+It is advisory only. Offside needs calibrated multi-camera tracking, and official use would need
+competition and IFAB approval, so the first build targets explaining decisions to fans and
+preparing review notes. Today the desk is a design preview with no live connections.
 
 Cost and teardown
 -----------------

@@ -17,7 +17,7 @@ import type {
 } from "../shared/types.js";
 import { createNarrator, hashInlineScript, type Narrator } from "./narrator.js";
 import { analyzeFixture, analyzeMatch } from "./engine.js";
-import { getFixture, listFixtures, registerFixture } from "./fixtures.js";
+import { getFixture, listFixtures, registerFixture, unregisterFixture } from "./fixtures.js";
 import { generateMatch } from "./matchlab/generator.js";
 import { createPlatform, type Platform } from "./platform.js";
 import { createArchiveRouter } from "./routes/archive.js";
@@ -287,6 +287,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const videoWorker = options.video?.worker ?? createVideoWorker({
     vision,
     registerFixture,
+    unregisterFixture,
     workRoot: resolve(tmpdir(), `matchlens-video-${process.pid}`),
   });
   app.use(createVideoRouter({ worker: videoWorker, live: platform.live, visionConfigured: vision.configured, run: options.video?.run }));

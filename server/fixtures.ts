@@ -353,3 +353,11 @@ export function registerFixture(fixture: MatchFixture): FixtureSummary {
   }
   return fixtureSummary(fixture);
 }
+
+/** Removes a generated fixture (built-ins are never removed). Returns whether it existed. */
+export function unregisterFixture(id: string): boolean {
+  const index = generatedFixtures.findIndex((entry) => entry.id === id);
+  if (index < 0) return false;
+  generatedFixtures.splice(index, 1);
+  return true;
+}

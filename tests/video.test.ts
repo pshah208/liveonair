@@ -158,9 +158,11 @@ function fakeVision(results: (batch: number) => Partial<VisionBatchResult>): Vis
 
 function workerFor(vision: VisionAnalyzer, durationSeconds: number, registered: MatchFixture[] = []) {
   const workRoot = mkdtempSync(resolve(tmpdir(), "matchlens-video-test-"));
+  const unregistered: string[] = [];
   const worker = createVideoWorker({
     vision,
     registerFixture: (fixture) => registered.push(fixture),
+    unregisterFixture: (id) => unregistered.push(id),
     workRoot,
     probe: async () => ({ durationSeconds, width: 1280, height: 720, codec: "h264" }),
     extract: async ({ timestamps, onFrame }) => timestamps.map((timestampSeconds, index) => { onFrame?.(index + 1); return { index, timestampSeconds }; }),
@@ -168,13 +170,13 @@ function workerFor(vision: VisionAnalyzer, durationSeconds: number, registered: 
   });
   const source = resolve(workRoot, "source.mp4");
   writeFileSync(source, "video");
-  return { worker, workRoot, source };
+  return { worker, workRoot, source, unregistered };
 }
 
 test("worker runs probe, frames, vision batches and registers a fixture", async () => {
   const registered: MatchFixture[] = [];
   const vision = fakeVision((batch) => (batch === 1 ? { detections: [detection({ frameIndex: 14, type: "goal", team: "away", shirtNumber: 10 })] } : {}));
-  const { worker, workRoot, source } = workerFor(vision, 90, registered);
+  const { worker, workRoot, source, unregistered } = workerFor(vision, 90, registered);
   try {
     worker.submit({ jobId: "aaaaaaaaaaaa", sourcePath: source, fileName: "clip.mp4", sizeBytes: 5, request });
     await worker.idle();
@@ -206,6 +208,14 @@ test("worker runs probe, frames, vision batches and registers a fixture", async 
     const removed = worker.removeTag("aaaaaaaaaaaa", reswapped.manualTags[0]!.id);
     assert.equal(removed.manualTags.length, 4);
     assert.ok(!removed.events.some((event) => event.playerId === "home-7"));
+
+    const [summary] = worker.list();
+    assert.deepEqual([summary!.id, summary!.stage, summary!.manualTagCount, summary!.title], ["aaaaaaaaaaaa", "ready", 4, "Blue Town vs Red City"]);
+    await worker.remove("aaaaaaaaaaaa");
+    assert.equal(worker.get("aaaaaaaaaaaa"), undefined);
+    assert.equal(worker.list().length, 0);
+    assert.deepEqual(unregistered, ["video-aaaaaaaaaaaa"]);
+    assert.equal(worker.frameFile("aaaaaaaaaaaa", 0), undefined);
   } finally {
     await worker.close();
     rmSync(workRoot, { recursive: true, force: true });
@@ -286,6 +296,13 @@ test("video API validates uploads and job state", async () => {
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}/tags`, { method: "POST", headers: tagHeaders, body: tagBody })).status, 409, "cannot tag before processing finishes");
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/ffffffffffff/tags`, { method: "POST", headers: tagHeaders, body: tagBody })).status, 404);
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}/tags/zz`, { method: "DELETE" })).status, 409);
+
+    const listed = await (await fetch(`${baseUrl}/api/video/jobs`)).json() as { id: string }[];
+    assert.ok(listed.some((item) => item.id === job.id));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200)); // let the fake probe fail so the job settles
+    assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}`, { method: "DELETE" })).status, 204);
+    assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}`, { method: "DELETE" })).status, 404);
   });
 });
 

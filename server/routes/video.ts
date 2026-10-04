@@ -137,6 +137,25 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
     }
   });
 
+  router.get("/api/video/jobs", (_request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    response.json(options.worker.list());
+  });
+
+  router.delete("/api/video/jobs/:id", async (request, response, next) => {
+    try {
+      const id = parseOr400(jobIdSchema, request.params.id);
+      const job = options.worker.get(id);
+      if (!job) throw new HttpError(404, "Video job not found");
+      const status = options.live.status();
+      if (status.state === "running" && job.fixtureId && status.fixtureId === job.fixtureId) throw new HttpError(409, "Stop the live stream before deleting this clip");
+      await options.worker.remove(id);
+      response.status(204).end();
+    } catch (error) {
+      next(conflictTo409(error));
+    }
+  });
+
   router.get("/api/video/jobs/:id", (request, response, next) => {
     try {
       const id = parseOr400(jobIdSchema, request.params.id);
