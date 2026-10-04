@@ -60,20 +60,36 @@ function stages(health: AppHealth | null, desk: DeskHealth | null, live: LiveSta
       step: "5",
       title: "Storyline agents",
       service: "Microsoft Foundry",
-      detail: "Researcher (Foundry IQ over Azure AI Search), producer, fact-checker and localizer, behind a deterministic claim verifier.",
+      detail: "Researcher (Foundry IQ over Azure AI Search), producer, fact-checker and localizer (EN/ES/FR), behind a deterministic claim verifier.",
       state: desk?.mode === "foundry-agents" ? "ok" : "warn",
       stateLabel: desk?.mode === "foundry-agents" ? `${desk.agents.length} agents` : "Not configured"
     },
     {
       step: "6",
-      title: "Producer and output",
+      title: "Producer and outputs",
       service: "Studio desk",
-      detail: "A human approves each storyline. Approved copy feeds lower-thirds, AI recaps and the auto-generated highlight reel.",
+      detail: "A human approves each storyline. Approved copy drives lower-thirds, narrated recaps and the auto-cut highlight reel, in three languages.",
       state: health?.ai.configured ? "ok" : "warn",
       stateLabel: health?.ai.configured ? health.ai.deployment : "Narrator offline"
     }
   ];
 }
+
+const OUTPUTS = [
+  "Lower-third overlay (timed JSON with claim sources)",
+  "Narrated recap: analyst or casual, English, Spanish or French",
+  "Highlight reel ranked from verified events, captioned by approved storylines",
+  "Reel rendered from data, or cut from footage you own (stays in the browser)",
+  "Cut list and ffmpeg script for an edit suite"
+];
+
+const PHASE_TWO = [
+  "Licensed data-feed adapter into Eventstream",
+  "Entra ID sign-in with producer and editor roles",
+  "Shared state for many concurrent matches",
+  "Graphics-engine output and live video sync",
+  "Video auto-eventing worker with a vision model"
+];
 
 const HOSTING = [
   "Azure Container Apps (1 replica, SSE)",
@@ -88,7 +104,8 @@ const GUARDRAILS = [
   "Every claim is matched to feed events or archive records before it reaches a producer.",
   "Agent copy that adds names or numbers not in verified claims is rejected and retried.",
   "Nothing goes on air without producer approval.",
-  "A goal correction retracts dependent storylines, facts and highlight captions."
+  "A goal correction retracts dependent storylines, facts and highlight captions.",
+  "Footage is never uploaded; loading it requires confirming you own or license it."
 ];
 
 export function InfrastructurePanel({ open, onToggle, health, desk, live }: InfrastructurePanelProps) {
@@ -119,12 +136,18 @@ export function InfrastructurePanel({ open, onToggle, health, desk, live }: Infr
           </ol>
           <div className="infra__footer">
             <div>
-              <h3>Hosting and operations</h3>
-              <div className="chips">{HOSTING.map((item) => <span className="tag" key={item}>{item}</span>)}</div>
+              <h3>What it produces</h3>
+              <ul className="plain-list">{OUTPUTS.map((item) => <li key={item}>{item}</li>)}</ul>
             </div>
             <div>
               <h3>Trust guardrails</h3>
               <ul className="plain-list">{GUARDRAILS.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+            <div>
+              <h3>Hosting and operations</h3>
+              <div className="chips">{HOSTING.map((item) => <span className="tag" key={item}>{item}</span>)}</div>
+              <h3 className="infra__subhead">Phase 2: production path</h3>
+              <ul className="plain-list">{PHASE_TWO.map((item) => <li key={item}>{item}</li>)}</ul>
             </div>
           </div>
         </div>
