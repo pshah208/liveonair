@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightKind } from "../shared/highlights.js";
 import type { Storyline } from "../shared/platform.js";
-import type { MatchFixture } from "../shared/types.js";
+import type { Language, MatchFixture } from "../shared/types.js";
 import { FootageReel } from "./FootageReel.js";
 import { createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
-import { downloadBlob, downloadJson, formatClock } from "./utils.js";
+import { downloadBlob, downloadJson, formatClock, LANGUAGE_LABEL, LANGUAGES } from "./utils.js";
 
 type HighlightReelPanelProps = {
   fixture: MatchFixture;
@@ -40,9 +40,10 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
   const [source, setSource] = useState<"data" | "footage">("data");
   const [footageClip, setFootageClip] = useState(-1);
   const [seekRequest, setSeekRequest] = useState<{ index: number; nonce: number } | null>(null);
+  const [language, setLanguage] = useState<Language>("en");
   const recorderSupported = useMemo(() => Boolean(pickMimeType()), []);
 
-  const reel = useMemo(() => buildHighlightReel(fixture, storylines, { uptoSecond }), [fixture, storylines, uptoSecond]);
+  const reel = useMemo(() => buildHighlightReel(fixture, storylines, { uptoSecond, language }), [fixture, storylines, uptoSecond, language]);
   const model = useMemo(() => (reel.clips.length > 0 ? createReelModel(fixture, reel, readPalette()) : null), [fixture, reel, theme]);
   modelRef.current = model;
 
@@ -124,7 +125,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
       await stopped;
       stream.getTracks().forEach((track) => track.stop());
       const extension = mimeType.includes("mp4") ? "mp4" : "webm";
-      downloadBlob(`${fixture.id}-highlights.${extension}`, new Blob(chunks, { type: mimeType.split(";")[0] }));
+      downloadBlob(`${fixture.id}-highlights-${language}.${extension}`, new Blob(chunks, { type: mimeType.split(";")[0] }));
     } catch (error: unknown) {
       setExportError(error instanceof Error ? error.message : "Video export failed.");
     } finally {
@@ -163,6 +164,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
         <div className="chips">
           <span className="tag">{reel.clips.length} moments</span>
           {model && <span className="tag">{Math.round(model.timeline.duration)} s reel</span>}
+          <label className="inline-select"><span className="sr-only">Reel language</span><select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
         </div>
       </header>
       <p className="lede">
@@ -209,6 +211,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
                   <span className="clip-row__meta">
                     <span className="mono">{formatClock(clip.startSecond)}–{formatClock(clip.endSecond)}</span>
                     {clip.storylineId && <span className="tag tag--accent">storyline caption</span>}
+                    {clip.captionLanguage !== reel.language && <span className="tag" title="The localizer agent has no translation for this storyline yet">English fallback</span>}
                   </span>
                 </button>
               </li>

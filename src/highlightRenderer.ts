@@ -1,5 +1,5 @@
 import type { HighlightClip, HighlightReel } from "../shared/highlights.js";
-import { eventSecondOf, latestRevisions } from "../shared/highlights.js";
+import { eventSecondOf, highlightKindLabel, latestRevisions, REEL_TEXT } from "../shared/highlights.js";
 import type { MatchEvent, MatchFixture, TeamId } from "../shared/types.js";
 
 export const REEL_WIDTH = 1280;
@@ -240,7 +240,7 @@ function drawScorebug(ctx: CanvasRenderingContext2D, model: ReelModel, second: n
   drawText(ctx, `${Math.floor(second / 60)}'`, 368, 55, 20, palette.textMuted, 700, "right");
 }
 
-function drawBrand(ctx: CanvasRenderingContext2D, model: ReelModel, subtitle = "SYNTHETIC DATA REEL") {
+function drawBrand(ctx: CanvasRenderingContext2D, model: ReelModel, subtitle = REEL_TEXT[model.reel.language].dataReel) {
   const { palette } = model;
   drawText(ctx, "MatchLens", REEL_WIDTH - 24, 46, 24, palette.text, 800, "right");
   drawText(ctx, subtitle, REEL_WIDTH - 24, 68, 12, palette.textMuted, 700, "right");
@@ -319,8 +319,12 @@ function drawBurst(ctx: CanvasRenderingContext2D, model: ReelModel, clip: Highli
   ctx.globalAlpha = 1;
 }
 
-function kindLabel(clip: HighlightClip): string {
-  return clip.kind.replaceAll("_", " ").toUpperCase();
+function kindLabel(clip: HighlightClip, model: ReelModel): string {
+  return highlightKindLabel(clip.kind, model.reel.language).toUpperCase();
+}
+
+function text(model: ReelModel) {
+  return REEL_TEXT[model.reel.language];
 }
 
 function drawLowerThird(ctx: CanvasRenderingContext2D, model: ReelModel, clip: HighlightClip, appear: number) {
@@ -382,9 +386,9 @@ export function renderReelFrame(ctx: CanvasRenderingContext2D, model: ReelModel,
   if (segment.kind === "intro" || segment.kind === "outro") {
     const finalScore = scoreAt(model, segment.kind === "intro" ? fixture.durationSeconds : reel.clips[reel.clips.length - 1]?.endSecond ?? fixture.durationSeconds);
     if (segment.kind === "intro") {
-      drawCenterCard(ctx, model, "MATCHLENS HIGHLIGHTS", `${fixture.home.name} ${finalScore.home} – ${finalScore.away} ${fixture.away.name}`, `${reel.clips.length} moments · auto-selected from the verified event feed`, local);
+      drawCenterCard(ctx, model, text(model).intro, `${fixture.home.name} ${finalScore.home} – ${finalScore.away} ${fixture.away.name}`, text(model).moments(reel.clips.length), local);
     } else {
-      drawCenterCard(ctx, model, "FULL REEL", `${fixture.home.shortName} ${finalScore.home} – ${finalScore.away} ${fixture.away.shortName}`, "Fabric Eventstream · Foundry agents · producer-approved captions", local);
+      drawCenterCard(ctx, model, text(model).outro, `${fixture.home.shortName} ${finalScore.home} – ${finalScore.away} ${fixture.away.shortName}`, "Fabric Eventstream · Foundry agents", local);
     }
     drawProgress(ctx, model, time);
     return;
@@ -403,7 +407,7 @@ export function renderReelFrame(ctx: CanvasRenderingContext2D, model: ReelModel,
   drawBall(ctx, model, ballAt(frames, second));
   if (segment.kind === "hold") drawLowerThird(ctx, model, clip, local * 3);
   if (segment.kind === "card") {
-    drawCenterCard(ctx, model, `MOMENT ${segment.index + 1} OF ${reel.clips.length} · ${kindLabel(clip)}`, clip.title, `${formatMinute(clip.startSecond)} – ${formatMinute(clip.endSecond)} match time`, Math.min(1, (1 - local) * 3));
+    drawCenterCard(ctx, model, `${text(model).moment(segment.index + 1, reel.clips.length)} · ${kindLabel(clip, model)}`, clip.title, `${formatMinute(clip.startSecond)} – ${formatMinute(clip.endSecond)} ${text(model).matchTime}`, Math.min(1, (1 - local) * 3));
   }
   drawProgress(ctx, model, time);
 }
@@ -436,7 +440,7 @@ function drawVideoCover(ctx: CanvasRenderingContext2D, video: HTMLVideoElement) 
 
 function drawMomentChip(ctx: CanvasRenderingContext2D, model: ReelModel, frame: FootageFrame) {
   const { palette } = model;
-  const label = `MOMENT ${frame.clipIndex + 1} OF ${frame.clipCount} · ${kindLabel(frame.clip)}`;
+  const label = `${text(model).moment(frame.clipIndex + 1, frame.clipCount)} · ${kindLabel(frame.clip, model)}`;
   ctx.font = `800 14px "Segoe UI", Aptos, Calibri, sans-serif`;
   const width = ctx.measureText(label).width + 32;
   const x = (REEL_WIDTH - width) / 2;
@@ -452,10 +456,12 @@ export function renderFootageFrame(ctx: CanvasRenderingContext2D, model: ReelMod
   ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, REEL_WIDTH, REEL_HEIGHT);
   if (video) drawVideoCover(ctx, video);
-  roundRect(ctx, REEL_WIDTH - 312, 20, 300, 58, 10);
+  ctx.font = `700 12px "Segoe UI", Aptos, Calibri, sans-serif`;
+  const plateWidth = Math.max(180, ctx.measureText(text(model).footageReel).width + 32);
+  roundRect(ctx, REEL_WIDTH - 12 - plateWidth, 20, plateWidth, 58, 10);
   ctx.fillStyle = palette.surface;
   ctx.fill();
-  drawBrand(ctx, model, "YOUR FOOTAGE · SYNTHETIC EVENT OVERLAYS");
+  drawBrand(ctx, model, text(model).footageReel);
   if (!frame) return;
   drawScorebug(ctx, model, frame.matchSecond);
   drawMomentChip(ctx, model, frame);

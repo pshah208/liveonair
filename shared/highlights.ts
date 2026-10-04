@@ -1,4 +1,4 @@
-import type { MatchEvent, MatchFixture, TeamId } from "./types.js";
+import type { Language, MatchEvent, MatchFixture, TeamId } from "./types.js";
 import type { Storyline } from "./platform.js";
 
 /**
@@ -27,6 +27,8 @@ export interface HighlightClip {
   playerId: string;
   title: string;
   caption: string;
+  /** Language the caption is actually in (falls back to English when no translation exists). */
+  captionLanguage: Language;
   storylineId?: string;
   importance: number;
   scoreAfter: { home: number; away: number };
@@ -34,6 +36,7 @@ export interface HighlightClip {
 
 export interface HighlightReel {
   fixtureId: string;
+  language: Language;
   clips: HighlightClip[];
   /** Sum of clip windows in match seconds. */
   totalMatchSeconds: number;
@@ -118,29 +121,84 @@ function teamShort(fixture: MatchFixture, teamId: TeamId): string {
   return teamId === "home" ? fixture.home.shortName : fixture.away.shortName;
 }
 
-function defaultTitle(kind: HighlightKind, minute: number, name: string, team: string): string {
+type Phrases = {
+  title: Record<HighlightKind, string>;
+  scores: (name: string, xg?: number) => string;
+  ruledOut: (name: string) => string;
+  sentOff: (name: string) => string;
+  goesClose: (name: string, xg: number, outcome: string) => string;
+  denies: (name: string, xg: number) => string;
+  booked: (name: string) => string;
+};
+
+const PHRASES: Record<Language, Phrases> = {
+  en: {
+    title: { goal: "GOAL", disallowed_goal: "Goal ruled out", red_card: "Red card", big_chance: "Big chance", key_save: "Key save", booking: "Booking" },
+    scores: (name, xg) => `${name} scores${xg !== undefined ? ` from a ${xg.toFixed(2)} xG chance` : ""}.`,
+    ruledOut: (name) => `${name}'s goal is ruled out after review; the score is corrected.`,
+    sentOff: (name) => `${name} is sent off.`,
+    goesClose: (name, xg, outcome) => `${name} goes close: ${xg.toFixed(2)} xG, ${outcome}.`,
+    denies: (name, xg) => `${name} denies a ${xg.toFixed(2)} xG chance.`,
+    booked: (name) => `${name} is booked.`
+  },
+  es: {
+    title: { goal: "GOL", disallowed_goal: "Gol anulado", red_card: "Tarjeta roja", big_chance: "Ocasión clara", key_save: "Parada clave", booking: "Amonestación" },
+    scores: (name, xg) => `Gol de ${name}${xg !== undefined ? ` en una ocasión de ${xg.toFixed(2)} xG` : ""}.`,
+    ruledOut: (name) => `El gol de ${name} se anula tras la revisión; el marcador se corrige.`,
+    sentOff: (name) => `${name} es expulsado.`,
+    goesClose: (name, xg) => `${name} roza el gol: ocasión de ${xg.toFixed(2)} xG.`,
+    denies: (name, xg) => `${name} detiene una ocasión de ${xg.toFixed(2)} xG.`,
+    booked: (name) => `${name} ve la tarjeta amarilla.`
+  },
+  fr: {
+    title: { goal: "BUT", disallowed_goal: "But refusé", red_card: "Carton rouge", big_chance: "Grosse occasion", key_save: "Arrêt décisif", booking: "Avertissement" },
+    scores: (name, xg) => `But de ${name}${xg !== undefined ? ` sur une occasion à ${xg.toFixed(2)} xG` : ""}.`,
+    ruledOut: (name) => `Le but de ${name} est refusé après vérification ; le score est corrigé.`,
+    sentOff: (name) => `${name} est expulsé.`,
+    goesClose: (name, xg) => `${name} passe tout près : occasion à ${xg.toFixed(2)} xG.`,
+    denies: (name, xg) => `${name} repousse une occasion à ${xg.toFixed(2)} xG.`,
+    booked: (name) => `${name} reçoit un carton jaune.`
+  }
+};
+
+export function highlightKindLabel(kind: HighlightKind, language: Language): string {
+  return PHRASES[language].title[kind];
+}
+
+/** Fixed on-screen strings for the rendered reel. */
+export const REEL_TEXT: Record<Language, { intro: string; outro: string; moment: (index: number, total: number) => string; moments: (count: number) => string; matchTime: string; dataReel: string; footageReel: string }> = {
+  en: { intro: "MATCHLENS HIGHLIGHTS", outro: "FULL REEL", moment: (i, n) => `MOMENT ${i} OF ${n}`, moments: (n) => `${n} moments · auto-selected from the verified event feed`, matchTime: "match time", dataReel: "SYNTHETIC DATA REEL", footageReel: "YOUR FOOTAGE · SYNTHETIC EVENT OVERLAYS" },
+  es: { intro: "RESUMEN MATCHLENS", outro: "RESUMEN COMPLETO", moment: (i, n) => `JUGADA ${i} DE ${n}`, moments: (n) => `${n} jugadas · seleccionadas automáticamente de los eventos verificados`, matchTime: "tiempo de partido", dataReel: "RESUMEN CON DATOS SINTÉTICOS", footageReel: "TU VÍDEO · GRÁFICOS DE EVENTOS SINTÉTICOS" },
+  fr: { intro: "RÉSUMÉ MATCHLENS", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "VOTRE VIDÉO · HABILLAGE D'ÉVÉNEMENTS SYNTHÉTIQUES" }
+};
+
+function defaultTitle(kind: HighlightKind, minute: number, name: string, team: string, language: Language): string {
+  return `${minute}' ${PHRASES[language].title[kind]} · ${name} (${team})`;
+}
+
+function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, byId: Map<string, MatchEvent>, language: Language): string {
+  const phrases = PHRASES[language];
   switch (kind) {
-    case "goal": return `${minute}' GOAL · ${name} (${team})`;
-    case "disallowed_goal": return `${minute}' Goal ruled out · ${name} (${team})`;
-    case "red_card": return `${minute}' Red card · ${name} (${team})`;
-    case "big_chance": return `${minute}' Big chance · ${name} (${team})`;
-    case "key_save": return `${minute}' Key save · ${name} (${team})`;
-    case "booking": return `${minute}' Booking · ${name} (${team})`;
+    case "goal": return phrases.scores(name, event.xg);
+    case "disallowed_goal": return phrases.ruledOut(name);
+    case "red_card": return phrases.sentOff(name);
+    case "big_chance": return phrases.goesClose(name, event.xg ?? 0, event.outcome);
+    case "key_save": {
+      const shot = event.relatedEventId ? byId.get(event.relatedEventId) : undefined;
+      return phrases.denies(name, shot?.xg ?? 0);
+    }
+    case "booking": return phrases.booked(name);
   }
 }
 
-function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, byId: Map<string, MatchEvent>): string {
-  switch (kind) {
-    case "goal": return `${name} scores${event.xg !== undefined ? ` from a ${event.xg.toFixed(2)} xG chance` : ""}.`;
-    case "disallowed_goal": return `${name}'s goal is ruled out after review; the score is corrected.`;
-    case "red_card": return `${name} is sent off.`;
-    case "big_chance": return `${name} goes close: ${(event.xg ?? 0).toFixed(2)} xG, ${event.outcome}.`;
-    case "key_save": {
-      const shot = event.relatedEventId ? byId.get(event.relatedEventId) : undefined;
-      return `${name} denies a ${(shot?.xg ?? 0).toFixed(2)} xG chance.`;
-    }
-    case "booking": return `${name} is booked.`;
+/** Storyline captions in the requested language; English is the fallback when the localizer has not produced one. */
+function storylineCaption(storyline: Storyline | undefined, language: Language): { text: string; language: Language } | null {
+  if (!storyline) return null;
+  for (const candidate of language === "en" ? (["en"] as Language[]) : [language, "en" as Language]) {
+    const text = storyline.overlay[candidate]?.trim() || storyline.headline[candidate]?.trim();
+    if (text) return { text, language: candidate };
   }
+  return null;
 }
 
 function scoreAt(events: MatchEvent[], second: number): { home: number; away: number } {
@@ -158,9 +216,10 @@ function onAirStorylines(storylines: Storyline[]): Storyline[] {
 export function buildHighlightReel(
   fixture: MatchFixture,
   storylines: Storyline[] = [],
-  options: { maxClips?: number; uptoSecond?: number } = {}
+  options: { maxClips?: number; uptoSecond?: number; language?: Language } = {}
 ): HighlightReel {
-  const maxClips = Math.max(1, options.maxClips ?? DEFAULT_MAX_CLIPS);
+  const language = options.language ?? "en";
+  const maxClips= Math.max(1, options.maxClips ?? DEFAULT_MAX_CLIPS);
   const upto = options.uptoSecond ?? fixture.durationSeconds;
   const events = latestRevisions(fixture.events).filter((event) => eventSecondOf(event) <= upto);
   const byId = new Map(events.map((event) => [event.id, event]));
@@ -215,7 +274,9 @@ export function buildHighlightReel(
       const { event, kind } = candidate;
       const name = playerName(fixture, event.playerId);
       const storyline = storylineByEvent.get(event.id);
-      const caption = storyline?.overlay.en?.trim() || storyline?.headline.en?.trim() || defaultCaption(kind, event, name, byId);
+      const fromStoryline = storylineCaption(storyline, language);
+      const caption = fromStoryline?.text ?? defaultCaption(kind, event, name, byId, language);
+      const captionLanguage = fromStoryline?.language ?? language;
       return {
         id: `clip-${String(index + 1).padStart(2, "0")}`,
         kind,
@@ -230,8 +291,9 @@ export function buildHighlightReel(
         minute: event.minute,
         teamId: event.teamId,
         playerId: event.playerId,
-        title: defaultTitle(kind, event.minute, name, teamShort(fixture, event.teamId)),
+        title: defaultTitle(kind, event.minute, name, teamShort(fixture, event.teamId), language),
         caption,
+        captionLanguage,
         storylineId: storyline?.id,
         importance: candidate.importance,
         scoreAfter: scoreAt(events, candidate.end)
@@ -240,6 +302,7 @@ export function buildHighlightReel(
 
   return {
     fixtureId: fixture.id,
+    language,
     clips,
     totalMatchSeconds: clips.reduce((sum, clip) => sum + (clip.endSecond - clip.startSecond), 0)
   };

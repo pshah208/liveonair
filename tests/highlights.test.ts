@@ -105,6 +105,26 @@ test("live views with several revisions of a goal count only the latest revision
   assert.ok(last.scoreAfter.home + last.scoreAfter.away <= goals);
 });
 
+test("reel localizes titles and uses translated storyline captions with English fallback", () => {
+  const match = fixture();
+  const goals = match.events.filter((event) => event.type === "goal" && !event.rescinded);
+  const translated = storyline(goals[0].id, "approved", "Family legacy goal");
+  translated.overlay.es = "Gol de legado familiar";
+  const untranslated = storyline(goals[1].id, "approved", "Comeback complete");
+  const reel = buildHighlightReel(match, [translated, untranslated], { language: "es" });
+  assert.equal(reel.language, "es");
+  const first = reel.clips.find((clip) => clip.keyEventId === goals[0].id)!;
+  assert.equal(first.caption, "Gol de legado familiar");
+  assert.equal(first.captionLanguage, "es");
+  assert.match(first.title, /GOL ·/u);
+  const second = reel.clips.find((clip) => clip.keyEventId === goals[1].id)!;
+  assert.equal(second.caption, "Comeback complete");
+  assert.equal(second.captionLanguage, "en");
+  const french = buildHighlightReel(match, [], { language: "fr" });
+  assert.ok(french.clips.every((clip) => clip.captionLanguage === "fr"));
+  assert.ok(french.clips.some((clip) => /^But de /u.test(clip.caption)));
+});
+
 test("cut list maps match time to recording time with half-time break", () => {
   assert.equal(formatTimecode(3725.5), "01:02:05.500");
   assert.equal(toRecordingSeconds(600, { kickoffOffsetSeconds: 120, halftimeBreakSeconds: 900 }), 720);

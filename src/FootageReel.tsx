@@ -186,7 +186,7 @@ export function FootageReel({ fixture, reel, model, seekRequest, onActiveClip, p
       await stopped;
       stream.getTracks().forEach((track) => track.stop());
       const extension = mimeType.includes("mp4") ? "mp4" : "webm";
-      downloadBlob(`${fixture.id}-footage-highlights.${extension}`, new Blob(chunks, { type: mimeType.split(";")[0] }));
+      downloadBlob(`${fixture.id}-footage-highlights-${reel.language}.${extension}`, new Blob(chunks, { type: mimeType.split(";")[0] }));
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Video export failed.");
     } finally {
