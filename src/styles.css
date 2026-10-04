@@ -324,6 +324,18 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .reel__controls { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; }
 .reel__controls .mono { font-size: 0.85rem; color: var(--cp-text-muted); }
 .reel__clips { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 520px; overflow-y: auto; }
+.reel__source { margin-bottom: 12px; }
+.footage__video { display: none; }
+.footage__intake { display: grid; gap: 12px; padding: 16px; border: 1px dashed var(--cp-border-strong); border-radius: var(--radius-control); background: var(--cp-surface-soft); }
+.footage__file { position: relative; justify-self: start; cursor: pointer; }
+.footage__file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.footage__file.is-disabled { opacity: 0.55; cursor: not-allowed; }
+.footage__file.is-disabled input { cursor: not-allowed; }
+.footage__progress { height: 6px; border-radius: 3px; background: var(--cp-border); overflow: hidden; }
+.footage__progress span { display: block; height: 100%; background: var(--cp-accent); }
+.footage__name { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.checkbox { display: flex; gap: 10px; align-items: flex-start; font-size: 0.9rem; line-height: 1.4; }
+.checkbox input { margin-top: 3px; accent-color: var(--cp-accent); }
 .clip-row { width: 100%; text-align: left; display: grid; gap: 2px; padding: 8px 10px; border-radius: var(--radius-control); border: 1px solid var(--cp-border); background: var(--cp-surface); }
 .clip-row:hover { border-color: var(--cp-border-strong); }
 .clip-row.is-active { border-color: var(--cp-accent); background: var(--cp-accent-soft); }

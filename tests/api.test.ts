@@ -227,6 +227,8 @@ test("CSP is set for SPA responses", async () => {
     assert.equal(response.status, 200);
     const csp = response.headers.get("content-security-policy") ?? "";
     assert.match(csp, /script-src 'self' 'sha256-/u);
+    assert.match(csp, /media-src 'self' blob:/u);
+    assert.doesNotMatch(csp, /connect-src[^;]*blob:/u);
     const { hashInlineScript } = await import("../server/narrator.js");
     assert.ok(csp.includes(hashInlineScript("\n  window.__theme='dark';\n")));
   });

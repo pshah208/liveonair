@@ -127,6 +127,8 @@ function buildCspHeader(staticMeta: StaticMeta): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self' data:",
+    // Local footage is played from an object URL; it never leaves the browser.
+    "media-src 'self' blob:",
     "connect-src 'self'",
     "base-uri 'self'",
     "form-action 'self'",

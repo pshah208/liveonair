@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildCutList, buildFfmpegScript, buildHighlightReel, formatTimecode, type HighlightKind } from "../shared/highlights.js";
+import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightKind } from "../shared/highlights.js";
 import type { Storyline } from "../shared/platform.js";
 import type { MatchFixture } from "../shared/types.js";
+import { FootageReel } from "./FootageReel.js";
 import { createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
 import { downloadBlob, downloadJson, formatClock } from "./utils.js";
 
@@ -36,8 +37,9 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
   const [time, setTime] = useState(0);
   const [exporting, setExporting] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [kickoffOffset, setKickoffOffset] = useState(0);
-  const [halftimeBreak, setHalftimeBreak] = useState(900);
+  const [source, setSource] = useState<"data" | "footage">("data");
+  const [footageClip, setFootageClip] = useState(-1);
+  const [seekRequest, setSeekRequest] = useState<{ index: number; nonce: number } | null>(null);
   const recorderSupported = useMemo(() => Boolean(pickMimeType()), []);
 
   const reel = useMemo(() => buildHighlightReel(fixture, storylines, { uptoSecond }), [fixture, storylines, uptoSecond]);
@@ -57,6 +59,8 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
     setTime(timeRef.current);
     draw(timeRef.current);
   }, [model]);
+
+  useEffect(() => { if (source === "data") draw(timeRef.current); }, [source]);
 
   useEffect(() => {
     if (!playing || !model) return;
@@ -130,14 +134,24 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
   }
 
   function downloadCutList() {
-    const options = { kickoffOffsetSeconds: kickoffOffset, halftimeBreakSeconds: halftimeBreak };
-    downloadJson(`${fixture.id}-cut-list.json`, { fixtureId: fixture.id, options, clips: reel.clips, cutList: buildCutList(reel, options) });
-    downloadBlob(`${fixture.id}-cut-highlights.sh`, new Blob([buildFfmpegScript(reel, options)], { type: "text/x-shellscript" }));
+    downloadJson(`${fixture.id}-cut-list.json`, { fixtureId: fixture.id, options: {}, clips: reel.clips, cutList: buildCutList(reel) });
+    downloadBlob(`${fixture.id}-cut-highlights.sh`, new Blob([buildFfmpegScript(reel)], { type: "text/x-shellscript" }));
+  }
+
+  function pickClip(index: number) {
+    if (!model) return;
+    if (source === "footage") { setSeekRequest({ index, nonce: Date.now() }); return; }
+    setPlaying(false);
+    seek(model.timeline.clipStarts[index] ?? 0);
+  }
+
+  function switchSource(next: "data" | "footage") {
+    setPlaying(false);
+    setSource(next);
   }
 
   const activeSegment = model ? segmentAt(model.timeline, time) : null;
-  const activeClipIndex = activeSegment && "index" in activeSegment ? activeSegment.index : -1;
-  const cutList = buildCutList(reel, { kickoffOffsetSeconds: kickoffOffset, halftimeBreakSeconds: halftimeBreak });
+  const activeClipIndex = source === "footage" ? footageClip : activeSegment && "index" in activeSegment ? activeSegment.index : -1;
 
   return (
     <section className="panel reel" aria-labelledby="reel-title">
@@ -153,12 +167,20 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
       </header>
       <p className="lede">
         MatchLens ranks every verified event (goals, corrections, red cards, big chances, key saves) and cuts a reel around them.
-        Captions come from producer-approved storylines. Synthetic matches have no footage, so the reel is rendered from the event
-        data; with a licensed broadcast feed, the same cut list trims the real video.
+        Captions come from producer-approved storylines. Render it from the event data, or drop in footage you own and MatchLens
+        cuts it and lays the same overlays on top.
       </p>
 
       {model ? (
+        <>
+        <div className="segmented segmented--compact reel__source" role="group" aria-label="Reel source">
+          <button type="button" className={`segmented__item${source === "data" ? " is-active" : ""}`} aria-pressed={source === "data"} onClick={() => switchSource("data")}>Data-rendered</button>
+          <button type="button" className={`segmented__item${source === "footage" ? " is-active" : ""}`} aria-pressed={source === "footage"} onClick={() => switchSource("footage")}>Your footage</button>
+        </div>
         <div className="reel__body">
+          {source === "footage" ? (
+            <FootageReel fixture={fixture} reel={reel} model={model} seekRequest={seekRequest} onActiveClip={setFootageClip} pickMimeType={pickMimeType} />
+          ) : (
           <div className="reel__stage">
             <canvas ref={canvasRef} width={REEL_WIDTH} height={REEL_HEIGHT} className="reel__canvas" aria-label="Highlight reel player" />
             <div className="reel__controls">
@@ -175,11 +197,12 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
             {!recorderSupported && <div className="banner banner--info">This browser can't record canvas video. Use a Chromium-based browser to export.</div>}
             {exportError && <div className="banner banner--danger">{exportError}</div>}
           </div>
+          )}
 
           <ol className="reel__clips">
             {reel.clips.map((clip, index) => (
               <li key={clip.id}>
-                <button type="button" className={`clip-row${index === activeClipIndex ? " is-active" : ""}`} onClick={() => { setPlaying(false); seek(model.timeline.clipStarts[index] ?? 0); }}>
+                <button type="button" className={`clip-row${index === activeClipIndex ? " is-active" : ""}`} onClick={() => pickClip(index)}>
                   <span className={`clip-row__kind clip-row__kind--${clip.kind}`}>{KIND_LABEL[clip.kind]}</span>
                   <span className="clip-row__title">{clip.title}</span>
                   <span className="clip-row__caption">{clip.caption}</span>
@@ -192,37 +215,9 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
             ))}
           </ol>
         </div>
+        </>
       ) : (
         <div className="empty-state">No highlight moments yet. Goals, big chances and corrections will appear here as the match plays.</div>
-      )}
-
-      {reel.clips.length > 0 && (
-        <details className="disclosure">
-          <summary>Cut real broadcast footage with this reel</summary>
-          <p className="subtle-text">
-            Set where kick-off happens in the recording and how long the half-time break is. The download contains the timecoded
-            cut list (JSON) and an ffmpeg script that trims and joins the clips.
-          </p>
-          <div className="control-grid">
-            <label className="field"><span>Kick-off offset (seconds)</span><input type="number" min={0} value={kickoffOffset} onChange={(event) => setKickoffOffset(Math.max(0, Number(event.target.value)))} /></label>
-            <label className="field"><span>Half-time break (seconds)</span><input type="number" min={0} value={halftimeBreak} onChange={(event) => setHalftimeBreak(Math.max(0, Number(event.target.value)))} /></label>
-          </div>
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead><tr><th scope="col">Clip</th><th scope="col">In</th><th scope="col">Out</th><th scope="col">Length</th></tr></thead>
-              <tbody>
-                {cutList.map((entry) => (
-                  <tr key={entry.clipId}>
-                    <td>{entry.title}</td>
-                    <td className="mono">{entry.in}</td>
-                    <td className="mono">{entry.out}</td>
-                    <td className="mono">{formatTimecode(entry.outSeconds - entry.inSeconds).slice(3, 8)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </details>
       )}
     </section>
   );

@@ -117,3 +117,40 @@ test("cut list maps match time to recording time with half-time break", () => {
   assert.match(script, /ffmpeg -y -f concat/u);
   assert.equal((script.match(/-ss /gu) ?? []).length, reel.clips.length);
 });
+
+test("fit mode spreads moments across a short recording without overlap or overrun", () => {
+  const match = fixture();
+  const reel = buildHighlightReel(match);
+  const options = { mode: "fit" as const, recordingSeconds: 300, matchSeconds: match.durationSeconds, kickoffOffsetSeconds: 5 };
+  const entries = buildCutList(reel, options);
+  assert.ok(entries.length > 0);
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    assert.ok(entry.inSeconds >= 5 && entry.outSeconds <= 300, `${entry.clipId} outside recording`);
+    assert.ok(entry.outSeconds - entry.inSeconds >= 0.5);
+    if (index > 0) assert.ok(entry.inSeconds >= entries[index - 1].outSeconds, "clips overlap");
+  }
+  // Key moments keep their relative order and position in the recording.
+  const first = reel.clips.find((clip) => clip.id === entries[0].clipId)!;
+  const expectedKey = 5 + first.keySecond * (295 / match.durationSeconds);
+  const shrink = Math.min(1, (295 * 0.9) / reel.totalMatchSeconds);
+  assert.ok(Math.abs(entries[0].inSeconds - Math.max(5, expectedKey - (first.keySecond - first.startSecond) * shrink)) < 0.001);
+  assert.ok(Math.abs(entries[0].matchInSeconds + (expectedKey - entries[0].inSeconds) - first.keySecond) < 0.001);
+  assert.match(buildFfmpegScript(reel, options), /Fit mode/u);
+});
+
+test("fit mode shortens clips evenly so every moment fits a very short recording", () => {
+  const match = fixture();
+  const reel = buildHighlightReel(match);
+  const entries = buildCutList(reel, { mode: "fit", recordingSeconds: 40, matchSeconds: match.durationSeconds });
+  assert.equal(entries.length, reel.clips.length);
+  const total = entries.reduce((sum, entry) => sum + entry.outSeconds - entry.inSeconds, 0);
+  assert.ok(total <= 40);
+});
+
+test("match-clock mode drops clips past the end of a known recording", () => {
+  const reel = buildHighlightReel(fixture());
+  const entries = buildCutList(reel, { recordingSeconds: 45 * 60 });
+  assert.ok(entries.every((entry) => entry.outSeconds <= 45 * 60));
+  assert.ok(entries.length < reel.clips.length);
+});

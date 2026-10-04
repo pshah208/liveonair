@@ -18,7 +18,9 @@ export interface HighlightClip {
   /** Match-time window in seconds. */
   startSecond: number;
   endSecond: number;
-  /** All feed events inside the window, chronological; used to animate the build-up. */
+  /** Match second of the key event inside the window. */
+  keySecond: number;
+  /** All feedevents inside the window, chronological; used to animate the build-up. */
   eventIds: string[];
   minute: number;
   teamId: TeamId;
@@ -43,7 +45,19 @@ export interface CutListOptions {
   /** Real-time length of the half-time break in the recording, added to second-half timecodes. */
   halftimeBreakSeconds?: number;
   sourceFile?: string;
+  /**
+   * "match-clock" (default) assumes the recording runs in real match time.
+   * "fit" spreads the key moments proportionally across a shorter recording (own or stock footage),
+   * playing in real time and trimming every clip evenly when they would not fit.
+   */
+  mode?: CutListMode;
+  /** Length of the recording; clips are clamped to it when known. Required for "fit". */
+  recordingSeconds?: number;
+  /** Length of the match in seconds; required for "fit". */
+  matchSeconds?: number;
 }
+
+export type CutListMode = "match-clock" | "fit";
 
 export interface CutListEntry {
   clipId: string;
@@ -52,6 +66,8 @@ export interface CutListEntry {
   out: string;
   inSeconds: number;
   outSeconds: number;
+  /** Match second shown at `inSeconds`; clips play in real time, so match time advances 1:1 from here. */
+  matchInSeconds: number;
 }
 
 const WINDOWS: Record<HighlightKind, { pre: number; post: number; base: number }> = {
@@ -206,7 +222,8 @@ export function buildHighlightReel(
         keyEventId: event.id,
         startSecond: candidate.start,
         endSecond: candidate.end,
-        eventIds: events.filter((item) => {
+        keySecond: eventSecondOf(event),
+        eventIds:events.filter((item) => {
           const at = eventSecondOf(item);
           return at >= candidate.start && at <= candidate.end;
         }).map((item) => item.id),
@@ -244,12 +261,41 @@ export function toRecordingSeconds(matchSecond: number, options: CutListOptions 
   return kickoff + matchSecond + breakSeconds;
 }
 
+function clipWindowInRecording(clip: HighlightClip, options: CutListOptions, shrink: number): [number, number, number] {
+  if (options.mode !== "fit") {
+    return [toRecordingSeconds(clip.startSecond, options), toRecordingSeconds(clip.endSecond, options), toRecordingSeconds(clip.keySecond, options)];
+  }
+  const kickoff = options.kickoffOffsetSeconds ?? 0;
+  const usable = Math.max(0, (options.recordingSeconds ?? 0) - kickoff);
+  const scale = options.matchSeconds && options.matchSeconds > 0 ? usable / options.matchSeconds : 1;
+  const keyAt = kickoff + clip.keySecond * scale;
+  return [keyAt - (clip.keySecond - clip.startSecond) * shrink, keyAt + (clip.endSecond - clip.keySecond) * shrink, keyAt];
+}
+
+/** In fit mode, clips are shortened evenly when together they would not fit in the recording. */
+function fitShrink(reel: HighlightReel, options: CutListOptions): number {
+  if (options.mode !== "fit" || !options.recordingSeconds) return 1;
+  const usable = Math.max(0, options.recordingSeconds - (options.kickoffOffsetSeconds ?? 0));
+  const total = reel.clips.reduce((sum, clip) => sum + clip.endSecond - clip.startSecond, 0);
+  return total > 0 ? Math.min(1, (usable * 0.9) / total) : 1;
+}
+
 export function buildCutList(reel: HighlightReel, options: CutListOptions = {}): CutListEntry[] {
-  return reel.clips.map((clip) => {
-    const inSeconds = toRecordingSeconds(clip.startSecond, options);
-    const outSeconds = toRecordingSeconds(clip.endSecond, options);
-    return { clipId: clip.id, title: clip.title, in: formatTimecode(inSeconds), out: formatTimecode(outSeconds), inSeconds, outSeconds };
-  });
+  const floor = options.kickoffOffsetSeconds ?? 0;
+  const ceiling = options.recordingSeconds ?? Number.POSITIVE_INFINITY;
+  const shrink = fitShrink(reel, options);
+  const entries: CutListEntry[] = [];
+  let previousOut = floor;
+  for (const clip of reel.clips) {
+    const [rawIn, rawOut, keyAt] = clipWindowInRecording(clip, options, shrink);
+    // Never re-use footage from the previous clip and never run past the end of the recording.
+    const inSeconds = Math.max(rawIn, previousOut, 0);
+    const outSeconds = Math.min(rawOut, ceiling);
+    if (outSeconds - inSeconds < 0.5) continue;
+    previousOut = outSeconds;
+    entries.push({ clipId: clip.id, title: clip.title, in: formatTimecode(inSeconds), out: formatTimecode(outSeconds), inSeconds, outSeconds, matchInSeconds: clip.keySecond - (keyAt - inSeconds) });
+  }
+  return entries;
 }
 
 export function buildFfmpegScript(reel: HighlightReel, options: CutListOptions = {}): string {
@@ -257,8 +303,10 @@ export function buildFfmpegScript(reel: HighlightReel, options: CutListOptions =
   const entries = buildCutList(reel, options);
   const lines = [
     "#!/usr/bin/env bash",
-    "# MatchLens highlight cut list. Point SOURCE at a licensed recording of this match.",
-    `# Kick-off offset: ${options.kickoffOffsetSeconds ?? 0}s, half-time break: ${options.halftimeBreakSeconds ?? 0}s.`,
+    "# MatchLens highlight cut list. Point SOURCE at footage you own or are licensed to use.",
+    options.mode === "fit"
+      ? `# Fit mode: key moments spread across a ${Math.round(options.recordingSeconds ?? 0)}s recording, kick-off offset ${options.kickoffOffsetSeconds ?? 0}s.`
+      : `# Kick-off offset: ${options.kickoffOffsetSeconds ?? 0}s, half-time break: ${options.halftimeBreakSeconds ?? 0}s.`,
     "set -euo pipefail",
     `SOURCE="\${1:-${source}}"`,
     ": > clips.txt"

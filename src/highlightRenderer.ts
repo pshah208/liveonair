@@ -226,7 +226,7 @@ function wrap(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, siz
 function drawScorebug(ctx: CanvasRenderingContext2D, model: ReelModel, second: number) {
   const { palette, fixture } = model;
   const score = scoreAt(model, second);
-  roundRect(ctx, 24, 20, 330, 52, 10);
+  roundRect(ctx, 24, 20, 360, 52, 10);
   ctx.fillStyle = palette.surface;
   ctx.fill();
   ctx.strokeStyle = palette.border;
@@ -235,15 +235,15 @@ function drawScorebug(ctx: CanvasRenderingContext2D, model: ReelModel, second: n
   ctx.fillStyle = palette.accent;
   ctx.fillRect(24, 20, 6, 52);
   drawText(ctx, fixture.home.shortName, 48, 55, 22, palette.text, 700);
-  drawText(ctx, `${score.home} – ${score.away}`, 160, 55, 26, palette.text, 800, "center");
-  drawText(ctx, fixture.away.shortName, 230, 55, 22, palette.text, 700, "right");
-  drawText(ctx, `${Math.floor(second / 60)}'`, 330, 55, 20, palette.textMuted, 700, "right");
+  drawText(ctx, `${score.home} – ${score.away}`, 180, 55, 26, palette.text, 800, "center");
+  drawText(ctx, fixture.away.shortName, 236, 55, 22, palette.text, 700);
+  drawText(ctx, `${Math.floor(second / 60)}'`, 368, 55, 20, palette.textMuted, 700, "right");
 }
 
-function drawBrand(ctx: CanvasRenderingContext2D, model: ReelModel) {
+function drawBrand(ctx: CanvasRenderingContext2D, model: ReelModel, subtitle = "SYNTHETIC DATA REEL") {
   const { palette } = model;
   drawText(ctx, "MatchLens", REEL_WIDTH - 24, 46, 24, palette.text, 800, "right");
-  drawText(ctx, "SYNTHETIC DATA REEL", REEL_WIDTH - 24, 68, 12, palette.textMuted, 700, "right");
+  drawText(ctx, subtitle, REEL_WIDTH - 24, 68, 12, palette.textMuted, 700, "right");
 }
 
 function drawTrail(ctx: CanvasRenderingContext2D, model: ReelModel, clip: HighlightClip, second: number) {
@@ -410,4 +410,60 @@ export function renderReelFrame(ctx: CanvasRenderingContext2D, model: ReelModel,
 
 function formatMinute(second: number): string {
   return `${Math.floor(second / 60)}'${String(Math.floor(second % 60)).padStart(2, "0")}`;
+}
+
+// ------------------------------------------------------------------ footage mode
+
+export interface FootageFrame {
+  clip: HighlightClip;
+  clipIndex: number;
+  clipCount: number;
+  /** Match second the current footage frame represents. */
+  matchSecond: number;
+  /** 0–1 progress through the whole footage reel. */
+  progress: number;
+}
+
+function drawVideoCover(ctx: CanvasRenderingContext2D, video: HTMLVideoElement) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return;
+  const scale = Math.max(REEL_WIDTH / vw, REEL_HEIGHT / vh);
+  const w = vw * scale;
+  const h = vh * scale;
+  ctx.drawImage(video, (REEL_WIDTH - w) / 2, (REEL_HEIGHT - h) / 2, w, h);
+}
+
+function drawMomentChip(ctx: CanvasRenderingContext2D, model: ReelModel, frame: FootageFrame) {
+  const { palette } = model;
+  const label = `MOMENT ${frame.clipIndex + 1} OF ${frame.clipCount} · ${kindLabel(frame.clip)}`;
+  ctx.font = `800 14px "Segoe UI", Aptos, Calibri, sans-serif`;
+  const width = ctx.measureText(label).width + 32;
+  const x = (REEL_WIDTH - width) / 2;
+  roundRect(ctx, x, 28, width, 34, 10);
+  ctx.fillStyle = palette.surface;
+  ctx.fill();
+  drawText(ctx, label, REEL_WIDTH / 2, 50, 14, palette.accent, 800, "center");
+}
+
+/** Composites licensed or self-recorded footage with MatchLens overlays driven by the synthetic events. */
+export function renderFootageFrame(ctx: CanvasRenderingContext2D, model: ReelModel, video: HTMLVideoElement | null, frame: FootageFrame | null) {
+  const { palette } = model;
+  ctx.fillStyle = palette.bg;
+  ctx.fillRect(0, 0, REEL_WIDTH, REEL_HEIGHT);
+  if (video) drawVideoCover(ctx, video);
+  roundRect(ctx, REEL_WIDTH - 312, 20, 300, 58, 10);
+  ctx.fillStyle = palette.surface;
+  ctx.fill();
+  drawBrand(ctx, model, "YOUR FOOTAGE · SYNTHETIC EVENT OVERLAYS");
+  if (!frame) return;
+  drawScorebug(ctx, model, frame.matchSecond);
+  drawMomentChip(ctx, model, frame);
+  const appear = (frame.matchSecond - frame.clip.keySecond + 0.4) / 0.8;
+  if (appear > 0) drawLowerThird(ctx, model, frame.clip, appear);
+  const y = REEL_HEIGHT - 6;
+  ctx.fillStyle = palette.border;
+  ctx.fillRect(0, y, REEL_WIDTH, 6);
+  ctx.fillStyle = palette.accent;
+  ctx.fillRect(0, y, Math.min(1, Math.max(0, frame.progress)) * REEL_WIDTH, 6);
 }
