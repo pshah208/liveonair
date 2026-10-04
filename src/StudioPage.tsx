@@ -1,190 +1,368 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FixtureSummary, Language, MatchFixture } from "../shared/types.js";
-import type { ArchiveSummary, GenerateMatchRequest, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline, VerifiedFact } from "../shared/platform.js";
+import type { AppHealth, FixtureSummary, Language, MatchFixture, MatchSnapshot, NarrativeResponse } from "../shared/types.js";
+import type { ArchiveSummary, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline, VerifiedFact } from "../shared/platform.js";
 import { api } from "./api.js";
-import { FactTicker, OverlayPreview, Pitch, RecentEventsList, Scorebug, Storyboard, StorylineQueue } from "./components.js";
+import { BroadcastBar, EventFeed, FactTicker, LiveStats, MatchIntelligence, OverlayPreview, Panel, Pitch, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
+import { HighlightReelPanel } from "./HighlightReel.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
-import { clamp, computeScoreFromEvents, createAsyncState, downloadJson, formatClock, getErrorMessage, liveTransportLabel, mergeById, SCENARIOS, sortFactsNewestFirst, sortStudioStorylines, type AsyncState } from "./utils.js";
+import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
+import {
+  clamp,
+  computeScoreFromEvents,
+  downloadJson,
+  getErrorMessage,
+  labelize,
+  LANGUAGE_LABEL,
+  LANGUAGES,
+  liveTransportLabel,
+  mergeById,
+  SCENARIOS,
+  sortFactsNewestFirst,
+  sortStudioStorylines,
+  type Theme
+} from "./utils.js";
 
-type DeskHealth = { mode: "foundry-agents" | "unconfigured"; agents: string[]; retrieval: string; };
+type Tab = "live" | "recap";
 type StartMode = "fixture" | "matchlab";
+type Audience = "analyst" | "casual";
 
-export function StudioPage() {
-  const [fixtures, setFixtures] = useState<AsyncState<FixtureSummary[]>>(createAsyncState<FixtureSummary[]>(true));
-  const [archiveSummary, setArchiveSummary] = useState<AsyncState<ArchiveSummary>>(createAsyncState<ArchiveSummary>(true));
-  const [deskHealth, setDeskHealth] = useState<AsyncState<DeskHealth>>(createAsyncState<DeskHealth>(true));
-  const [liveStatus, setLiveStatus] = useState<AsyncState<LiveStatus>>(createAsyncState<LiveStatus>(true));
-  const [liveFixture, setLiveFixture] = useState<AsyncState<MatchFixture>>(createAsyncState<MatchFixture>(true));
-  const [storylines, setStorylines] = useState<AsyncState<Storyline[]>>(createAsyncState<Storyline[]>(true));
-  const [facts, setFacts] = useState<AsyncState<VerifiedFact[]>>(createAsyncState<VerifiedFact[]>(true));
-  const [storyboard, setStoryboard] = useState<AsyncState<RecapStoryboard>>(createAsyncState<RecapStoryboard>());
+type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void };
+
+export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps) {
+  const [tab, setTab] = useState<Tab>("live");
+  const [health, setHealth] = useState<AppHealth | null>(null);
+  const [desk, setDesk] = useState<DeskHealth | null>(null);
+  const [fixtures, setFixtures] = useState<FixtureSummary[]>([]);
+  const [archive, setArchive] = useState<ArchiveSummary | null>(null);
+  const [status, setStatus] = useState<LiveStatus | null>(null);
+  const [fixture, setFixture] = useState<MatchFixture | null>(null);
+  const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null);
+  const [storylines, setStorylines] = useState<Storyline[]>([]);
+  const [facts, setFacts] = useState<VerifiedFact[]>([]);
+  const [storyboard, setStoryboard] = useState<RecapStoryboard | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+
   const [startMode, setStartMode] = useState<StartMode>("fixture");
-  const [selectedFixtureId, setSelectedFixtureId] = useState("");
+  const [fixtureId, setFixtureId] = useState("");
   const [scenario, setScenario] = useState<ScenarioKind>("comeback");
-  const [seed, setSeed] = useState<number>(2025);
+  const [seed, setSeed] = useState(2025);
   const [homeClubId, setHomeClubId] = useState("");
   const [awayClubId, setAwayClubId] = useState("");
-  const [speed, setSpeed] = useState<number>(20);
-  const [stress, setStress] = useState(false);
-  const [pageError, setPageError] = useState<string | null>(null);
+  const [speed, setSpeed] = useState(30);
   const [submitting, setSubmitting] = useState(false);
+
+  const [deskLanguage, setDeskLanguage] = useState<Language>("en");
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(null);
-  const [overlayLanguage, setOverlayLanguage] = useState<Language>("en");
-  const [queueLoadingById, setQueueLoadingById] = useState<Record<string, boolean>>({});
-  const [queueErrorById, setQueueErrorById] = useState<Record<string, string | undefined>>({});
-  const storyboardAbortRef = useRef<AbortController | null>(null);
-  const liveFixtureAbortRef = useRef<AbortController | null>(null);
+  const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
+  const [correctingId, setCorrectingId] = useState<string | null>(null);
+  const [pendingById, setPendingById] = useState<Record<string, boolean>>({});
+  const [reviewErrorById, setReviewErrorById] = useState<Record<string, string | undefined>>({});
+
+  const [audience, setAudience] = useState<Audience>("analyst");
+  const [recapLanguage, setRecapLanguage] = useState<Language>("en");
+  const [narrative, setNarrative] = useState<NarrativeResponse | null>(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
+  const [narrativeError, setNarrativeError] = useState<string | null>(null);
+
+  const matchIdRef = useRef<string | undefined>(undefined);
+  const lastFixtureFetch = useRef(0);
+  const fixtureTimer = useRef<number | null>(null);
+
+  // ---------------------------------------------------------------- data loading
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([
-      api.getFixtures(controller.signal), api.getArchiveSummary(controller.signal), api.getStudioHealth(controller.signal), api.getLiveStatus(controller.signal), api.getLiveFixture(controller.signal), api.getStudioStorylines(controller.signal), api.getStudioFacts(controller.signal), api.getStudioStoryboard(controller.signal)
-    ]).then(([fixtureList, archive, health, status, fixture, storylineList, factList, board]) => {
-      setFixtures({ data: fixtureList ?? [], loading: false, error: null });
-      if ((fixtureList ?? []).length > 0) setSelectedFixtureId((current) => current || fixtureList?.[0]?.id || "");
-      setArchiveSummary({ data: archive, loading: false, error: null });
-      setDeskHealth({ data: health, loading: false, error: null });
-      setLiveStatus({ data: status, loading: false, error: null });
-      currentMatchIdRef.current = status?.matchId;
-      setLiveFixture({ data: fixture, loading: false, error: null });
-      setStorylines({ data: sortStudioStorylines(storylineList ?? []), loading: false, error: null });
-      setFacts({ data: sortFactsNewestFirst(factList ?? []), loading: false, error: null });
-      setStoryboard({ data: board, loading: false, error: null });
-    }).catch((error: unknown) => setPageError(getErrorMessage(error)));
+    const { signal } = controller;
+    void Promise.allSettled([
+      api.getHealth(signal).then(setHealth),
+      api.getStudioHealth(signal).then(setDesk),
+      api.getFixtures(signal).then((list) => { setFixtures(list ?? []); setFixtureId((current) => current || list?.[0]?.id || ""); }),
+      api.getArchiveSummary(signal).then(setArchive),
+      api.getLiveStatus(signal).then((data) => { if (data) { matchIdRef.current = data.matchId; setStatus(data); } }),
+      api.getLiveFixture(signal).then(setFixture),
+      api.getStudioStorylines(signal).then((list) => setStorylines(sortStudioStorylines(list ?? []))),
+      api.getStudioFacts(signal).then((list) => setFacts(sortFactsNewestFirst(list ?? []))),
+      api.getStudioStoryboard(signal).then(setStoryboard)
+    ]).then((results) => {
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed && failed.status === "rejected" && !signal.aborted) setPageError(getErrorMessage(failed.reason));
+    });
     return () => controller.abort();
   }, []);
 
-  const currentMatchIdRef = useRef<string | undefined>(undefined);
-  const lastFixtureRefreshRef = useRef(0);
-
-  // A match started from another console (or a new match after full time) must not inherit the previous match's desk state.
-  function adoptStatus(status: LiveStatus) {
-    if (status.matchId && currentMatchIdRef.current && status.matchId !== currentMatchIdRef.current) {
-      setStorylines({ data: [], loading: false, error: null });
-      setFacts({ data: [], loading: false, error: null });
-      setStoryboard({ data: null, loading: false, error: null });
-      setSelectedStorylineId(null);
-    }
-    if (status.matchId) currentMatchIdRef.current = status.matchId;
-    setLiveStatus({ data: status, loading: false, error: null });
+  function resetMatchState() {
+    setStorylines([]);
+    setFacts([]);
+    setStoryboard(null);
+    setSnapshot(null);
+    setNarrative(null);
+    setSelectedStorylineId(null);
+    setSelectedInsightId(null);
   }
 
-  function refreshLiveFixtureThrottled() {
-    const now = Date.now();
-    if (now - lastFixtureRefreshRef.current < 2_000) return;
-    lastFixtureRefreshRef.current = now;
-    liveFixtureAbortRef.current?.abort();
-    const controller = new AbortController();
-    liveFixtureAbortRef.current = controller;
-    void api.getLiveFixture(controller.signal)
-      .then((data) => !controller.signal.aborted && setLiveFixture({ data, loading: false, error: null }))
-      .catch((error: unknown) => !controller.signal.aborted && setLiveFixture((current) => ({ data: current.data, loading: false, error: getErrorMessage(error) })));
+  function adoptStatus(next: LiveStatus) {
+    if (next.matchId && matchIdRef.current && next.matchId !== matchIdRef.current) resetMatchState();
+    if (next.matchId) matchIdRef.current = next.matchId;
+    setStatus(next);
   }
 
-  useLiveStream({ enabled: true, role: "studio", persona: "analyst", language: overlayLanguage, onMessage: (message) => {
-    if (message.type === "status") { adoptStatus(message.status); if (message.status.state === "finished") void refreshStoryboard(); return; }
-    if (message.type === "snapshot") { adoptStatus(message.status); refreshLiveFixtureThrottled(); return; }
-    if (message.type === "storyline") {
-      if (currentMatchIdRef.current && message.storyline.matchId !== currentMatchIdRef.current) return;
-      setStorylines((current) => ({ data: sortStudioStorylines(mergeById(current.data ?? [], message.storyline)), loading: false, error: null }));
-      return;
-    }
-    if (message.type === "fact") {
-      if (currentMatchIdRef.current && message.fact.matchId !== currentMatchIdRef.current) return;
-      setFacts((current) => ({ data: sortFactsNewestFirst(mergeById(current.data ?? [], message.fact)), loading: false, error: null }));
-    }
-  }});
-
-  useEffect(() => {
-    liveFixtureAbortRef.current?.abort();
-    const controller = new AbortController();
-    liveFixtureAbortRef.current = controller;
-    void api.getLiveFixture(controller.signal).then((data) => !controller.signal.aborted && setLiveFixture({ data, loading: false, error: null })).catch((error: unknown) => !controller.signal.aborted && setLiveFixture({ data: null, loading: false, error: getErrorMessage(error) }));
-    return () => controller.abort();
-  }, [liveStatus.data?.matchId, liveStatus.data?.state]);
-
-  useEffect(() => () => { storyboardAbortRef.current?.abort(); liveFixtureAbortRef.current?.abort(); }, []);
-
-  const approvedStorylines = useMemo(() => (storylines.data ?? []).filter((storyline) => storyline.status === "approved"), [storylines.data]);
-  const selectedStoryline = approvedStorylines.find((storyline) => storyline.id === selectedStorylineId) ?? approvedStorylines[0] ?? null;
-  const score = computeScoreFromEvents(liveFixture.data);
-  const activeGoals = liveFixture.data?.events.filter((event) => event.type === "goal" && !event.rescinded) ?? [];
+  // Snapshots arrive several times a second; fetch the full fixture at most every 1.5 s.
+  function refreshFixture() {
+    const wait = 1_500 - (Date.now() - lastFixtureFetch.current);
+    if (fixtureTimer.current !== null) return;
+    fixtureTimer.current = window.setTimeout(() => {
+      fixtureTimer.current = null;
+      lastFixtureFetch.current = Date.now();
+      void api.getLiveFixture().then(setFixture).catch(() => undefined);
+    }, Math.max(0, wait));
+  }
 
   async function refreshStoryboard() {
-    storyboardAbortRef.current?.abort();
-    const controller = new AbortController();
-    storyboardAbortRef.current = controller;
-    setStoryboard((current) => ({ ...current, loading: true, error: null }));
-    try {
-      const data = await api.getStudioStoryboard(controller.signal);
-      if (!controller.signal.aborted) setStoryboard({ data, loading: false, error: null });
-    } catch (error: unknown) {
-      if (!controller.signal.aborted) setStoryboard((current) => ({ data: current.data, loading: false, error: getErrorMessage(error) }));
-    }
+    try { setStoryboard(await api.getStudioStoryboard()); } catch { /* storyboard is optional */ }
   }
+
+  useLiveStream({
+    enabled: true,
+    role: "studio",
+    persona: "analyst",
+    language: "en",
+    onMessage: (message) => {
+      if (message.type === "status") {
+        adoptStatus(message.status);
+        refreshFixture();
+        if (message.status.state === "finished") void refreshStoryboard();
+        return;
+      }
+      if (message.type === "snapshot") {
+        adoptStatus(message.status);
+        setSnapshot(message.snapshot);
+        refreshFixture();
+        return;
+      }
+      if (message.type === "storyline") {
+        if (matchIdRef.current && message.storyline.matchId !== matchIdRef.current) return;
+        setStorylines((current) => sortStudioStorylines(mergeById(current, message.storyline)));
+        return;
+      }
+      if (message.type === "fact") {
+        if (matchIdRef.current && message.fact.matchId !== matchIdRef.current) return;
+        setFacts((current) => sortFactsNewestFirst(mergeById(current, message.fact)));
+      }
+    }
+  });
+
+  useEffect(() => () => { if (fixtureTimer.current !== null) window.clearTimeout(fixtureTimer.current); }, []);
+
+  useEffect(() => {
+    if (tab === "recap") void refreshStoryboard();
+  }, [tab]);
+
+  // ---------------------------------------------------------------- actions
 
   async function handleStart() {
     setSubmitting(true);
     setPageError(null);
     try {
-      const generate: GenerateMatchRequest | undefined = startMode === "matchlab" ? { scenario, seed, homeClubId: homeClubId || undefined, awayClubId: awayClubId || undefined } : undefined;
-      const status = await api.startLive({ fixtureId: startMode === "fixture" ? selectedFixtureId : undefined, generate, speed: clamp(speed, 1, 60), stress });
-      currentMatchIdRef.current = status?.matchId;
-      setLiveStatus({ data: status, loading: false, error: null });
-      const fixture = await api.getLiveFixture();
-      setLiveFixture({ data: fixture, loading: false, error: null });
-      setStorylines({ data: [], loading: false, error: null });
-      setFacts({ data: [], loading: false, error: null });
-      setStoryboard({ data: null, loading: false, error: null });
+      const next = await api.startLive({
+        fixtureId: startMode === "fixture" ? fixtureId : undefined,
+        generate: startMode === "matchlab" ? { scenario, seed, homeClubId: homeClubId || undefined, awayClubId: awayClubId || undefined } : undefined,
+        speed: clamp(speed, 1, 60)
+      });
+      resetMatchState();
+      if (next) { matchIdRef.current = next.matchId; setStatus(next); }
+      setFixture(await api.getLiveFixture());
+      setTab("live");
     } catch (error: unknown) {
       setPageError(getErrorMessage(error));
-    } finally { setSubmitting(false); }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleStop() {
     setSubmitting(true);
-    setPageError(null);
     try {
-      const status = await api.stopLive();
-      setLiveStatus({ data: status, loading: false, error: null });
-      const fixture = await api.getLiveFixture();
-      setLiveFixture({ data: fixture, loading: false, error: null });
+      const next = await api.stopLive();
+      if (next) setStatus(next);
+      setFixture(await api.getLiveFixture());
       void refreshStoryboard();
     } catch (error: unknown) {
       setPageError(getErrorMessage(error));
-    } finally { setSubmitting(false); }
-  }
-
-  async function handleCorrection(eventId: string) {
-    try {
-      const status = await api.sendCorrection(eventId);
-      setLiveStatus({ data: status, loading: false, error: null });
-      const fixture = await api.getLiveFixture();
-      setLiveFixture({ data: fixture, loading: false, error: null });
-    } catch (error: unknown) {
-      setPageError(getErrorMessage(error));
+    } finally {
+      setSubmitting(false);
     }
   }
 
-  async function handleReview(storylineId: string, request: ReviewStorylineRequest) {
-    setQueueLoadingById((current) => ({ ...current, [storylineId]: true }));
-    setQueueErrorById((current) => ({ ...current, [storylineId]: undefined }));
+  async function handleCorrection(eventId: string) {
+    setCorrectingId(eventId);
     try {
-      const storyline = await api.reviewStoryline(storylineId, request);
-      if (storyline) {
-        setStorylines((current) => ({ data: sortStudioStorylines(mergeById(current.data ?? [], storyline)), loading: false, error: null }));
-        setSelectedStorylineId(storyline.id);
-      }
+      const next = await api.sendCorrection(eventId);
+      if (next) setStatus(next);
+      setFixture(await api.getLiveFixture());
     } catch (error: unknown) {
-      setQueueErrorById((current) => ({ ...current, [storylineId]: getErrorMessage(error) }));
-    } finally { setQueueLoadingById((current) => ({ ...current, [storylineId]: false })); }
+      setPageError(getErrorMessage(error));
+    } finally {
+      setCorrectingId(null);
+    }
   }
 
+  async function handleReview(id: string, request: ReviewStorylineRequest) {
+    setPendingById((current) => ({ ...current, [id]: true }));
+    setReviewErrorById((current) => ({ ...current, [id]: undefined }));
+    try {
+      const updated = await api.reviewStoryline(id, request);
+      if (updated) {
+        setStorylines((current) => sortStudioStorylines(mergeById(current, updated)));
+        if (updated.status === "approved") setSelectedStorylineId(updated.id);
+      }
+    } catch (error: unknown) {
+      setReviewErrorById((current) => ({ ...current, [id]: getErrorMessage(error) }));
+    } finally {
+      setPendingById((current) => ({ ...current, [id]: false }));
+    }
+  }
+
+  async function handleNarrate() {
+    setNarrativeLoading(true);
+    setNarrativeError(null);
+    try {
+      setNarrative(await api.narrateLive({ persona: audience, language: recapLanguage }));
+    } catch (error: unknown) {
+      setNarrativeError(getErrorMessage(error));
+    } finally {
+      setNarrativeLoading(false);
+    }
+  }
+
+  // ---------------------------------------------------------------- derived
+
+  const state = status?.state ?? "idle";
+  const score = snapshot?.score ?? computeScoreFromEvents(fixture);
+  const approved = useMemo(() => storylines.filter((storyline) => storyline.status === "approved"), [storylines]);
+  const onAir = approved.find((storyline) => storyline.id === selectedStorylineId) ?? approved[0] ?? null;
+  const counts = {
+    review: storylines.filter((storyline) => storyline.status === "needs_review").length,
+    onAir: approved.length
+  };
+  const selectedInsight = snapshot?.stories.find((story) => story.id === selectedInsightId) ?? null;
+  const transport = status ? liveTransportLabel(status) : "Connecting";
+
   return (
-    <div className="page-shell">
-      <section className="panel"><div className="panel__header"><div><span className="eyebrow">Studio console</span><h1>Broadcast producer desk</h1></div><div className="status-grid"><span className="tag tag--accent">Synthetic match feed</span>{liveStatus.data && <span className="tag">{liveTransportLabel(liveStatus.data)}</span>}</div></div><p className="lede">Start the live synthetic feed, review storyline drafts, and package approved lower-thirds for the studio desk.</p></section>
-      {pageError && <div className="banner banner--danger">{pageError}</div>}
-      <div className="page-grid"><section className="column"><div className="panel"><div className="panel__header"><div><span className="eyebrow">Control panel</span><h2>Start or stop live</h2></div><div className="segmented segmented--dual"><button type="button" className={`segmented__item${startMode === "fixture" ? " is-active" : ""}`} onClick={() => setStartMode("fixture")}>Fixture</button><button type="button" className={`segmented__item${startMode === "matchlab" ? " is-active" : ""}`} onClick={() => setStartMode("matchlab")}>MatchLab</button></div></div><div className="control-grid">{startMode === "fixture" ? <label className="field"><span>Fixture</span><select value={selectedFixtureId} onChange={(event) => setSelectedFixtureId(event.target.value)}>{(fixtures.data ?? []).map((fixture) => <option key={fixture.id} value={fixture.id}>{fixture.title}</option>)}</select></label> : <><label className="field"><span>Scenario</span><select value={scenario} onChange={(event) => setScenario(event.target.value as ScenarioKind)}>{SCENARIOS.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}</select></label><label className="field"><span>Seed</span><input type="number" value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label><label className="field"><span>Home club (optional)</span><select value={homeClubId} onChange={(event) => setHomeClubId(event.target.value)}><option value="">Auto</option>{(archiveSummary.data?.clubs ?? []).map((club) => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label><label className="field"><span>Away club (optional)</span><select value={awayClubId} onChange={(event) => setAwayClubId(event.target.value)}><option value="">Auto</option>{(archiveSummary.data?.clubs ?? []).map((club) => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label></>}<label className="field"><span>Speed (1–60)</span><input type="number" min={1} max={60} value={speed} onChange={(event) => setSpeed(Number(event.target.value))} /></label><label className="field field--checkbox"><span>Stress test feed</span><input type="checkbox" checked={stress} onChange={(event) => setStress(event.target.checked)} /></label></div><div className="control-row"><button type="button" className="button button--primary" onClick={() => void handleStart()} disabled={submitting}>Start live</button><button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop</button></div>{liveStatus.data && <div className="status-grid"><span className="tag">state {liveStatus.data.state}</span><span className="tag">clock {formatClock(liveStatus.data.clockSecond)}</span><span className="tag">events {liveStatus.data.eventsReceived}</span><span className="tag">duplicates {liveStatus.data.duplicatesIgnored}</span>{liveStatus.data.lagMs !== undefined && <span className="tag">lag {liveStatus.data.lagMs} ms</span>}</div>}{deskHealth.data && <div className="desk-health"><h3>Desk health</h3><p>Mode: {deskHealth.data.mode}</p><p>Retrieval: {deskHealth.data.retrieval}</p><div className="chips">{deskHealth.data.agents.map((agent) => <span className="tag tag--ghost" key={agent}>{agent}</span>)}</div>{deskHealth.data.mode === "unconfigured" && <div className="banner banner--warning">Studio desk is unconfigured. Storyline agent outputs may be unavailable.</div>}</div>}</div>{liveFixture.data ? <><Pitch fixture={liveFixture.data} recentEvents={liveFixture.data.events.slice(-8)} title="Live board" subtitle="Current fixture" /><RecentEventsList fixture={liveFixture.data} events={liveFixture.data.events.slice(-12)} title="Recent events" subtitle="Correction desk" emptyMessage="No live events yet." /></> : <div className="panel"><div className="empty-state">No live fixture is active.</div></div>}<div className="panel"><div className="panel__header"><div><span className="eyebrow">Goal correction</span><h2>Active goals</h2></div>{liveFixture.data && <Scorebug compact home={liveFixture.data.home.shortName} away={liveFixture.data.away.shortName} score={score} clock={formatClock(liveStatus.data?.clockSecond ?? 0)} />}</div>{activeGoals.length > 0 ? <div className="feed">{activeGoals.map((goal) => <article className="feed-item" key={goal.id}><div className="feed-item__line"><strong>{goal.minute}' goal</strong><span>{goal.teamId}</span></div><button type="button" className="button" onClick={() => void handleCorrection(goal.id)}>Send correction</button></article>)}</div> : <div className="empty-state">No active goals are available for correction.</div>}</div></section><section className="column column--wide"><StorylineQueue storylines={storylines.data ?? []} selectedStorylineId={selectedStorylineId} onSelect={setSelectedStorylineId} onReview={handleReview} loadingById={queueLoadingById} errorById={queueErrorById} /><OverlayPreview storyline={selectedStoryline} language={overlayLanguage} onLanguageChange={setOverlayLanguage} onExport={() => selectedStoryline && downloadJson(`${selectedStoryline.matchId}-${selectedStoryline.id}-overlay.json`, { storylineId: selectedStoryline.id, matchId: selectedStoryline.matchId, minute: selectedStoryline.triggerMinute, headline: selectedStoryline.headline, overlay: selectedStoryline.overlay, claimSources: selectedStoryline.claims.flatMap((claim) => claim.sources), version: selectedStoryline.version })} /><FactTicker facts={facts.data ?? []} language={overlayLanguage} title="Verified facts feed" /></section><section className="column"><Storyboard storyboard={storyboard.data} fixture={liveFixture.data} storylines={approvedStorylines} language={overlayLanguage} loading={storyboard.loading} error={storyboard.error} onRefresh={() => void refreshStoryboard()} /></section></div>
-    </div>
+    <main className="page">
+      <InfrastructurePanel open={infraOpen} onToggle={onToggleInfra} health={health} desk={desk} live={status} />
+
+      <BroadcastBar fixture={fixture} score={score} clockSecond={status?.clockSecond ?? 0} state={state} transport={transport} lagMs={status?.lagMs} eventsReceived={status?.eventsReceived ?? 0} />
+
+      <nav className="tabs" aria-label="Studio views">
+        <button type="button" className={`tabs__item${tab === "live" ? " is-active" : ""}`} onClick={() => setTab("live")} aria-current={tab === "live" ? "page" : undefined}>
+          Live desk {counts.review > 0 && <span className="count count--accent">{counts.review}</span>}
+        </button>
+        <button type="button" className={`tabs__item${tab === "recap" ? " is-active" : ""}`} onClick={() => setTab("recap")} aria-current={tab === "recap" ? "page" : undefined}>
+          Recap and highlights
+        </button>
+      </nav>
+
+      {pageError && <div className="banner banner--danger" role="alert">{pageError} <button type="button" className="link-button" onClick={() => setPageError(null)}>Dismiss</button></div>}
+
+      {tab === "live" ? (
+        <div className="desk-grid">
+          <div className="desk-col">
+            <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>
+              {state === "running" ? (
+                <div className="running-summary">
+                  <p className="subtle-text">{fixture?.title} · {status?.speed}× speed. Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
+                  <button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop match</button>
+                </div>
+              ) : (
+                <div className="setup">
+                  <div className="segmented" role="tablist" aria-label="Match source">
+                    <button type="button" role="tab" aria-selected={startMode === "fixture"} className={`segmented__item${startMode === "fixture" ? " is-active" : ""}`} onClick={() => setStartMode("fixture")}>Scripted fixture</button>
+                    <button type="button" role="tab" aria-selected={startMode === "matchlab"} className={`segmented__item${startMode === "matchlab" ? " is-active" : ""}`} onClick={() => setStartMode("matchlab")}>Generate with MatchLab</button>
+                  </div>
+                  {startMode === "fixture" ? (
+                    <label className="field"><span>Fixture</span>
+                      <select value={fixtureId} onChange={(event) => setFixtureId(event.target.value)}>{fixtures.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+                    </label>
+                  ) : (
+                    <div className="field-grid">
+                      <label className="field"><span>Scenario</span><select value={scenario} onChange={(event) => setScenario(event.target.value as ScenarioKind)}>{SCENARIOS.map((item) => <option key={item} value={item}>{labelize(item)}</option>)}</select></label>
+                      <label className="field"><span>Seed</span><input type="number" value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label>
+                      <label className="field"><span>Home club</span><select value={homeClubId} onChange={(event) => setHomeClubId(event.target.value)}><option value="">Auto</option>{(archive?.clubs ?? []).map((club) => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label>
+                      <label className="field"><span>Away club</span><select value={awayClubId} onChange={(event) => setAwayClubId(event.target.value)}><option value="">Auto</option>{(archive?.clubs ?? []).map((club) => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label>
+                    </div>
+                  )}
+                  <label className="field"><span>Playback speed <span className="mono">{speed}×</span></span><input type="range" min={1} max={60} value={speed} onChange={(event) => setSpeed(Number(event.target.value))} /></label>
+                  <button type="button" className="button button--primary button--block" onClick={() => void handleStart()} disabled={submitting || (startMode === "fixture" && !fixtureId)}>{state === "finished" ? "Start a new match" : "Start live match"}</button>
+                  {state === "finished" && <button type="button" className="link-button" onClick={() => setTab("recap")}>Full time. Open the recap and highlights →</button>}
+                </div>
+              )}
+            </Panel>
+            <Panel eyebrow="Correction desk" title="Match events">
+              {fixture ? <EventFeed fixture={fixture} onCorrect={state === "running" ? (id) => void handleCorrection(id) : undefined} correctingId={correctingId} /> : <div className="empty-state">Start a match to see the feed.</div>}
+            </Panel>
+          </div>
+
+          <div className="desk-col">
+            <Panel eyebrow="Live board" title={fixture?.title ?? "No match running"} aside={selectedInsight && <button type="button" className="link-button" onClick={() => setSelectedInsightId(null)}>Clear evidence</button>}>
+              {fixture ? (
+                <>
+                  <Pitch fixture={fixture} events={snapshot?.recentEvents ?? fixture.events} highlightIds={selectedInsight?.evidenceIds} />
+                  <LiveStats snapshot={snapshot} fixture={fixture} />
+                </>
+              ) : <div className="empty-state">The pitch, live stats and story cards appear once a match starts.</div>}
+            </Panel>
+            <Panel eyebrow="Deterministic engine" title="Match intelligence" aside={snapshot && <span className="tag">{Math.round(snapshot.evidenceCoverage)}% evidence coverage</span>}>
+              <MatchIntelligence stories={snapshot?.stories ?? []} selectedId={selectedInsightId} onSelect={setSelectedInsightId} />
+            </Panel>
+          </div>
+
+          <div className="desk-col">
+            <Panel eyebrow="On air" title="Lower-third" aside={<label className="inline-select"><span className="sr-only">Desk language</span><select value={deskLanguage} onChange={(event) => setDeskLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}</select></label>}>
+              <OverlayPreview storyline={onAir} language={deskLanguage} onExport={() => onAir && downloadJson(`${onAir.matchId}-${onAir.id}-overlay.json`, { storylineId: onAir.id, matchId: onAir.matchId, minute: onAir.triggerMinute, headline: onAir.headline, overlay: onAir.overlay, onAirLine: onAir.onAirLine, claimSources: onAir.claims.flatMap((claim) => claim.sources), version: onAir.version })} />
+            </Panel>
+            <Panel eyebrow="Foundry agents" title="Storyline queue" aside={<>{counts.review > 0 && <span className="tag tag--accent">{counts.review} to review</span>}<span className="tag">{counts.onAir} on air</span></>}>
+              {desk?.mode === "unconfigured" && <div className="banner banner--warning">Storyline agents aren't configured on this server.</div>}
+              <StorylineQueue storylines={storylines} selectedId={onAir?.id ?? null} onSelect={setSelectedStorylineId} onReview={handleReview} pendingById={pendingById} errorById={reviewErrorById} language={deskLanguage} />
+            </Panel>
+            <Panel eyebrow="Fact desk" title="Verified facts" aside={<span className="tag">{facts.length}</span>}>
+              <FactTicker facts={facts} language={deskLanguage} />
+            </Panel>
+          </div>
+        </div>
+      ) : fixture ? (
+        <div className="recap-grid">
+          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} />
+          <div className="desk-col">
+            <RecapPanel
+              narrative={narrative}
+              loading={narrativeLoading}
+              error={narrativeError}
+              aiReady={Boolean(health?.ai.configured)}
+              disabled={!fixture}
+              onGenerate={() => void handleNarrate()}
+              controls={(
+                <>
+                  <div className="segmented segmented--compact" role="radiogroup" aria-label="Recap audience">
+                    {(["analyst", "casual"] as Audience[]).map((item) => (
+                      <button type="button" role="radio" aria-checked={audience === item} key={item} className={`segmented__item${audience === item ? " is-active" : ""}`} onClick={() => setAudience(item)}>{item === "analyst" ? "Analyst" : "Casual fan"}</button>
+                    ))}
+                  </div>
+                  <label className="inline-select"><span className="sr-only">Recap language</span><select value={recapLanguage} onChange={(event) => setRecapLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
+                </>
+              )}
+            />
+            <Panel eyebrow="Storyboard" title="Match chapters">
+              <Storyboard storyboard={storyboard} fixture={fixture} storylines={storylines} language={recapLanguage} />
+            </Panel>
+          </div>
+        </div>
+      ) : (
+        <div className="panel empty-hero">
+          <h2>No match yet</h2>
+          <p className="subtle-text">Start a match on the live desk. The highlight reel, written recap and chapters build themselves from the verified feed.</p>
+          <button type="button" className="button button--primary" onClick={() => setTab("live")}>Go to live desk</button>
+        </div>
+      )}
+    </main>
   );
 }

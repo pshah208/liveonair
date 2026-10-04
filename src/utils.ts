@@ -1,30 +1,8 @@
-import type {
-  Language,
-  MatchEvent,
-  MatchFixture,
-  MatchSnapshot,
-  NarrativeResponse,
-  Persona,
-  Player,
-  StoryCard,
-  TeamId
-} from "../shared/types.js";
-import type {
-  ArchivePlayerProfile,
-  ClaimSource,
-  LiveStatus,
-  Localized,
-  RecapChapter,
-  ScenarioKind,
-  Storyline,
-  StorylineClaim,
-  StorylineStatus,
-  VerifiedFact
-} from "../shared/platform.js";
+import type { Language, MatchEvent, MatchFixture, TeamId } from "../shared/types.js";
+import { latestRevisions } from "../shared/highlights.js";
+import type { ClaimSource, LiveStatus, Localized, RecapChapter, ScenarioKind, Storyline, StorylineClaim, StorylineStatus, VerifiedFact } from "../shared/platform.js";
 
 export type Theme = "light" | "dark";
-export type AppRoute = "/" | "/studio";
-export type FanMode = "replay" | "live";
 
 export type AsyncState<T> = {
   data: T | null;
@@ -32,19 +10,10 @@ export type AsyncState<T> = {
   error: string | null;
 };
 
-export const PERSONAS: Persona[] = ["analyst", "casual", "player"];
 export const LANGUAGES: Language[] = ["en", "es", "fr"];
+export const LANGUAGE_LABEL: Record<Language, string> = { en: "English", es: "Español", fr: "Français" };
 export const SCENARIOS: ScenarioKind[] = ["comeback", "red_card", "set_piece", "late_winner", "goal_fest"];
-export const STORYLINE_STATUS_ORDER: StorylineStatus[] = [
-  "needs_review",
-  "researching",
-  "checking",
-  "drafting",
-  "approved",
-  "failed",
-  "rejected",
-  "retracted"
-];
+export const STORYLINE_STATUS_ORDER: StorylineStatus[] = ["needs_review", "researching", "checking", "drafting", "approved", "failed", "rejected", "retracted"];
 
 export function createAsyncState<T>(loading = false): AsyncState<T> {
   return { data: null, loading, error: null };
@@ -63,9 +32,7 @@ export function formatClock(totalSeconds: number): string {
 
 export function formatMinuteLabel(totalSeconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-  const minute = Math.floor(safeSeconds / 60);
-  const second = safeSeconds % 60;
-  return `${minute}'${second.toString().padStart(2, "0")}`;
+  return `${Math.floor(safeSeconds / 60)}'${(safeSeconds % 60).toString().padStart(2, "0")}`;
 }
 
 export function labelize(value: string): string {
@@ -85,23 +52,10 @@ export function teamTint(teamId: TeamId): string {
 }
 
 export function outcomeLabel(event: MatchEvent): string {
-  if (event.rescinded) return "Rescinded";
-  if (event.type === "goal") return "Goal";
-  if (event.type === "save") return "Save";
-  if (event.outcome === "complete") return "Complete";
-  if (event.outcome === "incomplete") return "Incomplete";
-  if (event.outcome === "saved") return "Saved";
-  if (event.outcome === "blocked") return "Blocked";
-  if (event.outcome === "miss") return "Miss";
-  if (event.outcome === "success") return "Success";
-  return "Logged";
-}
-
-export function buildPlayerMap(fixture: MatchFixture | null | undefined): Map<string, Player> {
-  const map = new Map<string, Player>();
-  if (!fixture) return map;
-  [...fixture.home.players, ...fixture.away.players].forEach((player) => map.set(player.id, player));
-  return map;
+  if (event.rescinded) return "ruled out";
+  if (event.type === "goal") return "scored";
+  if (event.outcome === "none") return "logged";
+  return event.outcome;
 }
 
 export function localizeText(localized: Localized, language: Language): { text: string; fallback: boolean } {
@@ -113,22 +67,21 @@ export function localizeText(localized: Localized, language: Language): { text: 
   return { text: backup ?? "", fallback: Boolean(backup) && language !== "en" };
 }
 
-export function structuralLabel(card: StoryCard): string {
-  return card.confidence === "observed" ? "Observed structure" : "Pattern-linked structure";
-}
-
-export function defaultFixtureSecond(durationSeconds: number): number {
-  return clamp(72 * 60 + 30, 0, durationSeconds);
-}
-
-export function downloadJson(filename: string, payload: unknown): void {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+function triggerDownload(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+export function downloadJson(filename: string, payload: unknown): void {
+  triggerDownload(filename, new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+}
+
+export function downloadBlob(filename: string, blob: Blob): void {
+  triggerDownload(filename, blob);
 }
 
 export function mergeById<T extends { id: string }>(items: T[], incoming: T): T[] {
@@ -138,69 +91,34 @@ export function mergeById<T extends { id: string }>(items: T[], incoming: T): T[
 }
 
 export function sortFactsNewestFirst(facts: VerifiedFact[]): VerifiedFact[] {
-  return facts.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return facts.slice().sort((a, b) => Number(Boolean(a.retracted)) - Number(Boolean(b.retracted)) || Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
 export function sortStudioStorylines(storylines: Storyline[]): Storyline[] {
   return storylines.slice().sort((a, b) => {
     const groupGap = STORYLINE_STATUS_ORDER.indexOf(a.status) - STORYLINE_STATUS_ORDER.indexOf(b.status);
     if (groupGap !== 0) return groupGap;
-    if (a.priority !== b.priority) return b.priority - a.priority;
-    return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    if (a.triggerMinute !== b.triggerMinute) return b.triggerMinute - a.triggerMinute;
+    return b.priority - a.priority;
   });
-}
-
-export function sortFanStorylines(storylines: Storyline[]): Storyline[] {
-  return storylines.slice().sort((a, b) => {
-    if (a.status !== b.status) {
-      if (a.status === "approved") return -1;
-      if (b.status === "approved") return 1;
-    }
-    return b.triggerMinute - a.triggerMinute;
-  });
-}
-
-export function storyCardIsRadar(card: StoryCard): boolean {
-  return card.kind === "set_piece";
 }
 
 export function computeScoreFromEvents(fixture: MatchFixture | null | undefined): { home: number; away: number } {
-  if (!fixture) return { home: 0, away: 0 };
-  return fixture.events.reduce(
-    (score, event) => {
-      if (event.type === "goal" && !event.rescinded) {
-        score[event.teamId] += 1;
-      }
-      return score;
-    },
-    { home: 0, away: 0 }
-  );
-}
-
-export function findFavoritePlayer(fixture: MatchFixture | null | undefined, currentId?: string): string | undefined {
-  if (!fixture) return undefined;
-  const players = [...fixture.home.players, ...fixture.away.players];
-  if (currentId && players.some((player) => player.id === currentId)) return currentId;
-  return (players.find((player) => player.position === "ST") ?? players[0])?.id;
-}
-
-export function getPlayerById(fixture: MatchFixture | null | undefined, playerId?: string): Player | undefined {
-  if (!fixture || !playerId) return undefined;
-  return [...fixture.home.players, ...fixture.away.players].find((player) => player.id === playerId);
+  const score = { home: 0, away: 0 };
+  for (const event of latestRevisions(fixture?.events ?? [])) {
+    if (event.type === "goal" && !event.rescinded) score[event.teamId] += 1;
+  }
+  return score;
 }
 
 export function liveTransportLabel(status: Pick<LiveStatus, "transport" | "transportConfigured">): string {
-  return status.transport === "fabric-eventstream"
-    ? "Fabric Eventstream"
-    : status.transportConfigured
-      ? "Local bus"
-      : "Local bus (Fabric not configured)";
+  return status.transport === "fabric-eventstream" ? "Fabric Eventstream" : status.transportConfigured ? "Local bus" : "Local bus (Fabric off)";
 }
 
 export function statusTone(status: StorylineStatus): "neutral" | "info" | "success" | "warning" | "danger" {
   switch (status) {
     case "approved": return "success";
-    case "needs_review":
+    case "needs_review": return "info";
     case "researching":
     case "checking":
     case "drafting": return "warning";
@@ -217,29 +135,6 @@ export function hasActiveSpinner(status: StorylineStatus): boolean {
 
 export function formatClaimSource(source: ClaimSource): string {
   return `${source.type}:${source.id}`;
-}
-
-export function relationLabel(kind: ArchivePlayerProfile["person"]["relations"][number]["kind"]): string {
-  return labelize(kind);
-}
-
-export function spellClubName(profile: ArchivePlayerProfile, clubId: string): string {
-  return profile.clubs[clubId]?.name ?? clubId;
-}
-
-export function latestSnapshotStories(snapshot: MatchSnapshot | null): StoryCard[] {
-  return snapshot?.stories ?? [];
-}
-
-export function fixtureScore(snapshot: MatchSnapshot | null, fixture: MatchFixture | null | undefined): { home: number; away: number } {
-  return snapshot?.score ?? computeScoreFromEvents(fixture);
-}
-
-export function summarizeLiveState(status: LiveStatus | null): string {
-  if (!status) return "Connecting to the synthetic live desk.";
-  if (status.state === "idle") return "Idle. Start a synthetic live match from the Studio console.";
-  if (status.state === "finished") return "Full time reached. Storyboard recap is ready to refresh.";
-  return `Running at ${status.speed}× with ${status.eventsReceived} envelopes received.`;
 }
 
 export function claimText(claim: StorylineClaim, language: Language): { text: string; fallback: boolean } {

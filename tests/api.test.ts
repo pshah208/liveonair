@@ -373,6 +373,55 @@ test("oversized JSON is rejected with an explicit 413 response", async () => {
   });
 });
 
+test("POST /api/live/narrate narrates the live view, honouring live corrections", async () => {
+  const { getFixture } = await import("../server/fixtures.js");
+  const liveFixture = structuredClone(getFixture("rivergate-comeback"));
+  const goal = liveFixture.events.find((event) => event.type === "goal")!;
+  liveFixture.events.push({ ...goal, revision: goal.revision + 1, rescinded: true });
+  const seen: { request?: NarrativeRequest; snapshot?: MatchSnapshot } = {};
+  const narrator = {
+    health: () => ({ configured: true, deployment: "test-model", authentication: "managed_identity_or_cli" }) as const,
+    async narrate(request: NarrativeRequest, snapshot: MatchSnapshot): Promise<NarrativeResponse> {
+      seen.request = request;
+      seen.snapshot = snapshot;
+      return { title: "Recap", script: "Script", claims: [], trace: [], source: "foundry", model: "test-model", stateVersion: snapshot.stateVersion, latencyMs: 1, cached: false, usage: { inputTokens: 1, outputTokens: 1 } };
+    },
+  };
+  let view: { matchId: string; fixture: MatchFixture; clockSecond: number } | undefined;
+  const platform = {
+    live: {
+      status: () => ({ state: view ? "finished" : "idle", transport: "local", transportConfigured: false, clockSecond: 0, speed: 1, eventsReceived: 0, duplicatesIgnored: 0, stress: false }),
+      current: () => view,
+    },
+    desk: {},
+    close: async () => undefined,
+  };
+  const app = createApp({ narrator: narrator as never, platform: platform as never, staticDir, version: "test-version" });
+  const server = http.createServer(app);
+  await new Promise<void>((resolveServer) => server.listen(0, "127.0.0.1", resolveServer));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  try {
+    const missing = await fetch(`${baseUrl}/api/live/narrate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ persona: "analyst", language: "en" }) });
+    assert.equal(missing.status, 404);
+
+    view = { matchId: "m1", fixture: liveFixture, clockSecond: liveFixture.durationSeconds };
+    const invalid = await fetch(`${baseUrl}/api/live/narrate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ persona: "robot", language: "en" }) });
+    assert.equal(invalid.status, 400);
+
+    const response = await fetch(`${baseUrl}/api/live/narrate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ persona: "casual", language: "es" }) });
+    assert.equal(response.status, 200);
+    assert.equal(seen.request?.fixtureId, liveFixture.id);
+    assert.equal(seen.request?.atSecond, liveFixture.durationSeconds);
+    assert.equal(seen.request?.format, "recap");
+    assert.equal(seen.request?.language, "es");
+    const activeGoals = liveFixture.events.filter((event) => event.type === "goal" && event.revision === 1 && event.id !== goal.id).length;
+    assert.equal((seen.snapshot?.score.home ?? 0) + (seen.snapshot?.score.away ?? 0), activeGoals);
+  } finally {
+    await new Promise<void>((resolveServer) => server.close(() => resolveServer()));
+  }
+});
+
 test.after(() => {
   rmSync(staticDir, { recursive: true, force: true });
 });

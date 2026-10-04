@@ -143,6 +143,9 @@ function introChapter(fixture: MatchFixture, endSecond: number): RecapChapter {
   };
 }
 
+// Producer drafts get feedback from the deterministic guard between attempts.
+const PRODUCER_ATTEMPTS = 3;
+
 export class DefaultStorylineDesk implements StorylineDesk {
   private readonly archiveIndexes;
   private readonly retrieval: ArchiveRetrieval;
@@ -448,7 +451,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
     feedback?: string[],
   ): Promise<{ draft?: ProducerDraft; guardErrors: string[] }> {
     const guardErrors: string[] = [];
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < PRODUCER_ATTEMPTS; attempt += 1) {
       const draft = await this.runner.produce({ claims: claimTexts, feedback });
       const guardError = this.guardProducerDraft(draft, claimTexts, knownNames);
       if (!guardError) {

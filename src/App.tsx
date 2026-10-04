@@ -1,37 +1,34 @@
 import { useEffect, useState } from "react";
-import { FanPage } from "./FanPage.js";
-import { NavHeader } from "./components.js";
+import { AppHeader } from "./components.js";
 import { StudioPage } from "./StudioPage.js";
-import type { AppRoute, Theme } from "./utils.js";
+import type { Theme } from "./utils.js";
 
-function currentRoute(): AppRoute {
-  return window.location.pathname === "/studio" ? "/studio" : "/";
+const INFRA_KEY = "matchlens.infrastructure.open";
+
+function initialInfraOpen(): boolean {
+  try {
+    return window.localStorage.getItem(INFRA_KEY) !== "false";
+  } catch {
+    return true;
+  }
 }
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>(() => document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
-  const [route, setRoute] = useState<AppRoute>(() => currentRoute());
+  const [theme, setTheme] = useState<Theme>(() => (document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"));
+  const [infraOpen, setInfraOpen] = useState(initialInfraOpen);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
   useEffect(() => {
-    const onPopState = () => setRoute(currentRoute());
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
-
-  function navigate(nextRoute: AppRoute) {
-    if (nextRoute === route) return;
-    window.history.pushState({}, "", nextRoute);
-    setRoute(nextRoute);
-  }
+    try { window.localStorage.setItem(INFRA_KEY, String(infraOpen)); } catch { /* storage unavailable */ }
+  }, [infraOpen]);
 
   return (
     <div className="app-shell">
-      <NavHeader route={route} theme={theme} onNavigate={navigate} onToggleTheme={() => setTheme((current) => current === "dark" ? "light" : "dark")} />
-      {route === "/studio" ? <StudioPage /> : <FanPage />}
+      <AppHeader theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} infraOpen={infraOpen} onToggleInfra={() => setInfraOpen((current) => !current)} />
+      <StudioPage theme={theme} infraOpen={infraOpen} onToggleInfra={() => setInfraOpen((current) => !current)} />
     </div>
   );
 }

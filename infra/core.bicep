@@ -5,7 +5,7 @@ param prefix string = 'matchlens'
 param developerObjectId string = ''
 param modelName string = 'gpt-4.1-mini'
 param modelVersion string = '2025-04-14'
-param modelCapacity int = 50
+param modelCapacity int = 150
 @description('AI Search region; East US 2 had no Search capacity when provisioned.')
 param searchLocation string = 'eastus'
 

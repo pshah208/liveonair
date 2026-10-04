@@ -188,6 +188,42 @@ function careerGoals(archive: ArchiveSnapshot, personId: string): number {
   return total;
 }
 
+const RATE_LIMIT_ATTEMPTS = 4;
+
+function retryAfterMs(error: unknown, attempt: number): number {
+  const headers = (error as { headers?: Headers | Record<string, string> } | undefined)?.headers;
+  const read = (name: string): string | null | undefined =>
+    headers instanceof Headers ? headers.get(name) : (headers as Record<string, string> | undefined)?.[name];
+  const ms = Number(read("retry-after-ms"));
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  const seconds = Number(read("retry-after"));
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1_000;
+  return 2_000 * 2 ** attempt;
+}
+
+/** Retries 429s within the job deadline so bursts of goals don't fail storylines outright. */
+export async function createWithRateLimitRetry(
+  createResponse: (body: unknown, options?: unknown) => Promise<Record<string, unknown>>,
+  body: unknown,
+  deadlineMs: number,
+  startedAt: number,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<Record<string, unknown>> {
+  for (let attempt = 0; ; attempt += 1) {
+    const remaining = deadlineMs - (Date.now() - startedAt);
+    try {
+      return await createResponse(body, { timeout: Math.max(1_000, remaining), maxRetries: 0 });
+    } catch (error) {
+      const status = (error as { status?: number } | undefined)?.status;
+      const wait = retryAfterMs(error, attempt);
+      if (status !== 429 || attempt + 1 >= RATE_LIMIT_ATTEMPTS || wait + 1_000 >= deadlineMs - (Date.now() - startedAt)) {
+        throw error;
+      }
+      await sleep(wait);
+    }
+  }
+}
+
 async function invokeAgentJson<T>(
   client: OpenAI,
   agentName: string,
@@ -213,9 +249,7 @@ async function invokeAgentJson<T>(
       previous_response_id: previousResponseId,
       agent_reference: { name: agentName, type: "agent_reference" },
     };
-    const response = await createResponse(body, {
-      timeout: Math.max(1_000, deadlineMs - elapsed),
-    });
+    const response = await createWithRateLimitRetry(createResponse, body, deadlineMs, startedAt);
     previousResponseId = typeof response.id === "string" ? response.id : previousResponseId;
     const functionCalls = parseFunctionCalls(response);
     if (functionCalls.length === 0) {

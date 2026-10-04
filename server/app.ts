@@ -237,6 +237,41 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch }));
   const platform = options.platform ?? createPlatform();
+
+  // Recap of the current live match, narrated from the live view so every correction applies.
+  app.post("/api/live/narrate", narrateLimiter, async (request, response, next) => {
+    try {
+      if (!narrator.health().configured) {
+        throw new HttpError(503, "AI narration is not configured");
+      }
+      const view = platform.live.current();
+      if (!view) {
+        throw new HttpError(404, "Live match not found");
+      }
+      const body = (typeof request.body === "object" && request.body !== null ? request.body : {}) as Record<string, unknown>;
+      const status = platform.live.status();
+      const atSecond = status.state === "running"
+        ? Math.min(view.fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
+        : view.fixture.durationSeconds;
+      const parsed = parseNarrativeRequest({
+        fixtureId: view.fixture.id,
+        atSecond,
+        persona: body.persona,
+        language: body.language,
+        format: "recap",
+      });
+      const fixture = deepClone(view.fixture);
+      const snapshot = analyzeFixture(fixture, { ...parsed, correction: false });
+      const narrative = await narrator.narrate(parsed, snapshot, {
+        requestId: response.locals.requestId as string,
+        fixture,
+      });
+      response.json(narrative);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture }));
   app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
 

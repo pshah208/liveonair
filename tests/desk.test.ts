@@ -500,12 +500,13 @@ test("producer guard rejects invented name then succeeds on retry", async () => 
   assert.equal(desk.list(view.matchId)[0].headline.en, "Rowan scores");
 });
 
-test("producer guard second failure marks storyline failed", async () => {
+test("producer guard failing every attempt marks storyline failed", async () => {
   const runner = new FakeRunner();
   runner.researchQueue.push([proposal("live_event", { eventId: "goal-home-72" }, [source("event", "goal-home-72")])]);
   runner.produceQueue.push(
     producerDraft("Jude Asher arrives", "Jude Asher scored for Rivergate FC.", "jude asher"),
     producerDraft("Mara Rowan arrives", "Mara Rowan scored for Rivergate FC.", "mara rowan"),
+    producerDraft("Jude Asher again", "Jude Asher scored for Rivergate FC.", "jude asher"),
   );
   const desk = createStorylineDesk({ archive: archive(), runner });
   const view = liveView(triggerGoalEvents());
@@ -514,6 +515,7 @@ test("producer guard second failure marks storyline failed", async () => {
   await waitFor(() => {
     assert.equal(desk.list(view.matchId)[0].status, "failed");
   });
+  assert.equal(runner.calls.produce, 3);
   assert.match(desk.list(view.matchId)[0].failureReason ?? "", /Producer output failed/u);
 });
 
@@ -840,4 +842,28 @@ test("studio routes expose storylines, facts, review, storyboard, and health", a
     const storyboard = await fetch(`${baseUrl}/api/studio/storyboard`);
     assert.equal(storyboard.status, 404);
   });
+});
+
+
+test("agent calls retry 429s using retry-after, then give up past the deadline", async () => {
+  const { createWithRateLimitRetry } = await import("../server/desk/runner.js");
+  const waits: number[] = [];
+  const sleep = async (ms: number) => { waits.push(ms); };
+  let calls = 0;
+  const flaky = async () => {
+    calls += 1;
+    if (calls < 3) throw Object.assign(new Error("rate limited"), { status: 429, headers: { "retry-after": "2" } });
+    return { id: "ok" };
+  };
+  const result = await createWithRateLimitRetry(flaky, {}, 60_000, Date.now(), sleep);
+  assert.deepEqual(result, { id: "ok" });
+  assert.deepEqual(waits, [2_000, 2_000]);
+
+  const always429 = async () => { throw Object.assign(new Error("rate limited"), { status: 429, headers: { "retry-after": "30" } }); };
+  await assert.rejects(createWithRateLimitRetry(always429, {}, 10_000, Date.now(), sleep), /rate limited/u);
+
+  let otherCalls = 0;
+  const serverError = async () => { otherCalls += 1; throw Object.assign(new Error("boom"), { status: 500 }); };
+  await assert.rejects(createWithRateLimitRetry(serverError, {}, 60_000, Date.now(), sleep), /boom/u);
+  assert.equal(otherCalls, 1);
 });
