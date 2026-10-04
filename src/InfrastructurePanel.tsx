@@ -79,9 +79,10 @@ const OUTPUTS = [
   "Lower-third overlay (timed JSON with claim sources)",
   "Narrated recap: analyst or casual, English, Spanish or French",
   "Highlight reel ranked from verified events, captioned by approved storylines",
-  "Reel rendered from data, or cut from footage you own (stays in the browser)",
+  "Reel cut from the Video lab clip automatically, or rendered from data for synthetic matches",
+  "Commentary voice reads each highlight caption (sound toggle)",
   "Cut list and ffmpeg script for an edit suite",
-  "Video lab: events tagged from your own clip by a vision model, streamed like a live feed"
+  "Video lab: events tagged from your own clip by a vision model plus up to 5 producer tags, streamed like a live feed"
 ];
 
 const PHASE_TWO = [
@@ -106,7 +107,7 @@ const GUARDRAILS = [
   "Agent copy that adds names or numbers not in verified claims is rejected and retried.",
   "Nothing goes on air without producer approval.",
   "A goal correction retracts dependent storylines, facts and highlight captions.",
-  "Footage is never uploaded; loading it requires confirming you own or license it."
+  "Video lab uploads require confirming you own or license the clip; the source file is deleted after processing."
 ];
 
 export function InfrastructurePanel({ open, onToggle, health, desk, live }: InfrastructurePanelProps) {

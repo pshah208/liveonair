@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveStatus } from "../shared/platform.js";
-import type { MatchEvent, MatchFixture } from "../shared/types.js";
-import type { VideoJob, VideoJobStage } from "../shared/video.js";
+import type { MatchEvent, MatchFixture, TeamId } from "../shared/types.js";
+import { DETECTABLE_EVENT_TYPES, MAX_MANUAL_TAGS, type DetectableEventType, type VideoJob, type VideoJobStage } from "../shared/video.js";
 import { api, uploadVideo, type VideoHealth } from "./api.js";
 import { Panel } from "./components.js";
 import { formatClock, getErrorMessage, labelize } from "./utils.js";
 import { latestRevisions } from "../shared/highlights.js";
+
+export type VideoFootage = { fixtureId: string; url: string; name: string };
 
 type VideoLabProps = {
   status: LiveStatus | null;
   liveFixture: MatchFixture | null;
   onStreamed: (status: LiveStatus) => void;
   onOpenDesk: () => void;
+  /** The processed clip, so the recap can cut real footage around the tagged moments. */
+  onFootage: (footage: VideoFootage | null) => void;
 };
 
 const TERMINAL: VideoJobStage[] = ["ready", "rejected", "failed"];
@@ -41,6 +45,16 @@ function eventSecond(event: MatchEvent): number {
   return event.minute * 60 + event.second;
 }
 
+/** Accepts "12", "0:12" or "1:05" and returns whole seconds. */
+function parseClock(value: string): number | null {
+  const match = value.trim().match(/^(?:(\d{1,2}):)?(\d{1,3})$/u);
+  if (!match) return null;
+  const minutes = Number(match[1] ?? 0);
+  const seconds = Number(match[2]);
+  if (match[1] !== undefined && seconds > 59) return null;
+  return minutes * 60 + seconds;
+}
+
 function describeEvent(event: MatchEvent, fixture: MatchFixture | null, names?: { home: string; away: string }): string {
   const team = event.teamId === "home" ? fixture?.home.shortName ?? names?.home : fixture?.away.shortName ?? names?.away;
   const player = [...(fixture?.home.players ?? []), ...(fixture?.away.players ?? [])].find((item) => item.id === event.playerId);
@@ -48,7 +62,7 @@ function describeEvent(event: MatchEvent, fixture: MatchFixture | null, names?: 
   return `${labelize(event.type)} · ${player?.name ?? `${team ?? event.teamId}${shirt ? ` #${shirt}` : ""}`}`;
 }
 
-export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoLabProps) {
+export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk, onFootage }: VideoLabProps) {
   const [health, setHealth] = useState<VideoHealth | null>(null);
   const [attested, setAttested] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -63,6 +77,12 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
   const [streaming, setStreaming] = useState(false);
   const [videoTime, setVideoTime] = useState(0);
   const [frameIndex, setFrameIndex] = useState<number | null>(null);
+  const [tagType, setTagType] = useState<DetectableEventType>("goal");
+  const [tagTeam, setTagTeam] = useState<TeamId>("home");
+  const [tagTime, setTagTime] = useState("");
+  const [tagShirt, setTagShirt] = useState("");
+  const [tagNote, setTagNote] = useState("");
+  const [tagging, setTagging] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -72,6 +92,11 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
   }, []);
 
   useEffect(() => () => { if (fileUrl) URL.revokeObjectURL(fileUrl); }, [fileUrl]);
+
+  const readyFixtureId = job?.stage === "ready" ? job.fixtureId : undefined;
+  useEffect(() => {
+    onFootage(readyFixtureId && fileUrl && file ? { fixtureId: readyFixtureId, url: fileUrl, name: file.name } : null);
+  }, [readyFixtureId, fileUrl, file]);
 
   // Poll the worker until the job reaches a terminal stage.
   useEffect(() => {
@@ -116,6 +141,38 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
     }
   }
 
+  async function addTag() {
+    if (!job) return;
+    const second = tagTime.trim() === "" ? Math.floor(videoTime) : parseClock(tagTime);
+    if (second === null) { setError("Enter the time as seconds or m:ss, e.g. 12 or 0:12."); return; }
+    const shirt = tagShirt.trim() === "" ? null : Number(tagShirt);
+    if (shirt !== null && !(Number.isInteger(shirt) && shirt >= 1 && shirt <= 99)) { setError("Shirt number must be 1–99."); return; }
+    setTagging(true);
+    setError(null);
+    try {
+      const next = await api.addVideoTag(job.id, { type: tagType, team: tagTeam, second, shirtNumber: shirt, ...(tagNote.trim() ? { note: tagNote.trim() } : {}) });
+      if (next) setJob(next);
+      setTagTime("");
+      setTagShirt("");
+      setTagNote("");
+    } catch (reason: unknown) {
+      setError(getErrorMessage(reason));
+    } finally {
+      setTagging(false);
+    }
+  }
+
+  async function removeTag(tagId: string) {
+    if (!job) return;
+    setError(null);
+    try {
+      const next = await api.removeVideoTag(job.id, tagId);
+      if (next) setJob(next);
+    } catch (reason: unknown) {
+      setError(getErrorMessage(reason));
+    }
+  }
+
   async function streamToDesk() {
     if (!job) return;
     setStreaming(true);
@@ -136,6 +193,7 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
   }
 
   const isLiveForJob = Boolean(job?.fixtureId && liveFixture?.id === job.fixtureId);
+  const liveLocked = isLiveForJob && status?.state === "running";
   // Overlays only use events that came back through the live pipeline, so they prove the round trip.
   const streamed = useMemo(() => (isLiveForJob && liveFixture ? latestRevisions(liveFixture.events) : []), [isLiveForJob, liveFixture]);
   const shown = streamed.filter((event) => eventSecond(event) <= videoTime && !["kickoff", "fulltime"].includes(event.type));
@@ -153,8 +211,9 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
         <Panel eyebrow="Video lab" title="Process your own clip" aside={<span className="tag tag--accent">Experimental</span>}>
           <p className="lede">
             Upload a short clip (up to 3 minutes, 100 MB). The video worker samples frames with ffmpeg, a vision model tags passes, shots,
-            goals, saves, fouls and cards, and deterministic rules turn them into match events. Stream them through Fabric Eventstream and
-            the live desk, storyline agents and highlight reel run on what the camera saw.
+            goals, saves, fouls and cards, and deterministic rules turn them into match events. Tag up to {MAX_MANUAL_TAGS} moments it missed yourself.
+            Stream them through Fabric Eventstream and the live desk, storyline agents and highlight reel run on what the camera saw;
+            Recap and highlights then cuts a video recap from this clip.
           </p>
           {unavailable && <div className="banner banner--warning">Video processing isn't available on this server ({!health?.ffmpeg ? "ffmpeg missing" : "vision model not configured"}).</div>}
 
@@ -238,14 +297,18 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
                 <tbody>
                   {detected.map((event) => {
                     const proof = evidenceById.get(event.id);
+                    const manual = proof?.source === "manual";
                     const arrived = streamed.some((item) => item.id === event.id);
                     return (
                       <tr key={event.id} className={arrived ? "is-streamed" : undefined}>
                         <td className="mono">{formatClock(eventSecond(event))}</td>
-                        <td><span className={`swatch swatch--${event.teamId}`} aria-hidden="true" /> {describeEvent(event, liveFixture?.id === job?.fixtureId ? liveFixture : null, job ? { home: job.request.home.name, away: job.request.away.name } : undefined)}{!proof && <span className="tag tag--ghost">rule</span>}</td>
-                        <td className="mono">{proof ? `${Math.round(proof.confidence * 100)}%` : "—"}</td>
+                        <td><span className={`swatch swatch--${event.teamId}`} aria-hidden="true" /> {describeEvent(event, liveFixture?.id === job?.fixtureId ? liveFixture : null, job ? { home: job.request.home.name, away: job.request.away.name } : undefined)}{!proof && <span className="tag tag--ghost">rule</span>}{manual && <span className="tag tag--accent">you</span>}</td>
+                        <td className="mono">{manual ? "Tagged" : proof ? `${Math.round(proof.confidence * 100)}%` : "—"}</td>
                         <td className="subtle-text">{proof?.description ?? (event.type === "shot" ? "Added: a goal needs a shot." : "")}</td>
-                        <td>{proof && <button type="button" className="link-button" onClick={() => setFrameIndex(proof.frameIndex)}>#{proof.frameIndex}</button>}</td>
+                        <td>
+                          {proof && proof.frameIndex >= 0 && <button type="button" className="link-button" onClick={() => setFrameIndex(proof.frameIndex)} title={manual ? "Nearest sampled frame" : undefined}>#{proof.frameIndex}</button>}
+                          {manual && proof.tagId && <button type="button" className="link-button video-events__remove" onClick={() => void removeTag(proof.tagId!)} disabled={liveLocked} aria-label={`Remove your ${labelize(event.type)} tag at ${formatClock(eventSecond(event))}`}>Remove</button>}
+                        </td>
                       </tr>
                     );
                   })}
@@ -254,6 +317,43 @@ export function VideoLab({ status, liveFixture, onStreamed, onOpenDesk }: VideoL
             </div>
           ) : (
             <div className="empty-state">{job?.stage === "ready" ? "No events passed the confidence and team rules. Try a clip with clearer action or add kit colours." : "Events appear here once the worker has processed a clip."}</div>
+          )}
+          {job?.stage === "ready" && (
+            <div className="video-tagger">
+              <div className="video-tagger__head">
+                <strong>Tag a missed moment</strong>
+                <span className="tag mono">{job.manualTags.length}/{MAX_MANUAL_TAGS}</span>
+              </div>
+              <p className="subtle-text">The model only sees sampled frames. Pause the clip where it missed something and add it here. Your tags go through the same rules and stream like any other event.</p>
+              <div className="video-tagger__grid">
+                <label className="field"><span>Event</span>
+                  <select value={tagType} onChange={(event) => setTagType(event.target.value as DetectableEventType)}>{DETECTABLE_EVENT_TYPES.map((type) => <option key={type} value={type}>{labelize(type)}</option>)}</select>
+                </label>
+                <label className="field"><span>Team</span>
+                  <select value={tagTeam} onChange={(event) => setTagTeam(event.target.value as TeamId)}>
+                    <option value="home">{job.request.home.name}</option>
+                    <option value="away">{job.request.away.name}</option>
+                  </select>
+                </label>
+                <label className="field"><span>Time</span>
+                  <input type="text" inputMode="numeric" maxLength={6} placeholder={formatClock(Math.floor(videoTime))} value={tagTime} onChange={(event) => setTagTime(event.target.value)} aria-describedby="tag-time-hint" />
+                </label>
+                <label className="field"><span>Shirt # (optional)</span>
+                  <input type="text" inputMode="numeric" maxLength={2} value={tagShirt} onChange={(event) => setTagShirt(event.target.value.replace(/\D/gu, ""))} />
+                </label>
+                <label className="field video-tagger__note"><span>Note (optional)</span>
+                  <input type="text" maxLength={120} placeholder="e.g. header at the far post" value={tagNote} onChange={(event) => setTagNote(event.target.value)} />
+                </label>
+              </div>
+              <div className="control-row">
+                <button type="button" className="button button--primary" onClick={() => void addTag()} disabled={tagging || liveLocked || job.manualTags.length >= MAX_MANUAL_TAGS}>
+                  {tagging ? "Adding…" : `Add ${labelize(tagType).toLowerCase()} at ${tagTime.trim() || formatClock(Math.floor(videoTime))}`}
+                </button>
+                <span id="tag-time-hint" className="subtle-text">
+                  {liveLocked ? "Stop the live stream to change tags." : job.manualTags.length >= MAX_MANUAL_TAGS ? `Limit reached — remove a tag to add another.` : "Leave Time empty to use where the video is paused."}
+                </span>
+              </div>
+            </div>
           )}
           {job && frameIndex !== null && (
             <figure className="video-evidence">

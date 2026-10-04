@@ -38,12 +38,18 @@ top shows each pipeline stage with live health.
 
 **Recap and highlights**
 
-* **Highlight reel**, generated automatically from the verified events, in English, Spanish or French:
+* **Highlight reel**, generated automatically from the verified events and approved storylines,
+  in English, Spanish or French:
 
-  - *Data-rendered*: an animated pitch reel with scorebug, event trail and captions.
-  - *Your footage*: load a video you filmed or have a licence for. MatchLens cuts it around
-    each moment and draws the same overlays on top. The file never leaves the browser.
-  - Export the reel as WebM, or download the cut list (JSON plus an ffmpeg script).
+  - *Video recap*: when the match came from the Video lab, the reel is cut from that clip
+    automatically, around the events the worker and the producer tagged, with storyline captions
+    and a scorebug on top.
+  - *Data-rendered*: synthetic matches have no footage, so the reel is an animated pitch with
+    scorebug, event trail and captions.
+  - *Sound*: a commentary voice reads each moment's caption in the reel language; video recaps
+    also play the clip's own audio. One toggle turns both off.
+  - Export the reel as WebM (with the clip audio for video recaps), or download the cut list
+    (JSON plus an ffmpeg script).
 
 * **Narrated recap** for an analyst or casual audience, in English, Spanish or French, built
   from the live view so manual corrections are reflected.
@@ -53,6 +59,7 @@ top shows each pipeline stage with live health.
 
 * Upload a short clip you own. The video worker samples frames, a vision model tags events and
   deterministic rules turn them into a match that streams through Eventstream to the live desk.
+  Tag up to five moments the model missed yourself.
 
 How it works
 ------------
@@ -98,7 +105,8 @@ Highlight reel
 ~~~~~~~~~~~~~~
 
 ``shared/highlights.ts`` ranks verified events: goals, ruled-out goals, red cards, big chances
-(xG >= 0.25), key saves (shot xG >= 0.15) and bookings. A moment scores higher if an approved
+(xG >= 0.25), key saves (shot xG >= 0.15) and bookings. Video-lab matches have no xG, so every
+missed or saved attempt and every save counts. A moment scores higher if an approved
 storyline covers it. The top moments (eight by default) get a time window that starts before the
 moment; overlapping windows are merged so no footage repeats. Each clip's caption is the approved
 storyline overlay in the chosen language, falling back to English (flagged in the UI) or to a
@@ -106,19 +114,16 @@ built-in caption.
 
 The same clip list drives every output:
 
+:Video recap: For a Video lab match, the processed clip plays in a hidden video element and a
+              canvas draws it with the overlays. Video-lab events run on the clip's own clock, so
+              each event second is the same second in the footage; no manual alignment is needed.
 :Data-rendered: Canvas animation at 1280x720, recorded to WebM with ``MediaRecorder``.
-:Your footage: An HTML video element plus a canvas overlay, in the browser only. Two time mappings:
-
-               * *Full match clock*: for a full recording. Set the kick-off offset and
-                 half-time break; clips land on the exact moment.
-               * *Fit to clip*: for short or stock footage. Moments are spread across the
-                 recording in match order and trimmed evenly when the recording is short.
-
 :Cut list: JSON timecodes plus a bash script that cuts and joins the clips with ffmpeg in an
            edit suite.
+:Sound: The browser's speech engine reads each clip's caption as the reel reaches it. Video
+        recap exports include the clip audio through Web Audio; the voice is live only.
 
-Synthetic matches have no footage of their own. Captions only describe what is on screen when
-the events and the footage come from the same match.
+Synthetic matches have no footage of their own, so their reel is always data-rendered.
 
 Video lab (beta)
 ~~~~~~~~~~~~~~~~
@@ -140,7 +145,11 @@ data provider. It follows the PlayerIQ worker pattern, in-process for this demo:
    highlight reel then run on what the camera saw.
 
 Each detected event shows the model's description, its confidence and the exact frame it saw.
-*Swap teams* fixes a clip where the model put the kits on the wrong sides.
+*Swap teams* fixes a clip where the model put the kits on the wrong sides. *Tag a missed moment*
+adds up to five producer events (type, team, time, optional shirt number and note). Tags are
+trusted over model reports of the same moment, still get the shot-before-goal rule, and are marked
+"you" in the evidence table. Once streamed, **Recap and highlights** cuts a video recap from the
+clip.
 
 Limits: sampled stills miss quick passes; there is no player tracking, so positions are frame
 positions; players are identified only by legible numbers. A fan-filmed clip that cuts away at the
@@ -172,8 +181,9 @@ Trust and guardrails
 * Agent copy that adds names or numbers not in its verified claims is rejected and retried.
 * Nothing goes on air without producer approval. Edits are recorded in the trace.
 * A goal correction keeps the original event in the audit trail and retracts dependent output.
-* Footage loaded into the highlight reel is never uploaded. Loading any footage, here or in the
-  Video lab, requires confirming you filmed it or have a licence.
+* Uploading a clip to the Video lab requires confirming you filmed it or have a licence. The
+  source file is deleted once processing finishes; the video recap plays from the copy in your
+  browser.
 * The video worker fails closed: frames that are not real football footage stop the job before any
   events exist, and only detections that cite a sampled frame are kept.
 * When the model is unavailable, AI features say so; there is no hidden mock narration.
@@ -249,7 +259,7 @@ Provisioning
    npx tsx scripts/eventstream-smoke.ts
 
    # App-only update
-   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-5-0 -UseExistingInfrastructure
+   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-5-1 -UseExistingInfrastructure
 
 ``deploy.ps1`` reads ``fabric/.secrets.local.json`` and stores the Eventstream connection strings
 as Container Apps secrets. Re-running ``provision-fabric.ps1`` rotates those endpoints, so redeploy
@@ -294,6 +304,8 @@ API
      - Worker progress, detected events with evidence; the exact frame the model saw
    * - ``POST /api/video/jobs/{id}/swap-teams``, ``/live``
      - Flip home and away kits; stream the detected events through the live pipeline at real time
+   * - ``POST /api/video/jobs/{id}/tags``, ``DELETE .../tags/{tagId}``
+     - Add or remove a producer tag (at most five per clip; ``type``, ``team``, ``second``, optional ``shirtNumber`` and ``note``)
 
 Request and response contracts are in ``shared/types.ts`` and ``shared/platform.ts``. Inputs are
 validated with zod; bodies, request rates and AI concurrency are bounded.

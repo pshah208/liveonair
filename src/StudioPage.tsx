@@ -6,7 +6,7 @@ import { BroadcastBar, EventFeed, FactTicker, LiveStats, MatchIntelligence, Over
 import { HighlightReelPanel } from "./HighlightReel.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
-import { VideoLab } from "./VideoLab.js";
+import { VideoLab, type VideoFootage } from "./VideoLab.js";
 import {
   clamp,
   computeScoreFromEvents,
@@ -51,6 +51,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   const [awayClubId, setAwayClubId] = useState("");
   const [speed, setSpeed] = useState(30);
   const [submitting, setSubmitting] = useState(false);
+  const [videoFootage, setVideoFootage] = useState<VideoFootage | null>(null);
 
   const [deskLanguage, setDeskLanguage] = useState<Language>("en");
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(null);
@@ -277,7 +278,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
 
       {/* Kept mounted so an uploaded clip and its job survive switching tabs. */}
       <div hidden={tab !== "video"}>
-        <VideoLab status={status} liveFixture={fixture} onStreamed={(next) => void handleVideoStreamed(next)} onOpenDesk={() => setTab("live")} />
+        <VideoLab status={status} liveFixture={fixture} onStreamed={(next) => void handleVideoStreamed(next)} onOpenDesk={() => setTab("live")} onFootage={setVideoFootage} />
       </div>
 
       {tab === "video" ? null : tab === "live" ? (
@@ -347,7 +348,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
         </div>
       ) : fixture ? (
         <div className="recap-grid">
-          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} />
+          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={videoFootage?.fixtureId === fixture.id ? videoFootage : null} onOpenVideoLab={() => setTab("video")} />
           <div className="desk-col">
             <RecapPanel
               narrative={narrative}

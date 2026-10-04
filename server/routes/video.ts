@@ -9,8 +9,9 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 
 import type { LiveService } from "../contracts.js";
+import { DETECTABLE_EVENT_TYPES, type VideoJob } from "../../shared/video.js";
 import { runCommand, type RunCommand } from "../video/ffmpeg.js";
-import type { VideoWorker } from "../video/worker.js";
+import { MAX_VIDEO_SECONDS, VideoJobConflict, type VideoWorker } from "../video/worker.js";
 import { HttpError } from "../validation.js";
 
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -33,6 +34,14 @@ const uploadQuerySchema = z.object({
 }).strict();
 
 const jobIdSchema = z.string().regex(/^[a-f0-9]{12}$/u);
+
+const tagSchema = z.object({
+  type: z.enum(DETECTABLE_EVENT_TYPES),
+  team: z.enum(["home", "away"]),
+  second: z.number().int().min(0).max(MAX_VIDEO_SECONDS),
+  shirtNumber: z.number().int().min(1).max(99).nullable().optional(),
+  note: z.string().max(120).regex(/^[\p{L}\p{N} ,.'!?#()&/:-]*$/u, "use letters, numbers and basic punctuation").optional(),
+}).strict();
 
 type CreateVideoRouterOptions = {
   worker: VideoWorker;
@@ -63,6 +72,10 @@ function byteLimit(limit: number, onBytes: (total: number) => void): Transform {
   });
 }
 
+function conflictTo409(error: unknown): unknown {
+  return error instanceof VideoJobConflict ? new HttpError(409, error.message) : error;
+}
+
 export function createVideoRouter(options: CreateVideoRouterOptions): express.Router {
   const router = express.Router();
   const run = options.run ?? runCommand;
@@ -70,6 +83,17 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
   const checkFfmpeg = () => (ffmpegAvailable ??= run("ffmpeg", ["-hide_banner", "-version"]).then(() => true, () => false));
 
   const uploadLimiter = rateLimit({ windowMs: 10 * 60_000, limit: 6, standardHeaders: true, legacyHeaders: false, message: { error: "Too many video uploads; try again in a few minutes" } });
+
+  /** A job that exists, is processed and isn't currently streaming, so its fixture can be rebuilt. */
+  function editableJob(rawId: unknown, action: string): VideoJob {
+    const id = parseOr400(jobIdSchema, rawId);
+    const job = options.worker.get(id);
+    if (!job) throw new HttpError(404, "Video job not found");
+    const status = options.live.status();
+    if (status.state === "running" && status.fixtureId === job.fixtureId) throw new HttpError(409, `Stop the live stream before ${action}`);
+    if (job.stage !== "ready") throw new HttpError(409, "The video has not finished processing");
+    return job;
+  }
 
   router.get("/api/video/health", async (_request, response) => {
     response.json({ visionConfigured: options.visionConfigured, ffmpeg: await checkFfmpeg(), maxUploadBytes: MAX_UPLOAD_BYTES });
@@ -140,15 +164,30 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
 
   router.post("/api/video/jobs/:id/swap-teams", (request, response, next) => {
     try {
-      const id = parseOr400(jobIdSchema, request.params.id);
-      const job = options.worker.get(id);
-      if (!job) throw new HttpError(404, "Video job not found");
-      const status = options.live.status();
-      if (status.state === "running" && status.fixtureId === job.fixtureId) throw new HttpError(409, "Stop the live stream before swapping teams");
-      if (job.stage !== "ready") throw new HttpError(409, "The video has not finished processing");
-      response.json(options.worker.swapTeams(id));
+      const job = editableJob(request.params.id, "swapping teams");
+      response.json(options.worker.swapTeams(job.id));
     } catch (error) {
-      next(error);
+      next(conflictTo409(error));
+    }
+  });
+
+  router.post("/api/video/jobs/:id/tags", (request, response, next) => {
+    try {
+      const job = editableJob(request.params.id, "tagging events");
+      const tag = parseOr400(tagSchema, request.body);
+      response.status(201).json(options.worker.addTag(job.id, { ...tag, shirtNumber: tag.shirtNumber ?? null, note: tag.note ?? "" }));
+    } catch (error) {
+      next(conflictTo409(error));
+    }
+  });
+
+  router.delete("/api/video/jobs/:id/tags/:tagId", (request, response, next) => {
+    try {
+      const job = editableJob(request.params.id, "removing tags");
+      const tagId = parseOr400(z.string().regex(/^[a-f0-9]{8}$/u), request.params.tagId);
+      response.json(options.worker.removeTag(job.id, tagId));
+    } catch (error) {
+      next(conflictTo409(error));
     }
   });
 

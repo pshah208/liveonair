@@ -12,6 +12,7 @@ import { buildVideoFixture, MIN_CONFIDENCE } from "../server/video/events.js";
 import { sampleTimestamps } from "../server/video/ffmpeg.js";
 import { buildVisionMessages, parseVisionResult, type VisionAnalyzer, type VisionBatchResult } from "../server/video/vision.js";
 import { createVideoWorker } from "../server/video/worker.js";
+import { buildHighlightReel } from "../shared/highlights.js";
 import type { MatchFixture } from "../shared/types.js";
 import type { VideoFrame, VideoJob, VideoJobRequest, VisionDetection } from "../shared/video.js";
 
@@ -71,6 +72,45 @@ test("builder gates confidence and team, de-duplicates and keeps football consis
   }
   const snapshot = analyzeFixture(fixture, { fixtureId: fixture.id, atSecond: fixture.durationSeconds, persona: "analyst", language: "en" });
   assert.deepEqual(snapshot.score, { home: 0, away: 1 });
+});
+
+test("producer tags are trusted, win over model duplicates and keep the rules", () => {
+  const built = buildVideoFixture({
+    jobId: "tagged",
+    request,
+    durationSeconds: 60,
+    frames,
+    detections: [
+      detection({ frameIndex: 10, type: "shot", team: "home", outcome: "miss", confidence: 0.9 }), // 21 s
+      detection({ frameIndex: 12, type: "goal", team: "home", confidence: 0.6 }), // 25 s, duplicate of the tag
+    ],
+    manualTags: [
+      { id: "aaaa0001", type: "goal", team: "home", second: 23, shirtNumber: 9, note: "Header" },
+      { id: "aaaa0002", type: "yellow_card", team: "away", second: 500, shirtNumber: null, note: "" },
+    ],
+  });
+  const goals = built.fixture.events.filter((event) => event.type === "goal");
+  assert.equal(goals.length, 1, "the model's report of the same goal is dropped");
+  assert.equal(goals[0]!.playerId, "home-9");
+  assert.equal(goals[0]!.minute * 60 + goals[0]!.second, 23);
+  assert.equal(built.fixture.events.find((event) => event.type === "shot")!.outcome, "success", "the model's shot becomes the scoring shot");
+  const card = built.fixture.events.find((event) => event.type === "yellow_card")!;
+  assert.equal(card.minute * 60 + card.second, 59, "tag time is clamped inside the clip");
+  const proof = built.evidence.find((item) => item.eventId === goals[0]!.id)!;
+  assert.deepEqual([proof.source, proof.tagId, proof.confidence, proof.description, proof.frameIndex], ["manual", "aaaa0001", 1, "Header", 11]);
+  assert.equal(built.acceptedCount, 1, "only model detections count towards accepted");
+  assert.equal(built.fixture.correctionEventId, goals[0]!.id);
+
+  // Footage fixtures have no xG, so the recap still picks up attempts and saves.
+  const reel = buildHighlightReel(built.fixture, [], { language: "en" });
+  assert.deepEqual(reel.clips.map((clip) => clip.kind), ["goal", "booking"]);
+  const chances = buildHighlightReel(buildVideoFixture({ jobId: "chance", request, durationSeconds: 60, frames, detections: [
+    detection({ frameIndex: 5, type: "shot", team: "away", outcome: "miss" }), // 11 s
+    detection({ frameIndex: 25, type: "save", team: "away" }), // 51 s
+  ] }).fixture);
+  assert.deepEqual(chances.clips.map((clip) => clip.kind), ["big_chance", "key_save"]);
+  assert.match(chances.clips[0]!.caption, /goes for goal/u);
+  assert.doesNotMatch(chances.clips.map((clip) => clip.caption).join(" "), /xG/u);
 });
 
 test("vision messages carry each frame with its index and kit context; results only cite sent frames", () => {
@@ -152,6 +192,20 @@ test("worker runs probe, frames, vision batches and registers a fixture", async 
     assert.deepEqual(swapped.kits, { home: "red shirts", away: "blue shirts" });
     assert.equal(swapped.request.home.name, "Blue Town", "names stay where the user typed them");
     assert.equal(registered.at(-1)!.events.find((event) => event.type === "goal")!.teamId, "home");
+
+    // Producer tags: limited, validated against the clip, flipped by swap, removable.
+    let tagged = worker.addTag("aaaaaaaaaaaa", { type: "goal", team: "away", second: 70, shirtNumber: 7, note: "" });
+    assert.equal(tagged.manualTags.length, 1);
+    assert.ok(tagged.evidence.some((item) => item.source === "manual" && item.tagId === tagged.manualTags[0]!.id));
+    assert.ok(registered.at(-1)!.events.some((event) => event.type === "goal" && event.playerId === "away-7"), "tag is in the re-registered fixture");
+    assert.throws(() => worker.addTag("aaaaaaaaaaaa", { type: "foul", team: "home", second: 95, shirtNumber: null, note: "" }), /after the end/u);
+    for (let index = 0; index < 4; index += 1) tagged = worker.addTag("aaaaaaaaaaaa", { type: "foul", team: "home", second: 5 + index * 10, shirtNumber: null, note: "" });
+    assert.throws(() => worker.addTag("aaaaaaaaaaaa", { type: "foul", team: "home", second: 80, shirtNumber: null, note: "" }), /up to 5/u);
+    const reswapped = worker.swapTeams("aaaaaaaaaaaa");
+    assert.equal(reswapped.manualTags[0]!.team, "home");
+    const removed = worker.removeTag("aaaaaaaaaaaa", reswapped.manualTags[0]!.id);
+    assert.equal(removed.manualTags.length, 4);
+    assert.ok(!removed.events.some((event) => event.playerId === "home-7"));
   } finally {
     await worker.close();
     rmSync(workRoot, { recursive: true, force: true });
@@ -226,6 +280,12 @@ test("video API validates uploads and job state", async () => {
     assert.equal(fetched.status, 200);
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/not-an-id`)).status, 400);
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}/frames/500`)).status, 404);
+
+    const tagBody = JSON.stringify({ type: "goal", team: "home", second: 5 });
+    const tagHeaders = { "content-type": "application/json" };
+    assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}/tags`, { method: "POST", headers: tagHeaders, body: tagBody })).status, 409, "cannot tag before processing finishes");
+    assert.equal((await fetch(`${baseUrl}/api/video/jobs/ffffffffffff/tags`, { method: "POST", headers: tagHeaders, body: tagBody })).status, 404);
+    assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}/tags/zz`, { method: "DELETE" })).status, 409);
   });
 });
 

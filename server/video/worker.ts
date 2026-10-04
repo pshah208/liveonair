@@ -3,7 +3,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import type { MatchFixture } from "../../shared/types.js";
-import type { VideoFrame, VideoJob, VideoJobRequest, VideoJobStage, VisionDetection } from "../../shared/video.js";
+import { MAX_MANUAL_TAGS, type ManualTagInput, type VideoFrame, type VideoJob, type VideoJobRequest, type VideoJobStage, type VisionDetection } from "../../shared/video.js";
 import { buildVideoFixture } from "./events.js";
 import { extractFrames, framePath, probeVideo, sampleTimestamps, type ProbeResult, type RunCommand } from "./ffmpeg.js";
 import type { VisionAnalyzer } from "./vision.js";
@@ -43,12 +43,18 @@ export interface VideoWorker {
   frameFile(jobId: string, index: number): string | undefined;
   /** Flips which kit is home and which is away, then rebuilds and re-registers the fixture. */
   swapTeams(jobId: string): VideoJob;
+  /** Adds a producer tag for a moment the model missed (at most MAX_MANUAL_TAGS) and rebuilds the fixture. */
+  addTag(jobId: string, tag: ManualTagInput): VideoJob;
+  removeTag(jobId: string, tagId: string): VideoJob;
   /** Resolves when the queue is empty; used by tests. */
   idle(): Promise<void>;
   close(): Promise<void>;
 }
 
 class RejectedFootage extends Error {}
+
+/** Thrown for requests that conflict with the job's state; routes map it to 409. */
+export class VideoJobConflict extends Error {}
 
 export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
   const now = deps.now ?? Date.now;
@@ -141,7 +147,7 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
       if (knownKits && !job.kits) update(job, { kits: knownKits });
 
       setStage(job, "building", 92, "Applying confidence, de-duplication and football consistency rules");
-      const built = buildVideoFixture({ jobId: job.id, request: job.request, durationSeconds: info.durationSeconds, frames, detections });
+      const built = buildVideoFixture({ jobId: job.id, request: job.request, durationSeconds: info.durationSeconds, frames, detections, manualTags: job.manualTags });
       detectionsByJob.set(job.id, detections);
       deps.registerFixture(built.fixture);
       update(job, {
@@ -161,6 +167,20 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
       await rm(sourcePath, { force: true }).catch(() => undefined);
       sources.delete(job.id);
     }
+  }
+
+  function readyJob(jobId: string): VideoJob {
+    const job = jobs.get(jobId);
+    if (!job || job.stage !== "ready" || !detectionsByJob.has(jobId) || job.durationSeconds === undefined) {
+      throw new VideoJobConflict("The video has not finished processing.");
+    }
+    return job;
+  }
+
+  function rebuild(job: VideoJob) {
+    const built = buildVideoFixture({ jobId: job.id, request: job.request, durationSeconds: job.durationSeconds!, frames: job.frames, detections: detectionsByJob.get(job.id)!, manualTags: job.manualTags });
+    deps.registerFixture(built.fixture);
+    update(job, { events: built.fixture.events, evidence: built.evidence, detectionsAccepted: built.acceptedCount });
   }
 
   function pump() {
@@ -198,6 +218,7 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
         detectionsAccepted: 0,
         evidence: [],
         events: [],
+        manualTags: [],
         log: [{ at: createdAt, message: `Uploaded ${input.fileName} (${(input.sizeBytes / 1_048_576).toFixed(1)} MB)` }],
       };
       jobs.set(job.id, job);
@@ -219,16 +240,36 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
       const job = jobs.get(jobId);
       const detections = detectionsByJob.get(jobId);
       if (!job || job.stage !== "ready" || !detections || job.durationSeconds === undefined) {
-        throw new Error("Only a processed clip can have its teams swapped.");
+        throw new VideoJobConflict("Only a processed clip can have its teams swapped.");
       }
-      const flipped = detections.map((detection) => ({ ...detection, team: detection.team === "home" ? "away" as const : detection.team === "away" ? "home" as const : detection.team }));
+      const flip = <T extends string>(team: T) => (team === "home" ? "away" : team === "away" ? "home" : team) as T;
+      const flipped = detections.map((detection) => ({ ...detection, team: flip(detection.team) }));
       detectionsByJob.set(jobId, flipped);
+      job.manualTags = job.manualTags.map((tag) => ({ ...tag, team: flip(tag.team) }));
       // Names stay where the user typed them; only the kit (and so every detection) changes side.
       const kits = job.kits ? { home: job.kits.away, away: job.kits.home } : undefined;
       const request = { home: { ...job.request.home, kit: job.request.away.kit }, away: { ...job.request.away, kit: job.request.home.kit } };
-      const built = buildVideoFixture({ jobId, request, durationSeconds: job.durationSeconds, frames: job.frames, detections: flipped });
-      deps.registerFixture(built.fixture);
-      update(job, { request, kits, events: built.fixture.events, evidence: built.evidence, detectionsAccepted: built.acceptedCount }, kits ? `Teams swapped: ${job.request.home.name} now wears ${kits.home}` : "Teams swapped");
+      update(job, { request, kits }, kits ? `Teams swapped: ${job.request.home.name} now wears ${kits.home}` : "Teams swapped");
+      rebuild(job);
+      return structuredClone(job);
+    },
+    addTag(jobId, input) {
+      const job = readyJob(jobId);
+      if (job.manualTags.length >= MAX_MANUAL_TAGS) throw new VideoJobConflict(`You can add up to ${MAX_MANUAL_TAGS} tags per clip. Remove one first.`);
+      if (input.second > (job.durationSeconds ?? 0)) throw new VideoJobConflict("That time is after the end of the clip.");
+      const tag = { ...input, note: input.note.trim().slice(0, 120), id: randomUUID().replaceAll("-", "").slice(0, 8) };
+      job.manualTags.push(tag);
+      update(job, {}, `Producer tagged ${tag.type.replace("_", " ")} for ${job.request[tag.team].name} at ${tag.second} s`);
+      rebuild(job);
+      return structuredClone(job);
+    },
+    removeTag(jobId, tagId) {
+      const job = readyJob(jobId);
+      const tag = job.manualTags.find((item) => item.id === tagId);
+      if (!tag) throw new VideoJobConflict("Tag not found.");
+      job.manualTags = job.manualTags.filter((item) => item.id !== tagId);
+      update(job, {}, `Producer removed the ${tag.type.replace("_", " ")} tag at ${tag.second} s`);
+      rebuild(job);
       return structuredClone(job);
     },
     async idle() {

@@ -36,13 +36,32 @@ export interface VideoJobRequest {
   away: VideoTeamInput;
 }
 
+/** A producer can add a few events the model missed; they go through the same builder rules. */
+export const MAX_MANUAL_TAGS = 5;
+
+export interface ManualTagInput {
+  type: DetectableEventType;
+  team: TeamId;
+  /** Clip time in whole seconds. */
+  second: number;
+  shirtNumber: number | null;
+  note: string;
+}
+
+export interface ManualTag extends ManualTagInput {
+  id: string;
+}
+
 /** A detected event after the deterministic builder accepted it, with its evidence. */
 export interface VideoEventEvidence {
   eventId: string;
+  /** Frame the model cited, or the nearest sampled frame for a manual tag (-1 if none). */
   frameIndex: number;
   timestampSeconds: number;
   confidence: number;
   description: string;
+  source: "vision" | "manual";
+  tagId?: string;
 }
 
 export interface VideoJob {
@@ -70,6 +89,7 @@ export interface VideoJob {
   fixtureId?: string;
   evidence: VideoEventEvidence[];
   events: MatchEvent[];
+  manualTags: ManualTag[];
   log: { at: string; message: string }[];
   error?: string;
   footageCheck?: { realFootballFootage: boolean; reason: string };

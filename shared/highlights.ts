@@ -100,12 +100,17 @@ export function latestRevisions(events: MatchEvent[]): MatchEvent[] {
   return [...byId.values()].sort((a, b) => eventSecondOf(a) - eventSecondOf(b));
 }
 
-function classify(event: MatchEvent, byId: Map<string, MatchEvent>): { kind: HighlightKind; bonus: number } | null {
+function classify(event: MatchEvent, byId: Map<string, MatchEvent>, hasXg: boolean): { kind: HighlightKind; bonus: number } | null {
   if (event.type === "goal") return event.rescinded ? { kind: "disallowed_goal", bonus: 0 } : { kind: "goal", bonus: 0 };
   if (event.type === "red_card") return { kind: "red_card", bonus: 0 };
-  if (event.type === "shot" && (event.xg ?? 0) >= BIG_CHANCE_XG) return { kind: "big_chance", bonus: Math.round((event.xg ?? 0) * 40) };
+  // Video-tagged matches have no xG, so every attempt that didn't score counts as a chance.
+  if (event.type === "shot") {
+    if (!hasXg) return event.outcome === "success" ? null : { kind: "big_chance", bonus: 0 };
+    return (event.xg ?? 0) >= BIG_CHANCE_XG ? { kind: "big_chance", bonus: Math.round((event.xg ?? 0) * 40) } : null;
+  }
   if (event.type === "save") {
     const shot = event.relatedEventId ? byId.get(event.relatedEventId) : undefined;
+    if (!hasXg) return { kind: "key_save", bonus: 0 };
     const xg = shot?.xg ?? 0;
     return xg >= 0.15 ? { kind: "key_save", bonus: Math.round(xg * 40) } : null;
   }
@@ -128,6 +133,8 @@ type Phrases = {
   sentOff: (name: string) => string;
   goesClose: (name: string, xg: number, outcome: string) => string;
   denies: (name: string, xg: number) => string;
+  attempt: (name: string) => string;
+  stops: (name: string) => string;
   booked: (name: string) => string;
 };
 
@@ -139,6 +146,8 @@ const PHRASES: Record<Language, Phrases> = {
     sentOff: (name) => `${name} is sent off.`,
     goesClose: (name, xg, outcome) => `${name} goes close: ${xg.toFixed(2)} xG, ${outcome}.`,
     denies: (name, xg) => `${name} denies a ${xg.toFixed(2)} xG chance.`,
+    attempt: (name) => `${name} goes for goal.`,
+    stops: (name) => `${name} keeps it out.`,
     booked: (name) => `${name} is booked.`
   },
   es: {
@@ -148,6 +157,8 @@ const PHRASES: Record<Language, Phrases> = {
     sentOff: (name) => `${name} es expulsado.`,
     goesClose: (name, xg) => `${name} roza el gol: ocasión de ${xg.toFixed(2)} xG.`,
     denies: (name, xg) => `${name} detiene una ocasión de ${xg.toFixed(2)} xG.`,
+    attempt: (name) => `${name} busca la portería.`,
+    stops: (name) => `${name} evita el gol.`,
     booked: (name) => `${name} ve la tarjeta amarilla.`
   },
   fr: {
@@ -157,6 +168,8 @@ const PHRASES: Record<Language, Phrases> = {
     sentOff: (name) => `${name} est expulsé.`,
     goesClose: (name, xg) => `${name} passe tout près : occasion à ${xg.toFixed(2)} xG.`,
     denies: (name, xg) => `${name} repousse une occasion à ${xg.toFixed(2)} xG.`,
+    attempt: (name) => `${name} tente sa chance.`,
+    stops: (name) => `${name} s'interpose.`,
     booked: (name) => `${name} reçoit un carton jaune.`
   }
 };
@@ -167,9 +180,9 @@ export function highlightKindLabel(kind: HighlightKind, language: Language): str
 
 /** Fixed on-screen strings for the rendered reel. */
 export const REEL_TEXT: Record<Language, { intro: string; outro: string; moment: (index: number, total: number) => string; moments: (count: number) => string; matchTime: string; dataReel: string; footageReel: string }> = {
-  en: { intro: "MATCHLENS HIGHLIGHTS", outro: "FULL REEL", moment: (i, n) => `MOMENT ${i} OF ${n}`, moments: (n) => `${n} moments · auto-selected from the verified event feed`, matchTime: "match time", dataReel: "SYNTHETIC DATA REEL", footageReel: "YOUR FOOTAGE · SYNTHETIC EVENT OVERLAYS" },
-  es: { intro: "RESUMEN MATCHLENS", outro: "RESUMEN COMPLETO", moment: (i, n) => `JUGADA ${i} DE ${n}`, moments: (n) => `${n} jugadas · seleccionadas automáticamente de los eventos verificados`, matchTime: "tiempo de partido", dataReel: "RESUMEN CON DATOS SINTÉTICOS", footageReel: "TU VÍDEO · GRÁFICOS DE EVENTOS SINTÉTICOS" },
-  fr: { intro: "RÉSUMÉ MATCHLENS", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "VOTRE VIDÉO · HABILLAGE D'ÉVÉNEMENTS SYNTHÉTIQUES" }
+  en: { intro: "MATCHLENS HIGHLIGHTS", outro: "FULL REEL", moment: (i, n) => `MOMENT ${i} OF ${n}`, moments: (n) => `${n} moments · auto-selected from the verified event feed`, matchTime: "match time", dataReel: "SYNTHETIC DATA REEL", footageReel: "VIDEO RECAP · EVENTS TAGGED BY MATCHLENS" },
+  es: { intro: "RESUMEN MATCHLENS", outro: "RESUMEN COMPLETO", moment: (i, n) => `JUGADA ${i} DE ${n}`, moments: (n) => `${n} jugadas · seleccionadas automáticamente de los eventos verificados`, matchTime: "tiempo de partido", dataReel: "RESUMEN CON DATOS SINTÉTICOS", footageReel: "RESUMEN EN VÍDEO · EVENTOS ETIQUETADOS POR MATCHLENS" },
+  fr: { intro: "RÉSUMÉ MATCHLENS", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "RÉSUMÉ VIDÉO · ÉVÉNEMENTS IDENTIFIÉS PAR MATCHLENS" }
 };
 
 function defaultTitle(kind: HighlightKind, minute: number, name: string, team: string, language: Language): string {
@@ -182,10 +195,10 @@ function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, by
     case "goal": return phrases.scores(name, event.xg);
     case "disallowed_goal": return phrases.ruledOut(name);
     case "red_card": return phrases.sentOff(name);
-    case "big_chance": return phrases.goesClose(name, event.xg ?? 0, event.outcome);
+    case "big_chance": return event.xg === undefined ? phrases.attempt(name) : phrases.goesClose(name, event.xg, event.outcome);
     case "key_save": {
       const shot = event.relatedEventId ? byId.get(event.relatedEventId) : undefined;
-      return phrases.denies(name, shot?.xg ?? 0);
+      return shot?.xg === undefined ? phrases.stops(name) : phrases.denies(name, shot.xg);
     }
     case "booking": return phrases.booked(name);
   }
@@ -233,8 +246,9 @@ export function buildHighlightReel(
 
   type Candidate = { event: MatchEvent; kind: HighlightKind; importance: number; start: number; end: number };
   const candidates: Candidate[] = [];
+  const hasXg = events.some((event) => event.type === "shot" && event.xg !== undefined);
   for (const event of events) {
-    const classified = classify(event, byId);
+    const classified = classify(event, byId, hasXg);
     if (!classified) continue;
     const window = WINDOWS[classified.kind];
     const at = eventSecondOf(event);

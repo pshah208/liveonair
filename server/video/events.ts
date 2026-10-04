@@ -1,5 +1,5 @@
 import type { MatchEvent, MatchFixture, Player, Team, TeamId } from "../../shared/types.js";
-import type { VideoEventEvidence, VideoFrame, VideoJobRequest, VisionDetection } from "../../shared/video.js";
+import type { ManualTag, VideoEventEvidence, VideoFrame, VideoJobRequest, VisionDetection } from "../../shared/video.js";
 
 /**
  * Turns raw vision detections into a MatchLens fixture. Everything here is deterministic code: the model
@@ -19,7 +19,7 @@ const DEFAULT_DEDUPE_SECONDS = 3;
 const SHOT_BEFORE_GOAL_SECONDS = 6;
 const SHOT_BEFORE_SAVE_SECONDS = 6;
 
-type Accepted = { detection: VisionDetection; team: TeamId; second: number; timestampSeconds: number };
+type Accepted = { detection: VisionDetection; team: TeamId; second: number; timestampSeconds: number; tagId?: string };
 
 export interface BuiltVideoFixture {
   fixture: MatchFixture;
@@ -92,10 +92,35 @@ export function buildVideoFixture(input: {
   durationSeconds: number;
   frames: VideoFrame[];
   detections: VisionDetection[];
+  manualTags?: ManualTag[];
 }): BuiltVideoFixture {
   const duration = Math.max(2, Math.ceil(input.durationSeconds));
   const fixtureId = `video-${input.jobId}`;
   const frameTime = new Map(input.frames.map((frame) => [frame.index, frame.timestampSeconds]));
+  const clampSecond = (value: number) => Math.min(duration - 1, Math.max(1, Math.floor(value)));
+
+  // 0. Producer tags are trusted: they are accepted first and win over model reports of the same moment.
+  const manual: Accepted[] = (input.manualTags ?? []).map((tag) => {
+    const second = clampSecond(tag.second);
+    const nearest = input.frames.reduce<VideoFrame | undefined>((best, frame) => (!best || Math.abs(frame.timestampSeconds - second) < Math.abs(best.timestampSeconds - second) ? frame : best), undefined);
+    return {
+      team: tag.team,
+      second,
+      timestampSeconds: second,
+      tagId: tag.id,
+      detection: {
+        frameIndex: nearest?.index ?? -1,
+        type: tag.type,
+        team: tag.team,
+        shirtNumber: tag.shirtNumber,
+        outcome: tag.type === "shot" ? "miss" : "none",
+        x: 50,
+        y: 50,
+        confidence: 1,
+        description: tag.note.trim() || "Tagged by the producer",
+      },
+    };
+  });
 
   // 1. Confidence, team and frame gates.
   const candidates: Accepted[] = [];
@@ -103,18 +128,18 @@ export function buildVideoFixture(input: {
     const timestampSeconds = frameTime.get(detection.frameIndex);
     if (timestampSeconds === undefined) continue;
     if (detection.team === "unknown" || !(detection.confidence >= MIN_CONFIDENCE)) continue;
-    const second = Math.min(duration - 1, Math.max(1, Math.floor(timestampSeconds)));
-    candidates.push({ detection, team: detection.team, timestampSeconds, second });
+    candidates.push({ detection, team: detection.team, timestampSeconds, second: clampSecond(timestampSeconds) });
   }
   candidates.sort((a, b) => a.second - b.second || b.detection.confidence - a.detection.confidence);
 
   // 2. One report per moment: drop repeats of the same type for the same team inside the window.
-  const accepted: Accepted[] = [];
+  const accepted: Accepted[] = [...manual];
   for (const candidate of candidates) {
     const window = DEDUPE_SECONDS[candidate.detection.type] ?? DEFAULT_DEDUPE_SECONDS;
     const duplicate = accepted.some((item) => item.detection.type === candidate.detection.type && item.team === candidate.team && Math.abs(item.second - candidate.second) <= window);
     if (!duplicate) accepted.push(candidate);
   }
+  accepted.sort((a, b) => a.second - b.second || Number(Boolean(b.tagId)) - Number(Boolean(a.tagId)));
 
   // 3. Build events and apply football consistency rules.
   const events: MatchEvent[] = [];
@@ -151,6 +176,8 @@ export function buildVideoFixture(input: {
       timestampSeconds: item.timestampSeconds,
       confidence: Math.round(detection.confidence * 100) / 100,
       description: detection.description.slice(0, 240),
+      source: item.tagId ? "manual" : "vision",
+      ...(item.tagId ? { tagId: item.tagId } : {}),
     });
   }
 
@@ -173,6 +200,6 @@ export function buildVideoFixture(input: {
     },
     evidence,
     rawCount: input.detections.length,
-    acceptedCount: accepted.length,
+    acceptedCount: accepted.filter((item) => !item.tagId).length,
   };
 }

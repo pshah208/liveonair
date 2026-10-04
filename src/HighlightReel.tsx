@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightKind } from "../shared/highlights.js";
 import type { Storyline } from "../shared/platform.js";
 import type { Language, MatchFixture } from "../shared/types.js";
-import { FootageReel } from "./FootageReel.js";
 import { createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
+import { speechSupported, useClipNarration } from "./narration.js";
 import { downloadBlob, downloadJson, formatClock, LANGUAGE_LABEL, LANGUAGES } from "./utils.js";
+import { VideoRecap } from "./VideoRecap.js";
 
 type HighlightReelPanelProps = {
   fixture: MatchFixture;
@@ -12,7 +13,12 @@ type HighlightReelPanelProps = {
   /** Live clock; only moments already played are eligible. */
   uptoSecond: number;
   theme: string;
+  /** The Video lab clip behind this fixture, when there is one. */
+  footage: { url: string; name: string } | null;
+  onOpenVideoLab: () => void;
 };
+
+const SOUND_KEY = "matchlens.reel.sound";
 
 const KIND_LABEL: Record<HighlightKind, string> = {
   goal: "Goal",
@@ -28,7 +34,7 @@ function pickMimeType(): string | undefined {
   return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
 }
 
-export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: HighlightReelPanelProps) {
+export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, footage, onOpenVideoLab }: HighlightReelPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelRef = useRef<ReelModel | null>(null);
   const timeRef = useRef(0);
@@ -37,15 +43,25 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
   const [time, setTime] = useState(0);
   const [exporting, setExporting] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [source, setSource] = useState<"data" | "footage">("data");
   const [footageClip, setFootageClip] = useState(-1);
+  const [footagePlaying, setFootagePlaying] = useState(false);
   const [seekRequest, setSeekRequest] = useState<{ index: number; nonce: number } | null>(null);
   const [language, setLanguage] = useState<Language>("en");
+  const [sound, setSound] = useState(() => localStorage.getItem(SOUND_KEY) !== "off");
   const recorderSupported = useMemo(() => Boolean(pickMimeType()), []);
+  const voiceSupported = useMemo(() => speechSupported(), []);
+  const source: "data" | "footage" = footage ? "footage" : "data";
 
   const reel = useMemo(() => buildHighlightReel(fixture, storylines, { uptoSecond, language }), [fixture, storylines, uptoSecond, language]);
   const model = useMemo(() => (reel.clips.length > 0 ? createReelModel(fixture, reel, readPalette()) : null), [fixture, reel, theme]);
   modelRef.current = model;
+
+  function toggleSound() {
+    setSound((current) => {
+      localStorage.setItem(SOUND_KEY, current ? "off" : "on");
+      return !current;
+    });
+  }
 
   const draw = (at: number) => {
     const canvas = canvasRef.current;
@@ -149,42 +165,53 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
     seek(model.timeline.clipStarts[index] ?? 0);
   }
 
-  function switchSource(next: "data" | "footage") {
-    setPlaying(false);
-    setSource(next);
-  }
+  useEffect(() => { setPlaying(false); }, [source]);
 
   const activeSegment = model ? segmentAt(model.timeline, time) : null;
   const activeClipIndex = source === "footage" ? footageClip : activeSegment && "index" in activeSegment ? activeSegment.index : -1;
+  useClipNarration(reel, activeClipIndex, source === "footage" ? footagePlaying : playing && exporting === null, sound && voiceSupported);
+
+  const soundButton = (
+    <button type="button" className={`button button--ghost reel__sound${sound ? " is-on" : ""}`} aria-pressed={sound} onClick={toggleSound} title={voiceSupported ? "Commentary voice reads each moment's caption; video recaps also play the clip's own audio" : "This browser has no speech voice; sound only affects clip audio"}>
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2 6h2.5L8 3v10L4.5 10H2z" fill="currentColor" />
+        {sound ? <path d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6.5 6.5 0 0 1 0 9" /> : <path d="M10.5 6l4 4M14.5 6l-4 4" />}
+      </svg>
+      {sound ? "Sound on" : "Sound off"}
+    </button>
+  );
 
   return (
     <section className="panel reel" aria-labelledby="reel-title">
       <header className="panel__header">
         <div>
           <span className="eyebrow">Auto-generated</span>
-          <h2 id="reel-title">Highlight reel</h2>
+          <h2 id="reel-title">{source === "footage" ? "Video recap" : "Highlight reel"}</h2>
         </div>
         <div className="chips">
-          <span className="tag">{reel.clips.length} moments</span>
-          {model && <span className="tag">{Math.round(model.timeline.duration)} s reel</span>}
+          <span className="tag">{reel.clips.length} {reel.clips.length === 1 ? "moment" : "moments"}</span>
+          {model && <span className="tag">{Math.round(source === "footage" ? reel.totalMatchSeconds : model.timeline.duration)} s</span>}
+          {soundButton}
           <label className="inline-select"><span className="sr-only">Reel language</span><select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
         </div>
       </header>
-      <p className="lede">
-        MatchLens ranks every verified event (goals, corrections, red cards, big chances, key saves) and cuts a reel around them.
-        Captions come from producer-approved storylines. Render it from the event data, or drop in footage you own and MatchLens
-        cuts it and lays the same overlays on top.
-      </p>
+      {source === "footage" ? (
+        <p className="lede">
+          Cut automatically from your Video lab clip. MatchLens ranks the events the video worker and you tagged, takes each moment
+          from the footage, and captions it with the storylines the agents wrote on the live desk.
+        </p>
+      ) : (
+        <p className="lede">
+          MatchLens ranks every verified event (goals, corrections, red cards, big chances, key saves) and cuts a reel around them, captioned
+          with producer-approved storylines. This match is synthetic, so the reel is drawn from the event data.{" "}
+          <button type="button" className="link-button" onClick={onOpenVideoLab}>Process a clip in Video lab</button> to get a recap cut from real footage.
+        </p>
+      )}
 
       {model ? (
-        <>
-        <div className="segmented segmented--compact reel__source" role="group" aria-label="Reel source">
-          <button type="button" className={`segmented__item${source === "data" ? " is-active" : ""}`} aria-pressed={source === "data"} onClick={() => switchSource("data")}>Data-rendered</button>
-          <button type="button" className={`segmented__item${source === "footage" ? " is-active" : ""}`} aria-pressed={source === "footage"} onClick={() => switchSource("footage")}>Your footage</button>
-        </div>
         <div className="reel__body">
-          {source === "footage" ? (
-            <FootageReel fixture={fixture} reel={reel} model={model} seekRequest={seekRequest} onActiveClip={setFootageClip} pickMimeType={pickMimeType} />
+          {footage ? (
+            <VideoRecap fixture={fixture} reel={reel} model={model} footage={footage} sound={sound} seekRequest={seekRequest} onActiveClip={setFootageClip} onPlayingChange={setFootagePlaying} pickMimeType={pickMimeType} />
           ) : (
           <div className="reel__stage">
             <canvas ref={canvasRef} width={REEL_WIDTH} height={REEL_HEIGHT} className="reel__canvas" aria-label="Highlight reel player" />
@@ -221,9 +248,8 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme }: H
             ))}
           </ol>
         </div>
-        </>
       ) : (
-        <div className="empty-state">No highlight moments yet. Goals, big chances and corrections will appear here as the match plays.</div>
+        <div className="empty-state">{source === "footage" ? "No recap moments in this clip yet. Stream it to the live desk, or tag a missed goal or chance in Video lab." : "No highlight moments yet. Goals, big chances and corrections will appear here as the match plays."}</div>
       )}
     </section>
   );
