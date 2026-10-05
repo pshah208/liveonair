@@ -22,8 +22,8 @@ What you can do
 
 The app has two desks, switched at the top of the page:
 
-* **Studio Desk**: the producer studio described below, with three tabs (Live desk, Recap and
-  highlights, Video lab).
+* **Studio Desk**: the producer studio described below, with four tabs (Live desk, Recap and
+  highlights, Video lab, Player cam).
 * **VAR Desk** (next phase): a design preview of an assistant for VAR reviews. See `VAR Desk
   (next phase)`_.
 
@@ -67,6 +67,12 @@ with live health.
 * Upload a short clip you own. The video worker samples frames, a vision model tags events and
   deterministic rules turn them into a match that streams through Eventstream to the live desk.
   Tag up to five moments the model missed yourself.
+
+**Player cam (beta)**
+
+* A fan experience: upload a clip, click the player you want to follow (or give their shirt
+  number and kit) and get a personal highlight reel with a spotlight on them, in landscape or a
+  vertical 9:16 cut that pans with the player. Nothing is sent to Eventstream.
 
 How it works
 ------------
@@ -162,6 +168,28 @@ Limits: sampled stills miss quick passes; there is no player tracking, so positi
 positions; players are identified only by legible numbers. A fan-filmed clip that cuts away at the
 goal produces a shot, not a goal. In production a licensed event feed such as Opta replaces this
 step; the rest of the pipeline is unchanged.
+
+Player cam (beta)
+~~~~~~~~~~~~~~~~~
+
+Player cam reuses the video worker to follow one player instead of tagging match events. It is a
+fan product, so it never touches Eventstream or the live desk.
+
+1. **Identify.** The fan pauses the clip and clicks the player; the shirt number and kit are
+   optional extra hints. At least one of the three is required.
+2. **Reference.** ffmpeg draws a box round the clicked spot and crops it. Every vision batch gets
+   this crop first, so the model matches build and kit, not just a number that is often unreadable.
+3. **Find.** For each sampled frame the model returns whether the player is visible, a bounding box,
+   what they are doing (shot, header, save, dribble, tackle, pass, on the ball, celebration, off the
+   ball) and a confidence.
+4. **Build moments.** Code keeps sightings at 50% confidence or more, groups involvement that is
+   close in time, pads each moment (2.5 s before, 2 s after, at least 4 s), merges overlaps and
+   ranks by action and confidence (top eight). If the player is never involved, it falls back to
+   up to three positioning moments.
+5. **Reel.** The browser cuts the moments from the local clip and draws a ring at the player's feet
+   and a name tag, interpolated between sightings. *Vertical 9:16* pans with the player for phones.
+   The fan can untick wrong moments; sound plays the clip audio plus a voice that calls each
+   moment; the export includes the clip audio.
 
 Microsoft and Azure services
 ----------------------------
@@ -266,7 +294,7 @@ Provisioning
    npx tsx scripts/eventstream-smoke.ts
 
    # App-only update
-   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-6-0 -UseExistingInfrastructure
+   .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ImageTag v0-7-0 -UseExistingInfrastructure
 
 ``deploy.ps1`` reads ``fabric/.secrets.local.json`` and stores the Eventstream connection strings
 as Container Apps secrets. Re-running ``provision-fabric.ps1`` rotates those endpoints, so redeploy
@@ -315,6 +343,10 @@ API
      - Add or remove a producer tag (at most five per clip; ``type``, ``team``, ``second``, optional ``shirtNumber`` and ``note``)
    * - ``GET /api/video/jobs``, ``DELETE /api/video/jobs/{id}``
      - Clip library, newest first; delete a finished clip with its frames, events, tags and fixture
+   * - ``POST /api/player-cam/jobs``
+     - Upload a Player cam clip; query ``playerName`` plus at least one of ``number``, ``kit`` or ``anchorSecond``/``anchorX``/``anchorY`` (the click)
+   * - ``GET /api/player-cam/jobs``, ``/{id}``, ``/{id}/frames/{n}``, ``/{id}/reference``, ``DELETE /{id}``
+     - Library, job with sightings, track and moments, evidence frames, the reference crop, delete
 
 Request and response contracts are in ``shared/types.ts`` and ``shared/platform.ts``. Inputs are
 validated with zod; bodies, request rates and AI concurrency are bounded.

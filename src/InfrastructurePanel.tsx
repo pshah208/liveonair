@@ -82,7 +82,8 @@ const OUTPUTS = [
   "Reel cut from the Video lab clip automatically, or rendered from data for synthetic matches",
   "Commentary voice reads each highlight caption (sound toggle)",
   "Cut list and ffmpeg script for an edit suite",
-  "Video lab: events tagged from your own clip by a vision model plus up to 5 producer tags, streamed like a live feed"
+  "Video lab: events tagged from your own clip by a vision model plus up to 5 producer tags, streamed like a live feed",
+  "Player cam: a fan's personal reel of one player, with a spotlight and a vertical cut that follows them"
 ];
 
 const PHASE_TWO = [

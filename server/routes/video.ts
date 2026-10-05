@@ -22,8 +22,8 @@ const CONTENT_TYPES: Record<string, string> = {
   "video/webm": "webm",
 };
 
-const nameSchema = z.string().trim().min(1).max(40).regex(/^[\p{L}\p{N} .'&-]+$/u, "use letters, numbers, spaces and . ' & -");
-const kitSchema = z.string().trim().max(60).regex(/^[\p{L}\p{N} ,.'/-]*$/u, "use letters, numbers, spaces and , . ' / -");
+export const nameSchema = z.string().trim().min(1).max(40).regex(/^[\p{L}\p{N} .'&-]+$/u, "use letters, numbers, spaces and . ' & -");
+export const kitSchema = z.string().trim().max(60).regex(/^[\p{L}\p{N} ,.'/-]*$/u, "use letters, numbers, spaces and , . ' / -");
 
 const uploadQuerySchema = z.object({
   fileName: z.string().trim().min(1).max(120),
@@ -33,7 +33,7 @@ const uploadQuerySchema = z.object({
   awayKit: kitSchema.default(""),
 }).strict();
 
-const jobIdSchema = z.string().regex(/^[a-f0-9]{12}$/u);
+export const jobIdSchema = z.string().regex(/^[a-f0-9]{12}$/u);
 
 const tagSchema = z.object({
   type: z.enum(DETECTABLE_EVENT_TYPES),
@@ -50,7 +50,7 @@ type CreateVideoRouterOptions = {
   run?: RunCommand;
 };
 
-function parseOr400<T>(schema: z.ZodType<T>, value: unknown): T {
+export function parseOr400<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) {
     const issue = result.error.issues[0];
@@ -72,15 +72,37 @@ function byteLimit(limit: number, onBytes: (total: number) => void): Transform {
   });
 }
 
-function conflictTo409(error: unknown): unknown {
+/** Validates the upload headers and returns the file extension for the content type. */
+export function uploadExtension(request: express.Request): string {
+  const contentType = (request.header("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const extension = CONTENT_TYPES[contentType];
+  if (!extension) throw new HttpError(415, "Upload an MP4, MOV or WebM video");
+  const declared = Number(request.header("content-length") ?? 0);
+  if (declared > MAX_UPLOAD_BYTES) throw new HttpError(413, `The video is larger than ${MAX_UPLOAD_BYTES / 1_048_576} MB.`);
+  return extension;
+}
+
+/** Streams the raw request body to disk with the size cap; returns the byte count. */
+export async function writeUpload(request: express.Request, sourcePath: string): Promise<number> {
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  let sizeBytes = 0;
+  await pipeline(request, byteLimit(MAX_UPLOAD_BYTES, (total) => { sizeBytes = total; }), createWriteStream(sourcePath));
+  if (sizeBytes === 0) throw new HttpError(400, "The upload was empty");
+  return sizeBytes;
+}
+
+export function createFfmpegCheck(run: RunCommand): () => Promise<boolean> {
+  let available: Promise<boolean> | null = null;
+  return () => (available ??= run("ffmpeg", ["-hide_banner", "-version"]).then(() => true, () => false));
+}
+
+export function conflictTo409(error: unknown): unknown {
   return error instanceof VideoJobConflict ? new HttpError(409, error.message) : error;
 }
 
 export function createVideoRouter(options: CreateVideoRouterOptions): express.Router {
   const router = express.Router();
-  const run = options.run ?? runCommand;
-  let ffmpegAvailable: Promise<boolean> | null = null;
-  const checkFfmpeg = () => (ffmpegAvailable ??= run("ffmpeg", ["-hide_banner", "-version"]).then(() => true, () => false));
+  const checkFfmpeg = createFfmpegCheck(options.run ?? runCommand);
 
   const uploadLimiter = rateLimit({ windowMs: 10 * 60_000, limit: 6, standardHeaders: true, legacyHeaders: false, message: { error: "Too many video uploads; try again in a few minutes" } });
 
@@ -104,20 +126,13 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
     try {
       if (!options.visionConfigured) throw new HttpError(503, "Video analysis is not configured on this server");
       if (!(await checkFfmpeg())) throw new HttpError(503, "ffmpeg is not available on this server");
-      const contentType = (request.header("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-      const extension = CONTENT_TYPES[contentType];
-      if (!extension) throw new HttpError(415, "Upload an MP4, MOV or WebM video");
-      const declared = Number(request.header("content-length") ?? 0);
-      if (declared > MAX_UPLOAD_BYTES) throw new HttpError(413, `The video is larger than ${MAX_UPLOAD_BYTES / 1_048_576} MB.`);
+      const extension = uploadExtension(request);
       const query = parseOr400(uploadQuerySchema, request.query);
 
       const jobId = options.worker.newJobId();
       jobDirectory = options.worker.jobDirectory(jobId);
-      await mkdir(jobDirectory, { recursive: true });
       const sourcePath = path.join(jobDirectory, `source.${extension}`);
-      let sizeBytes = 0;
-      await pipeline(request, byteLimit(MAX_UPLOAD_BYTES, (total) => { sizeBytes = total; }), createWriteStream(sourcePath));
-      if (sizeBytes === 0) throw new HttpError(400, "The upload was empty");
+      const sizeBytes = await writeUpload(request, sourcePath);
 
       const job = options.worker.submit({
         jobId,

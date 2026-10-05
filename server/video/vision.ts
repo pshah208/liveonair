@@ -132,31 +132,37 @@ export function parseVisionResult(raw: unknown, frameIndexes: Set<number>): Omit
   };
 }
 
-export function createVisionAnalyzerFromEnv(env: NodeJS.ProcessEnv = process.env): VisionAnalyzer {
+/** One strict-JSON chat completion with images; shared by the event tagger and Player cam. */
+export interface VisionCaller {
+  configured: boolean;
+  model: string;
+  call(messages: unknown[], schemaName: string, schema: object): Promise<{ content: unknown; usage: { inputTokens: number; outputTokens: number } }>;
+}
+
+export function createVisionCallerFromEnv(env: NodeJS.ProcessEnv = process.env): VisionCaller {
   const endpoint = env.AZURE_OPENAI_ENDPOINT?.trim();
   const deployment = env.AZURE_OPENAI_DEPLOYMENT?.trim() || "matchlens-narrator";
   if (!endpoint) {
     return {
       configured: false,
       model: deployment,
-      async analyzeBatch() {
+      async call() {
         throw new Error("Video analysis needs AZURE_OPENAI_ENDPOINT to be configured.");
       },
     };
   }
   const tokenProvider = getBearerTokenProvider(getAzureCredential(env), "https://cognitiveservices.azure.com/.default");
   const client = new AzureOpenAI({ endpoint, deployment, apiVersion: env.AZURE_OPENAI_API_VERSION?.trim() || "2024-10-21", azureADTokenProvider: tokenProvider, maxRetries: 0 });
-
   return {
     configured: true,
     model: deployment,
-    async analyzeBatch(input) {
+    async call(messages, schemaName, schema) {
       const startedAt = Date.now();
       const body = {
         model: deployment,
         temperature: 0,
-        messages: buildVisionMessages(input),
-        response_format: { type: "json_schema", json_schema: { name: "video_events", strict: true, schema: VISION_JSON_SCHEMA } },
+        messages,
+        response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema } },
       };
       const response = await createWithRateLimitRetry(
         (requestBody, options) => client.chat.completions.create(requestBody as never, options as never) as unknown as Promise<Record<string, unknown>>,
@@ -166,8 +172,18 @@ export function createVisionAnalyzerFromEnv(env: NodeJS.ProcessEnv = process.env
       ) as { choices?: { message?: { content?: string | null; refusal?: string | null } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       const message = response.choices?.[0]?.message;
       if (!message?.content) throw new Error(message?.refusal ? `The model declined: ${message.refusal}` : "The model returned no content.");
-      const result = parseVisionResult(JSON.parse(message.content), new Set(input.frames.map((frame) => frame.index)));
-      return { ...result, usage: { inputTokens: response.usage?.prompt_tokens ?? 0, outputTokens: response.usage?.completion_tokens ?? 0 } };
+      return { content: JSON.parse(message.content), usage: { inputTokens: response.usage?.prompt_tokens ?? 0, outputTokens: response.usage?.completion_tokens ?? 0 } };
+    },
+  };
+}
+
+export function createVisionAnalyzerFromEnv(env: NodeJS.ProcessEnv = process.env, caller: VisionCaller = createVisionCallerFromEnv(env)): VisionAnalyzer {
+  return {
+    configured: caller.configured,
+    model: caller.model,
+    async analyzeBatch(input) {
+      const { content, usage } = await caller.call(buildVisionMessages(input), "video_events", VISION_JSON_SCHEMA);
+      return { ...parseVisionResult(content, new Set(input.frames.map((frame) => frame.index))), usage };
     },
   };
 }

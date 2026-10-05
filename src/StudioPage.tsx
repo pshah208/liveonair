@@ -7,6 +7,7 @@ import { HighlightReelPanel } from "./HighlightReel.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
 import { VideoLab, type VideoFootage } from "./VideoLab.js";
+import { PlayerCam } from "./PlayerCam.js";
 import {
   clamp,
   computeScoreFromEvents,
@@ -23,7 +24,7 @@ import {
   type Theme
 } from "./utils.js";
 
-type Tab = "live" | "recap" | "video";
+type Tab = "live" | "recap" | "video" | "player";
 type StartMode = "fixture" | "matchlab";
 type Audience = "analyst" | "casual";
 
@@ -272,6 +273,9 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
         <button type="button" className={`tabs__item${tab === "video" ? " is-active" : ""}`} onClick={() => setTab("video")} aria-current={tab === "video" ? "page" : undefined}>
           Video lab <span className="tag tag--accent">Beta</span>
         </button>
+        <button type="button" className={`tabs__item${tab === "player" ? " is-active" : ""}`} onClick={() => setTab("player")} aria-current={tab === "player" ? "page" : undefined}>
+          Player cam <span className="tag tag--accent">New</span>
+        </button>
       </nav>
 
       {pageError && <div className="banner banner--danger" role="alert">{pageError} <button type="button" className="link-button" onClick={() => setPageError(null)}>Dismiss</button></div>}
@@ -280,8 +284,11 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
       <div hidden={tab !== "video"}>
         <VideoLab status={status} liveFixture={fixture} onStreamed={(next) => void handleVideoStreamed(next)} onOpenDesk={() => setTab("live")} onFootage={setVideoFootage} />
       </div>
+      <div hidden={tab !== "player"}>
+        <PlayerCam />
+      </div>
 
-      {tab === "video" ? null : tab === "live" ? (
+      {tab === "video" || tab === "player" ? null : tab === "live" ? (
         <div className="desk-grid">
           <div className="desk-col">
             <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>

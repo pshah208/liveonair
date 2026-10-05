@@ -20,6 +20,7 @@ import type {
   VerifiedFact
 } from "../shared/platform.js";
 import type { ManualTagInput, VideoJob, VideoJobRequest, VideoJobSummary } from "../shared/video.js";
+import type { PlayerCamJob, PlayerCamJobSummary, PlayerCamRequest } from "../shared/playercam.js";
 
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -79,26 +80,44 @@ export const api = {
   addVideoTag(id: string, body: Omit<ManualTagInput, "note"> & { note?: string }) { return requestJson<VideoJob>(`/api/video/jobs/${id}/tags`, { method: "POST", body }); },
   removeVideoTag(id: string, tagId: string) { return requestJson<VideoJob>(`/api/video/jobs/${id}/tags/${tagId}`, { method: "DELETE" }); },
   listVideoJobs(signal?: AbortSignal) { return requestJson<VideoJobSummary[]>("/api/video/jobs", { signal }); },
-  deleteVideoJob(id: string) { return requestJson<null>(`/api/video/jobs/${id}`, { method: "DELETE" }); }
+  deleteVideoJob(id: string) { return requestJson<null>(`/api/video/jobs/${id}`, { method: "DELETE" }); },
+  getPlayerCamJob(id: string, signal?: AbortSignal) { return requestJson<PlayerCamJob>(`/api/player-cam/jobs/${id}`, { signal }); },
+  listPlayerCamJobs(signal?: AbortSignal) { return requestJson<PlayerCamJobSummary[]>("/api/player-cam/jobs", { signal }); },
+  deletePlayerCamJob(id: string) { return requestJson<null>(`/api/player-cam/jobs/${id}`, { method: "DELETE" }); }
 };
 
 export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number };
 
-/** Streams the file to the video worker. XHR rather than fetch so the UI can show upload progress. */
-export function uploadVideo(file: File, request: VideoJobRequest, onProgress: (fraction: number) => void): Promise<VideoJob> {
-  const query = new URLSearchParams({ fileName: file.name, homeName: request.home.name, homeKit: request.home.kit, awayName: request.away.name, awayKit: request.away.kit });
+/** Streams a file to a worker endpoint. XHR rather than fetch so the UI can show upload progress. */
+function uploadFile<T>(url: string, file: File, onProgress: (fraction: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/video/jobs?${query.toString()}`);
+    xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
     xhr.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
     xhr.onload = () => {
       let payload: unknown = null;
       try { payload = JSON.parse(xhr.responseText); } catch { /* non-JSON error */ }
-      if (xhr.status === 202) resolve(payload as VideoJob);
+      if (xhr.status === 202) resolve(payload as T);
       else reject(new Error((payload as { error?: string } | null)?.error ?? `Upload failed with ${xhr.status}`));
     };
     xhr.send(file);
   });
+}
+
+export function uploadVideo(file: File, request: VideoJobRequest, onProgress: (fraction: number) => void): Promise<VideoJob> {
+  const query = new URLSearchParams({ fileName: file.name, homeName: request.home.name, homeKit: request.home.kit, awayName: request.away.name, awayKit: request.away.kit });
+  return uploadFile<VideoJob>(`/api/video/jobs?${query.toString()}`, file, onProgress);
+}
+
+export function uploadPlayerCam(file: File, request: PlayerCamRequest, onProgress: (fraction: number) => void): Promise<PlayerCamJob> {
+  const query = new URLSearchParams({ fileName: file.name, playerName: request.name, kit: request.kit });
+  if (request.number !== null) query.set("number", String(request.number));
+  if (request.anchor) {
+    query.set("anchorSecond", request.anchor.second.toFixed(2));
+    query.set("anchorX", request.anchor.x.toFixed(4));
+    query.set("anchorY", request.anchor.y.toFixed(4));
+  }
+  return uploadFile<PlayerCamJob>(`/api/player-cam/jobs?${query.toString()}`, file, onProgress);
 }

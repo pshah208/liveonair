@@ -64,6 +64,34 @@ export async function extractFrames(options: {
   return frames;
 }
 
+/** Crops the area around a clicked player (x, y in 0–1) from one frame, as the identity reference for the model. */
+export async function extractReferenceCrop(options: {
+  inputPath: string;
+  outputPath: string;
+  second: number;
+  x: number;
+  y: number;
+  run?: RunCommand;
+}): Promise<void> {
+  const run = options.run ?? runCommand;
+  const fx = Math.min(1, Math.max(0, options.x)).toFixed(4);
+  const fy = Math.min(1, Math.max(0, options.y)).toFixed(4);
+  // Expressions use the decoded (auto-rotated) frame size, so phone clips crop the right area.
+  // A box is drawn round the clicked point first, so the model knows exactly which player is meant.
+  const box = `drawbox=x=iw*${fx}-iw*0.035:y=ih*${fy}-ih*0.13:w=iw*0.07:h=ih*0.26:color=yellow@0.95:t=3`;
+  const crop = `crop=trunc(iw*0.1)*2:trunc(min(ih\\,iw*0.32)/2)*2:max(0\\,min(iw*${fx}-ow/2\\,iw-ow)):max(0\\,min(ih*${fy}-oh/2\\,ih-oh))`;
+  await mkdir(path.dirname(options.outputPath), { recursive: true });
+  await run("ffmpeg", [
+    "-hide_banner", "-loglevel", "error",
+    "-ss", String(Math.max(0, options.second)),
+    "-i", options.inputPath,
+    "-frames:v", "1",
+    "-vf", `${box},${crop},scale=-2:'min(480,ih)'`,
+    "-q:v", "4",
+    "-y", options.outputPath,
+  ]);
+}
+
 export function runCommand(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true });

@@ -24,8 +24,11 @@ import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
 import { createStudioRouter } from "./routes/studio.js";
 import { createVideoRouter } from "./routes/video.js";
+import { createPlayerCamRouter } from "./routes/playercam.js";
+import { createPlayerVisionAnalyzer, type PlayerVisionAnalyzer } from "./video/playerVision.js";
+import { createPlayerCamWorker, type PlayerCamWorker } from "./video/playerWorker.js";
 import type { RunCommand } from "./video/ffmpeg.js";
-import { createVisionAnalyzerFromEnv, type VisionAnalyzer } from "./video/vision.js";
+import { createVisionAnalyzerFromEnv, createVisionCallerFromEnv, type VisionAnalyzer } from "./video/vision.js";
 import { createVideoWorker, type VideoWorker } from "./video/worker.js";
 import {
   HttpError,
@@ -47,7 +50,7 @@ type CreateAppOptions = {
   narrator?: Narrator;
   engine?: EngineAdapter;
   platform?: Platform;
-  video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand };
+  video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand; playerVision?: PlayerVisionAnalyzer; playerWorker?: PlayerCamWorker };
   staticDir?: string;
   logger?: (entry: { level: "error"; requestId: string; reason: string; path: string }) => void;
   version?: string;
@@ -283,7 +286,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture }));
   app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
 
-  const vision = options.video?.vision ?? createVisionAnalyzerFromEnv();
+  const visionCaller = createVisionCallerFromEnv();
+  const vision = options.video?.vision ?? createVisionAnalyzerFromEnv(process.env, visionCaller);
   const videoWorker = options.video?.worker ?? createVideoWorker({
     vision,
     registerFixture,
@@ -291,6 +295,13 @@ export function createApp(options: CreateAppOptions = {}) {
     workRoot: resolve(tmpdir(), `matchlens-video-${process.pid}`),
   });
   app.use(createVideoRouter({ worker: videoWorker, live: platform.live, visionConfigured: vision.configured, run: options.video?.run }));
+
+  const playerVision = options.video?.playerVision ?? createPlayerVisionAnalyzer(visionCaller);
+  const playerWorker = options.video?.playerWorker ?? createPlayerCamWorker({
+    vision: playerVision,
+    workRoot: resolve(tmpdir(), `matchlens-playercam-${process.pid}`),
+  });
+  app.use(createPlayerCamRouter({ worker: playerWorker, visionConfigured: playerVision.configured, run: options.video?.run }));
 
   app.use("/api", (_request, response) => {
     sendJsonError(response, 404, "Not found");
