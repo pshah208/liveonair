@@ -324,6 +324,11 @@ function localizationDraft(): LocalizationDraft {
       onAirLine: "Ilias Rowan et Jude Asher apparaissent avec Mara Rowan, Rivergate FC, Northbridge Athletic et 2006.",
       overlay: "Ilias Rowan 2006",
     },
+    pt: {
+      headline: "Ilias Rowan e 2006",
+      onAirLine: "Ilias Rowan e Jude Asher aparecem com Mara Rowan, Rivergate FC, Northbridge Athletic e 2006.",
+      overlay: "Ilias Rowan 2006",
+    },
   };
 }
 
@@ -571,10 +576,12 @@ test("localizer failure leaves missing language empty and records trace detail",
     {
       es: { headline: "Gol sin nombre", onAirLine: "Marcó para Rivergate FC.", overlay: "sin nombre" },
       fr: { headline: "But Rowan", onAirLine: "Ilias Rowan a marqué pour Rivergate FC.", overlay: "rowan" },
+      pt: { headline: "Gol de Rowan", onAirLine: "Ilias Rowan marcou para o Rivergate FC.", overlay: "rowan" },
     },
     {
       es: { headline: "Otro intento", onAirLine: "Rivergate FC marcó.", overlay: "otro" },
       fr: { headline: "But Rowan", onAirLine: "Ilias Rowan a marqué pour Rivergate FC.", overlay: "rowan" },
+      pt: { headline: "Gol de Rowan", onAirLine: "Ilias Rowan marcou para o Rivergate FC.", overlay: "rowan" },
     },
   );
   const desk = createStorylineDesk({ archive: archive(), runner });

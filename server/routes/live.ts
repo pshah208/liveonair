@@ -50,7 +50,7 @@ const correctionSchema = z.object({
 const streamQuerySchema: z.ZodType<LiveStreamQuery> = z.object({
   role: z.enum(["fan", "studio"]),
   persona: z.enum(["analyst", "casual", "player"]),
-  language: z.enum(["en", "es", "fr"]),
+  language: z.enum(["en", "es", "fr", "pt"]),
   favoritePlayerId: boundedId.optional(),
 }).strict();
 

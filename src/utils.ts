@@ -10,8 +10,8 @@ export type AsyncState<T> = {
   error: string | null;
 };
 
-export const LANGUAGES: Language[] = ["en", "es", "fr"];
-export const LANGUAGE_LABEL: Record<Language, string> = { en: "English", es: "Español", fr: "Français" };
+export const LANGUAGES: Language[] = ["en", "es", "fr", "pt"];
+export const LANGUAGE_LABEL: Record<Language, string> = { en: "English", es: "Español", fr: "Français", pt: "Português" };
 export const SCENARIOS: ScenarioKind[] = ["comeback", "red_card", "set_piece", "late_winner", "goal_fest"];
 export const STORYLINE_STATUS_ORDER: StorylineStatus[] = ["needs_review", "researching", "checking", "drafting", "approved", "failed", "rejected", "retracted"];
 

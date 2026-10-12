@@ -226,7 +226,7 @@ const DEFAULT_CACHE_TTL_MS = 30_000;
 const DEFAULT_CACHE_MAX = 128;
 const DEFAULT_HOURLY_LIMIT = 60;
 const DEFAULT_CONCURRENT = 2;
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_FACTS = 5;
 const MODEL_LABEL = "GPT4.1mini2025-04-14";
 
@@ -318,6 +318,18 @@ function localize(
       player: "Le joueur mis en avant est",
       turning: "Le moment charnière est",
     },
+    pt: {
+      also: "Além disso,",
+      focus: "História em foco:",
+      home_side: "time da casa",
+      away_side: "time visitante",
+      intro_story: "Esta é a história mais clara da partida até agora.",
+      intro_recap: "Este é o resumo da partida até agora.",
+      key_moments: "Momentos decisivos:",
+      momentum: "O embalo gira em torno de",
+      player: "O destaque individual é",
+      turning: "O ponto de virada é",
+    },
   };
 
   return phrases[language][kind];
@@ -328,6 +340,7 @@ function localizedRecord(language: Language, text: string): Record<Language, str
     en: language === "en" ? text : text,
     es: language === "es" ? text : text,
     fr: language === "fr" ? text : text,
+    pt: language === "pt" ? text : text,
   };
 }
 
@@ -447,6 +460,9 @@ function renderScoreText(snapshot: MatchSnapshot, language: Language, fixture?: 
   if (language === "fr") {
     return `${fullTime ? "Score final" : `Score à ${clock}`} : ${namedScore}.`;
   }
+  if (language === "pt") {
+    return `${fullTime ? "Placar final" : `Placar aos ${clock}`}: ${namedScore}.`;
+  }
   return `${fullTime ? "Full time" : `Score at ${clock}`}: ${namedScore}.`;
 }
 
@@ -474,6 +490,7 @@ function buildStoryFact(snapshot: MatchSnapshot, story: StoryCard): LedgerFact {
       en: story.title,
       es: story.title,
       fr: story.title,
+      pt: story.title,
     },
     text: localizedRecord(snapshot.language, text),
     evidenceIds: uniqueIds(story.evidenceIds),
@@ -496,11 +513,13 @@ function buildEventText(event: MatchEvent, fixture: MatchFixture | undefined): L
         en: `Goal: ${playerName}`,
         es: `Gol: ${playerName}`,
         fr: `But : ${playerName}`,
+        pt: `Gol: ${playerName}`,
       },
       text: {
         en: `${playerName} scored for ${resolveTeamName("en", fixture, event.teamId)} at ${minuteLabel}.`,
         es: `${playerName} marcó para ${resolveTeamName("es", fixture, event.teamId)} en ${minuteLabel}.`,
         fr: `${playerName} a marqué pour ${resolveTeamName("fr", fixture, event.teamId)} à ${minuteLabel}.`,
+        pt: `${playerName} marcou para o ${resolveTeamName("pt", fixture, event.teamId)} aos ${minuteLabel}.`,
       },
       evidenceIds: [event.id],
       windowStart: toSecond(event),
@@ -516,10 +535,12 @@ function buildEventText(event: MatchEvent, fixture: MatchFixture | undefined): L
       en: "Yellow card",
       es: "Tarjeta amarilla",
       fr: "Carton jaune",
+      pt: "Cartão amarelo",
     } : {
       en: "Red card",
       es: "Tarjeta roja",
       fr: "Carton rouge",
+      pt: "Cartão vermelho",
     };
     return {
       id: `event:${event.id}`,
@@ -528,11 +549,13 @@ function buildEventText(event: MatchEvent, fixture: MatchFixture | undefined): L
         en: `${label.en}: ${playerName}`,
         es: `${label.es}: ${playerName}`,
         fr: `${label.fr} : ${playerName}`,
+        pt: `${label.pt}: ${playerName}`,
       },
       text: {
         en: `${playerName} received a ${label.en.toLowerCase()} for ${resolveTeamName("en", fixture, event.teamId)} at ${minuteLabel}.`,
         es: `${playerName} recibió una ${label.es.toLowerCase()} para ${resolveTeamName("es", fixture, event.teamId)} en ${minuteLabel}.`,
         fr: `${playerName} a reçu un ${label.fr.toLowerCase()} pour ${resolveTeamName("fr", fixture, event.teamId)} à ${minuteLabel}.`,
+        pt: `${playerName} recebeu ${label.pt.toLowerCase()} pelo ${resolveTeamName("pt", fixture, event.teamId)} aos ${minuteLabel}.`,
       },
       evidenceIds: [event.id],
       windowStart: toSecond(event),
@@ -564,11 +587,13 @@ function buildRecapFact(snapshot: MatchSnapshot, facts: Record<string, LedgerFac
       en: localize("key_moments", "en"),
       es: localize("key_moments", "es"),
       fr: localize("key_moments", "fr"),
+      pt: localize("key_moments", "pt"),
     },
     text: {
       en: `${localize("key_moments", "en")} ${milestoneFacts.map((fact) => fact.text.en).join(" ")}`,
       es: `${localize("key_moments", "es")} ${milestoneFacts.map((fact) => fact.text.es).join(" ")}`,
       fr: `${localize("key_moments", "fr")} ${milestoneFacts.map((fact) => fact.text.fr).join(" ")}`,
+      pt: `${localize("key_moments", "pt")} ${milestoneFacts.map((fact) => fact.text.pt).join(" ")}`,
     },
     evidenceIds: uniqueIds(milestoneFacts.flatMap((fact) => fact.evidenceIds)),
     windowStart: milestoneFacts[0].windowStart,
@@ -598,11 +623,13 @@ export function buildEvidenceLedger(snapshot: MatchSnapshot, fixture?: MatchFixt
       en: fixture ? `${fixture.home.name} ${snapshot.score.home}-${snapshot.score.away} ${fixture.away.name}` : `${snapshot.score.home}-${snapshot.score.away}`,
       es: fixture ? `${fixture.home.name} ${snapshot.score.home}-${snapshot.score.away} ${fixture.away.name}` : `${snapshot.score.home}-${snapshot.score.away}`,
       fr: fixture ? `${fixture.home.name} ${snapshot.score.home}-${snapshot.score.away} ${fixture.away.name}` : `${snapshot.score.home}-${snapshot.score.away}`,
+      pt: fixture ? `${fixture.home.name} ${snapshot.score.home}-${snapshot.score.away} ${fixture.away.name}` : `${snapshot.score.home}-${snapshot.score.away}`,
     },
     text: {
       en: renderScoreText(snapshot, "en", fixture),
       es: renderScoreText(snapshot, "es", fixture),
       fr: renderScoreText(snapshot, "fr", fixture),
+      pt: renderScoreText(snapshot, "pt", fixture),
     },
     evidenceIds: scoreEvidenceIds,
     windowStart: 0,
@@ -1290,12 +1317,20 @@ async function runProducerStep(
   };
 }
 
-const LANGUAGE_NAME: Record<Language, string> = { en: "British English", es: "Spanish (Spain)", fr: "French (France)" };
+const LANGUAGE_NAME: Record<Language, string> = { en: "British English", es: "Spanish (Spain)", fr: "French (France)", pt: "Brazilian Portuguese" };
 const WRITER_FLOW_TYPES = new Set(["goal", "red_card", "yellow_card", "shot", "save"]);
 const writerSchema = z.object({
   title: z.string().trim().min(3).max(140),
-  script: z.string().trim().min(120).max(1_600),
+  script: z.string().trim().min(120).max(4_000),
 }).strict();
+
+function halfTimeScore(ledger: EvidenceLedger): { home: number; away: number } {
+  const score = { home: 0, away: 0 };
+  for (const event of Object.values(ledger.eventIndex)) {
+    if (event.type === "goal" && toSecond(event) < 45 * 60) score[event.teamId] += 1;
+  }
+  return score;
+}
 
 function describeMatchFlow(ledger: EvidenceLedger, fixture: MatchFixture | undefined) {
   const flow = Object.values(ledger.eventIndex)
@@ -1304,7 +1339,7 @@ function describeMatchFlow(ledger: EvidenceLedger, fixture: MatchFixture | undef
     .sort((left, right) => toSecond(left) - toSecond(right));
   // Goals and red cards always fit in the flow; chances, saves and bookings fill the remaining slots.
   const decisive = flow.filter((event) => event.type === "goal" || event.type === "red_card");
-  const rest = flow.filter((event) => event.type !== "goal" && event.type !== "red_card").slice(0, Math.max(0, 24 - decisive.length));
+  const rest = flow.filter((event) => event.type !== "goal" && event.type !== "red_card").slice(0, Math.max(0, 40 - decisive.length));
   return [...decisive, ...rest]
     .sort((left, right) => toSecond(left) - toSecond(right))
     .map((event) => ({
@@ -1345,6 +1380,10 @@ async function runWriterStep(
     approvedFacts: orderedFacts.map((fact) => ({ kind: fact.kind, text: fact.text[request.language], english: fact.text.en })),
     mustMention: keyMoments.map((moment) => ({ kind: moment.kind, minute: moment.minute, text: moment.text, english: moment.english })),
     matchFlow: describeMatchFlow(ledger, fixture),
+    goalsRuledOut: Object.values(snapshot.evidence)
+      .filter((event) => event.type === "goal" && event.rescinded && toSecond(event) <= snapshot.atSecond)
+      .map((event) => ({ minute: event.minute, player: resolvePlayerName(fixture, event.playerId), team: resolveTeamName("en", fixture, event.teamId) })),
+    ...(snapshot.atSecond > 45 * 60 ? { halfTimeScore: halfTimeScore(ledger) } : {}),
   };
   const usage = createUsage();
   try {
@@ -1355,7 +1394,9 @@ async function runWriterStep(
           content: [
             `You are the Live on Air match reporter for ${MODEL_LABEL}.`,
             `Write a match recap in natural, idiomatic ${LANGUAGE_NAME[request.language]}, as a seasoned football journalist or broadcaster would, never as a translated list of tagged events.`,
-            "Tell the story of the match: how it unfolded, the turning points, momentum and what the result means, in 4-7 flowing sentences of connected prose.",
+            "Write a comprehensive match report of 3-5 short paragraphs (10-16 sentences of connected prose), separated by a blank line.",
+            "Open with the result and the headline story. Then walk through the match in order, first half then second half (use halfTimeScore when given): every goal with scorer, team, minute and how it changed the score; every red card and what being down to ten meant; any goal in goalsRuledOut, saying it was ruled out after review; the best chances and key saves from matchFlow; and the approved storylines.",
+            "Close with what the result means on the day: who controlled the game, the turning point and how it was decided.",
             request.persona === "casual" ? "The audience is casual fans: warm, vivid and jargon-free." : "The audience is analysts: precise and insightful, but still readable prose.",
             "Use ONLY the approved facts and match flow provided. Never invent players, assists, minutes, scores, statistics, injuries, records, quotes, weather or crowd details, and do not speculate about league position or future fixtures.",
             "Every item in mustMention is a red card or a producer-approved storyline: the recap MUST cover each one, naming the player involved.",
@@ -1367,8 +1408,8 @@ async function runWriterStep(
         { role: "user", content: JSON.stringify(context) },
       ],
       temperature: 0.6,
-      maxTokens: 700,
-      timeoutMs: Math.min(15_000, getRemainingTime(deadline)),
+      maxTokens: 1_800,
+      timeoutMs: Math.min(30_000, getRemainingTime(deadline)),
       requestId,
       responseSchema: {
         name: "matchlens_writer",

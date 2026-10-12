@@ -226,6 +226,17 @@ const PHRASES: Record<Language, Phrases> = {
     attempt: (name) => `${name} tente sa chance.`,
     stops: (name) => `${name} s'interpose.`,
     booked: (name) => `${name} reçoit un carton jaune.`
+  },
+  pt: {
+    title: { goal: "GOL", disallowed_goal: "Gol anulado", red_card: "Cartão vermelho", big_chance: "Chance clara", key_save: "Grande defesa", booking: "Cartão amarelo" },
+    scores: (name, xg) => `Gol de ${name}${xg !== undefined ? ` numa chance de ${xg.toFixed(2)} xG` : ""}.`,
+    ruledOut: (name) => `O gol de ${name} é anulado após revisão; o placar é corrigido.`,
+    sentOff: (name) => `${name} é expulso.`,
+    goesClose: (name, xg) => `${name} quase marca: chance de ${xg.toFixed(2)} xG.`,
+    denies: (name, xg) => `${name} impede uma chance de ${xg.toFixed(2)} xG.`,
+    attempt: (name) => `${name} arrisca a finalização.`,
+    stops: (name) => `${name} faz a defesa.`,
+    booked: (name) => `${name} recebe cartão amarelo.`
   }
 };
 
@@ -237,7 +248,8 @@ export function highlightKindLabel(kind: HighlightKind, language: Language): str
 export const REEL_TEXT: Record<Language, { intro: string; outro: string; moment: (index: number, total: number) => string; moments: (count: number) => string; matchTime: string; dataReel: string; footageReel: string }> = {
   en: { intro: "Live on Air HIGHLIGHTS", outro: "FULL REEL", moment: (i, n) => `MOMENT ${i} OF ${n}`, moments: (n) => `${n} moments · auto-selected from the verified event feed`, matchTime: "match time", dataReel: "SYNTHETIC DATA REEL", footageReel: "VIDEO RECAP · EVENTS TAGGED BY Live on Air" },
   es: { intro: "RESUMEN Live on Air", outro: "RESUMEN COMPLETO", moment: (i, n) => `JUGADA ${i} DE ${n}`, moments: (n) => `${n} jugadas · seleccionadas automáticamente de los eventos verificados`, matchTime: "tiempo de partido", dataReel: "RESUMEN CON DATOS SINTÉTICOS", footageReel: "RESUMEN EN VÍDEO · EVENTOS ETIQUETADOS POR Live on Air" },
-  fr: { intro: "RÉSUMÉ Live on Air", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "RÉSUMÉ VIDÉO · ÉVÉNEMENTS IDENTIFIÉS PAR Live on Air" }
+  fr: { intro: "RÉSUMÉ Live on Air", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "RÉSUMÉ VIDÉO · ÉVÉNEMENTS IDENTIFIÉS PAR Live on Air" },
+  pt: { intro: "MELHORES MOMENTOS Live on Air", outro: "RESUMO COMPLETO", moment: (i, n) => `LANCE ${i} DE ${n}`, moments: (n) => `${n} lances · selecionados automaticamente dos eventos verificados`, matchTime: "tempo de jogo", dataReel: "RESUMO COM DADOS SINTÉTICOS", footageReel: "RESUMO EM VÍDEO · EVENTOS IDENTIFICADOS PELO Live on Air" }
 };
 
 function defaultTitle(kind: HighlightKind, minute: number, name: string, team: string, language: Language): string {

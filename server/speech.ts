@@ -17,16 +17,18 @@ const DEFAULT_VOICES: Record<Language, string> = {
   en: "en-GB-Ollie:DragonHDLatestNeural",
   es: "es-ES-Tristan:DragonHDLatestNeural",
   fr: "fr-FR-Remy:DragonHDLatestNeural",
+  pt: "pt-BR-Macerio:DragonHDLatestNeural",
 };
 const FALLBACK_VOICES: Record<Language, string> = {
   en: "en-GB-RyanNeural",
   es: "es-ES-AlvaroNeural",
   fr: "fr-FR-HenriNeural",
+  pt: "pt-BR-AntonioNeural",
 };
-const LOCALES: Record<Language, string> = { en: "en-GB", es: "es-ES", fr: "fr-FR" };
+const LOCALES: Record<Language, string> = { en: "en-GB", es: "es-ES", fr: "fr-FR", pt: "pt-BR" };
 const RATE: Record<CommentaryMood, string> = { calm: "0%", build: "+4%", tense: "+6%", excited: "+10%" };
 const OUTPUT_FORMAT = "audio-24khz-96kbitrate-mono-mp3";
-const MAX_TEXT = 2_000;
+const MAX_TEXT = 5_000;
 const MAX_REGISTERED = 600;
 const MAX_CACHED_AUDIO = 160;
 const MAX_CONCURRENT = 8;
@@ -98,6 +100,7 @@ export function createSpeechService(options: SpeechOptions = {}): SpeechService 
     en: options.voices?.en ?? process.env.SPEECH_VOICE_EN?.trim() ?? DEFAULT_VOICES.en,
     es: options.voices?.es ?? process.env.SPEECH_VOICE_ES?.trim() ?? DEFAULT_VOICES.es,
     fr: options.voices?.fr ?? process.env.SPEECH_VOICE_FR?.trim() ?? DEFAULT_VOICES.fr,
+    pt: options.voices?.pt ?? process.env.SPEECH_VOICE_PT?.trim() ?? DEFAULT_VOICES.pt,
   };
   for (const language of Object.keys(voices) as Language[]) {
     if (!voices[language]) voices[language] = DEFAULT_VOICES[language];

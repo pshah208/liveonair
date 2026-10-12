@@ -95,6 +95,26 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     metricGoals: "Buts actifs",
     metricCards: "Cartons",
     metricTouches: "Actions impliquées"
+  },
+  pt: {
+    correctionNotice: "Atualização do vídeo: o gol anterior foi anulado.",
+    metricShots: "Finalizações (últimos 8 min)",
+    metricShotsPrevious: "Finalizações (8 min anteriores)",
+    metricShotsCurrent: "Finalizações (8 min atuais)",
+    metricPressure: "Ações de pressão (últimos 8 min)",
+    metricPressureHome: "Pressão do mandante (últimos 8 min)",
+    metricPressureAway: "Pressão do visitante (últimos 8 min)",
+    metricPassAccuracy: "Precisão de passe",
+    metricPassesHome: "Passes certos/tentados do mandante (últimos 8 min)",
+    metricPassesAway: "Passes certos/tentados do visitante (últimos 8 min)",
+    metricSetPieces: "Bolas paradas",
+    metricSetPieceLinks: "Escanteios que viraram finalização (últimos 8 min)",
+    metricSetPieceLinksHome: "Escanteio-finalização do mandante (últimos 8 min)",
+    metricSetPieceLinksAway: "Escanteio-finalização do visitante (últimos 8 min)",
+    metricScoreEvents: "Momentos que mudaram o placar",
+    metricGoals: "Gols válidos",
+    metricCards: "Cartões",
+    metricTouches: "Lances com participação"
   }
 };
 
@@ -214,6 +234,7 @@ function tr(language: Language, key: TranslationKey): string {
 function formatTitle(language: Language, base: string): string {
   if (language === "es") return `Resumen: ${base}`;
   if (language === "fr") return `Synthèse: ${base}`;
+  if (language === "pt") return `Resumo: ${base}`;
   return base;
 }
 
@@ -238,6 +259,7 @@ function localizedStory(
     en: { title: string; analyst: string; casual: string; player: string; whyA: string; whyC: string; whyP: string };
     es: { title: string; analyst: string; casual: string; player: string; whyA: string; whyC: string; whyP: string };
     fr: { title: string; analyst: string; casual: string; player: string; whyA: string; whyC: string; whyP: string };
+    pt: { title: string; analyst: string; casual: string; player: string; whyA: string; whyC: string; whyP: string };
   },
   confidence: "observed" | "inferred"
 ): StoryCard {
@@ -313,6 +335,7 @@ function buildStories(
     const enAnalyst = `Window ${currentWindowLabel}: ${homeName} completed ${homeCompleted}/${homePasses.length} (${homeAccuracy}%), ${awayName} completed ${awayCompleted}/${awayPasses.length} (${awayAccuracy}%)${homeAccuracy === awayAccuracy ? " (tied accuracy)." : "."}`;
     const esAnalyst = `Ventana ${currentWindowLabel}: ${homeName} completó ${homeCompleted}/${homePasses.length} (${homeAccuracy}%), ${awayName} completó ${awayCompleted}/${awayPasses.length} (${awayAccuracy}%)${homeAccuracy === awayAccuracy ? " (empate de precisión)." : "."}`;
     const frAnalyst = `Fenêtre ${currentWindowLabel} : ${homeName} a réussi ${homeCompleted}/${homePasses.length} (${homeAccuracy} %), ${awayName} a réussi ${awayCompleted}/${awayPasses.length} (${awayAccuracy} %)${homeAccuracy === awayAccuracy ? " (égalité de précision)." : "."}`;
+    const ptAnalyst = `Janela ${currentWindowLabel}: ${homeName} acertou ${homeCompleted}/${homePasses.length} (${homeAccuracy}%), ${awayName} acertou ${awayCompleted}/${awayPasses.length} (${awayAccuracy}%)${homeAccuracy === awayAccuracy ? " (precisão empatada)." : "."}`;
     stories.push(
       localizedStory(
         "passing-window",
@@ -357,6 +380,15 @@ function buildStories(
             whyA: "Les comptes proviennent des issues de passe dans la fenêtre indiquée.",
             whyC: "Cela décrit uniquement volume et ratio observés.",
             whyP: "À utiliser comme fait du flux, sans hypothèse tactique."
+          },
+          pt: {
+            title: "Acerto de passe na janela atual",
+            analyst: ptAnalyst,
+            casual: ptAnalyst,
+            player: ptAnalyst,
+            whyA: "As contagens vêm direto do resultado dos passes na janela indicada.",
+            whyC: "Mostra apenas volume e percentual observados.",
+            whyP: "Use como dado do feed, não como leitura tática."
           }
         },
         "observed"
@@ -380,6 +412,10 @@ function buildStories(
       pressureHome.length === pressureAway.length
         ? `Fenêtre ${currentWindowLabel} : pressing à égalité ${pressureHome.length}-${pressureAway.length}.`
         : `Fenêtre ${currentWindowLabel} : pressing ${pressureHome.length}-${pressureAway.length} (${homeName}-${awayName}).`;
+    const pressureSummaryPt =
+      pressureHome.length === pressureAway.length
+        ? `Janela ${currentWindowLabel}: pressão empatada em ${pressureHome.length}-${pressureAway.length}.`
+        : `Janela ${currentWindowLabel}: pressão ${pressureHome.length}-${pressureAway.length} (${homeName}-${awayName}).`;
     stories.push(
       localizedStory(
         "pressure-window",
@@ -423,6 +459,15 @@ function buildStories(
             whyA: "Seuls les événements de type pressing sont comptés.",
             whyC: "Le pressing est séparé des passes et tirs.",
             whyP: "À lire comme contexte de comptage sur la même fenêtre."
+          },
+          pt: {
+            title: "Contagem de pressão na janela atual",
+            analyst: pressureSummaryPt,
+            casual: pressureSummaryPt,
+            player: pressureSummaryPt,
+            whyA: "Só entram eventos do tipo pressão.",
+            whyC: "Isso separa a pressão dos passes e finalizações.",
+            whyP: "Leia como contexto de contagem na mesma janela."
           }
         },
         "observed"
@@ -453,6 +498,7 @@ function buildStories(
     let radarCueEn = "";
     let radarCueEs = "";
     let radarCueFr = "";
+    let radarCuePt = "";
     const radarTeamId = homeLinksSoFar.length >= 2 && homeLinksSoFar.length >= awayLinksSoFar.length
       ? "home"
       : awayLinksSoFar.length >= 2 ? "away" : undefined;
@@ -463,6 +509,7 @@ function buildStories(
       radarCueEn = ` Watch ${teamName}'s next corner: ${radarPairs.length} of their ${cornerCount} corners so far led directly to a shot.`;
       radarCueEs = ` Vigila el próximo córner de ${teamName}: ${radarPairs.length} de sus ${cornerCount} córners hasta ahora terminaron directamente en un tiro.`;
       radarCueFr = ` Surveillez le prochain corner de ${teamName} : ${radarPairs.length} de leurs ${cornerCount} corners jusque-là ont mené directement à un tir.`;
+      radarCuePt = ` Fique de olho no próximo escanteio do ${teamName}: ${radarPairs.length} dos ${cornerCount} escanteios até aqui terminaram direto em finalização.`;
       for (const pair of radarPairs) {
         evidenceIds.add(pair.corner.id);
         evidenceIds.add(pair.shot.id);
@@ -480,6 +527,10 @@ function buildStories(
       homeLinks === awayLinks
         ? `Fenêtre ${currentWindowLabel} : liens corner-tir à égalité ${homeLinks}-${awayLinks}.${radarCueFr}`
         : `Fenêtre ${currentWindowLabel} : liens corner-tir ${homeLinks}-${awayLinks} (${homeName}-${awayName}).${radarCueFr}`;
+    const setPieceSummaryPt =
+      homeLinks === awayLinks
+        ? `Janela ${currentWindowLabel}: escanteios que viraram finalização empatados em ${homeLinks}-${awayLinks}.${radarCuePt}`
+        : `Janela ${currentWindowLabel}: escanteios que viraram finalização ${homeLinks}-${awayLinks} (${homeName}-${awayName}).${radarCuePt}`;
     stories.push(
       localizedStory(
         "setpiece-pattern",
@@ -524,6 +575,15 @@ function buildStories(
             whyA: "La preuve contient le corner et le tir directement lié.",
             whyC: "Seuls les liens dans la fenêtre déclarée sont comptés.",
             whyP: "Cette carte décrit uniquement des séquences corner→tir observées."
+          },
+          pt: {
+            title: "Escanteio para finalização na janela atual",
+            analyst: setPieceSummaryPt,
+            casual: setPieceSummaryPt,
+            player: setPieceSummaryPt,
+            whyA: "A evidência inclui o escanteio e a finalização ligada a ele.",
+            whyC: "Só contam ligações dentro da janela declarada.",
+            whyP: "O card mostra apenas sequências escanteio→finalização observadas."
           }
         },
         "observed"
@@ -538,6 +598,7 @@ function buildStories(
     const turningSummaryEn = `By ${formatWindowLabel(0, atSecond)}, active goals: ${goals}, red cards: ${reds}, score ${stats.score.home}-${stats.score.away}.`;
     const turningSummaryEs = `Hasta ${formatWindowLabel(0, atSecond)}, goles vigentes: ${goals}, rojas: ${reds}, marcador ${stats.score.home}-${stats.score.away}.`;
     const turningSummaryFr = `À ${formatWindowLabel(0, atSecond)}, buts actifs : ${goals}, rouges : ${reds}, score ${stats.score.home}-${stats.score.away}.`;
+    const turningSummaryPt = `Até ${formatWindowLabel(0, atSecond)}, gols válidos: ${goals}, cartões vermelhos: ${reds}, placar ${stats.score.home}-${stats.score.away}.`;
     stories.push(
       localizedStory(
         "turning-points",
@@ -581,6 +642,15 @@ function buildStories(
             whyA: "La liste contient uniquement buts actifs et rouges.",
             whyC: "C'est un registre factuel avec comptes explicites.",
             whyP: "Utile pour vérifier les changements déjà actés."
+          },
+          pt: {
+            title: "Registro de gols e cartões vermelhos",
+            analyst: turningSummaryPt,
+            casual: turningSummaryPt,
+            player: turningSummaryPt,
+            whyA: "A lista inclui apenas gols válidos e cartões vermelhos.",
+            whyC: "É um registro factual com contagens explícitas.",
+            whyP: "Serve para conferir mudanças já registradas."
           }
         },
         "observed"
@@ -637,6 +707,15 @@ function buildStories(
             whyA: "Seules les participations directes sont comptées.",
             whyC: "On évite ainsi les hypothèses hors observation.",
             whyP: "Utilise-le comme vérification concrète d'implication."
+          },
+          pt: {
+            title: favoriteId ? "Participação do jogador favorito" : "Destaque de participação",
+            analyst: `${player.name}: ${playerEvents.length} ações registradas em ${playerWindow}.`,
+            casual: `${player.name} já apareceu em ${playerEvents.length} lances da partida.`,
+            player: `Acompanhando ${player.name}: ${playerEvents.length} ações registradas até agora.`,
+            whyA: "Só conta participação direta nos eventos.",
+            whyC: "Assim evitamos afirmar movimentos não observados.",
+            whyP: "Use como checagem concreta de participação."
           }
         },
         "observed"
@@ -651,6 +730,7 @@ function buildStories(
     const trendSummaryEn = `Shots ${directionKey}: previous window ${previousShots.length}, current window ${currentShots.length}.`;
     const trendSummaryEs = `Tiros en ${directionKey === "increase" ? "aumento" : "descenso"}: ventana previa ${previousShots.length}, ventana actual ${currentShots.length}.`;
     const trendSummaryFr = `Tirs en ${directionKey === "increase" ? "hausse" : "baisse"} : fenêtre précédente ${previousShots.length}, fenêtre actuelle ${currentShots.length}.`;
+    const trendSummaryPt = `Finalizações em ${directionKey === "increase" ? "alta" : "queda"}: janela anterior ${previousShots.length}, janela atual ${currentShots.length}.`;
     stories.push(
       localizedStory(
         "shot-rhythm-delta",
@@ -693,6 +773,15 @@ function buildStories(
             whyA: "L'inférence vient d'une comparaison de comptes sur deux fenêtres de 8 minutes.",
             whyC: "Aucun mécanisme causal n'est affirmé.",
             whyP: "À utiliser comme signal directionnel uniquement."
+          },
+          pt: {
+            title: "Variação de finalizações entre janelas vizinhas",
+            analyst: trendSummaryPt,
+            casual: trendSummaryPt,
+            player: trendSummaryPt,
+            whyA: "Inferido pela comparação de contagens entre duas janelas de 8 minutos.",
+            whyC: "Nenhuma causa é afirmada.",
+            whyP: "Use apenas como sinal de direção."
           }
         },
         "inferred"
@@ -706,6 +795,7 @@ function buildStories(
     const neutralSummaryEn = kickoffEvidence.length > 0 ? "Kickoff logged; no attacking evidence in the feed yet." : "Feed started; no attacking evidence in the feed yet.";
     const neutralSummaryEs = kickoffEvidence.length > 0 ? "Saque inicial registrado; sin evidencia de ataque todavía." : "Feed iniciado; sin evidencia de ataque todavía.";
     const neutralSummaryFr = kickoffEvidence.length > 0 ? "Coup d'envoi enregistré ; aucune preuve d'attaque pour l'instant." : "Flux démarré ; aucune preuve d'attaque pour l'instant.";
+    const neutralSummaryPt = kickoffEvidence.length > 0 ? "Pontapé inicial registrado; ainda sem lances de ataque no feed." : "Feed iniciado; ainda sem lances de ataque no feed.";
     stories.push(
       localizedStory(
         "early-feed",
@@ -745,6 +835,15 @@ function buildStories(
             whyA: "Aucun événement offensif ne permet d'étayer des affirmations plus fortes.",
             whyC: "Cela évite les récits de supériorité non prouvés.",
             whyP: "Attendre des preuves offensives avant d'inférer une tendance."
+          },
+          pt: {
+            title: "Checagem neutra do início",
+            analyst: neutralSummaryPt,
+            casual: neutralSummaryPt,
+            player: neutralSummaryPt,
+            whyA: "Não há lances de ataque para sustentar afirmações mais fortes.",
+            whyC: "Isso evita narrativas de superioridade sem base.",
+            whyP: "Espere evidência de ataque antes de tirar conclusões."
           }
         },
         "observed"

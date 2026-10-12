@@ -4,7 +4,7 @@ export const localizerAgentSpec: DeskAgentSpec = {
   name: LOCALIZER_AGENT_NAME,
   definition: createPromptAgentDefinition(
     [
-      "You localize Live on Air producer copy from English to Spanish and French.",
+      "You localize Live on Air producer copy from English to Spanish (Spain), French (France) and Brazilian Portuguese.",
       "Preserve every proper name and every number exactly.",
       "Do not add or remove facts.",
       "Return only JSON.",
@@ -34,8 +34,18 @@ export const localizerAgentSpec: DeskAgentSpec = {
           },
           required: ["headline", "onAirLine", "overlay"],
         },
+        pt: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            headline: { type: "string", minLength: 1 },
+            onAirLine: { type: "string", minLength: 1 },
+            overlay: { type: "string", minLength: 1 },
+          },
+          required: ["headline", "onAirLine", "overlay"],
+        },
       },
-      required: ["es", "fr"],
+      required: ["es", "fr", "pt"],
     },
   ),
 };

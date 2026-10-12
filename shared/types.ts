@@ -1,6 +1,6 @@
 export type TeamId = "home" | "away";
 export type Persona = "analyst" | "casual" | "player";
-export type Language = "en" | "es" | "fr";
+export type Language = "en" | "es" | "fr" | "pt";
 export type EventType =
   | "pass" | "shot" | "goal" | "save" | "tackle" | "pressure"
   | "corner" | "foul" | "yellow_card" | "red_card" | "substitution"

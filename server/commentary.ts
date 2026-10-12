@@ -37,7 +37,7 @@ const moods = ["calm", "build", "tense", "excited"] as const satisfies readonly 
 const boundedId = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9:_.-]+$/u);
 
 export const commentaryRequestSchema = z.object({
-  language: z.enum(["en", "es", "fr"]),
+  language: z.enum(["en", "es", "fr", "pt"]),
   clips: z.array(z.object({
     id: z.string().regex(/^clip-\d{2}$/u),
     keyEventId: boundedId,
@@ -48,11 +48,11 @@ export const commentaryRequestSchema = z.object({
   }).strict()).min(1).max(10),
 }).strict();
 
-const lineSchema = z.object({ text: z.string().trim().min(2).max(320), mood: z.enum(moods) }).strict();
+const lineSchema = z.object({ text: z.string().trim().min(2).max(420), mood: z.enum(moods) }).strict();
 const modelSchema = z.object({
   intro: lineSchema,
   lines: z.array(lineSchema.extend({ clipId: z.string() }).strict()).min(1).max(10),
-  outro: lineSchema,
+  outro: z.object({ text: z.string().trim().min(2).max(700), mood: z.enum(moods) }).strict(),
 }).strict();
 
 const DEFAULT_MOOD: Record<HighlightKind, CommentaryMood> = {
@@ -124,6 +124,7 @@ function storylineText(storyline: Storyline | undefined, language: Language): st
 function fallbackIntro(fixture: MatchFixture, language: Language): string {
   if (language === "es") return `Resumen del partido: ${fixture.home.name} contra ${fixture.away.name}.`;
   if (language === "fr") return `Le résumé du match : ${fixture.home.name} contre ${fixture.away.name}.`;
+  if (language === "pt") return `Os melhores momentos: ${fixture.home.name} contra ${fixture.away.name}.`;
   return `The highlights: ${fixture.home.name} against ${fixture.away.name}.`;
 }
 
@@ -131,7 +132,25 @@ function fallbackOutro(fixture: MatchFixture, score: { home: number; away: numbe
   const line = `${fixture.home.name} ${score.home}, ${fixture.away.name} ${score.away}.`;
   if (language === "es") return `Así queda: ${line}`;
   if (language === "fr") return `Voilà le score : ${line}`;
+  if (language === "pt") return `E o placar fica assim: ${line}`;
   return `And that's how it stands: ${line}`;
+}
+
+/** Whole-match facts so the outro can wrap up the result, not just the last clip. */
+function matchSummary(fixture: MatchFixture, storylines: Storyline[], language: Language) {
+  const events = latestRevisions(fixture.events);
+  const last = events.reduce((max, event) => Math.max(max, eventSecondOf(event)), 0);
+  const describe = (event: MatchEvent) => ({ minute: event.minute, player: playerName(fixture, event.playerId), team: teamName(fixture, event.teamId) });
+  return {
+    finalScore: scoreBefore(events, last),
+    goals: events.filter((event) => event.type === "goal" && !event.rescinded).map(describe),
+    goalsRuledOut: events.filter((event) => event.type === "goal" && event.rescinded).map(describe),
+    redCards: events.filter((event) => event.type === "red_card" && !event.rescinded).map(describe),
+    approvedStorylines: storylines
+      .filter((storyline) => storyline.status === "approved")
+      .map((storyline) => storylineText(storyline, language))
+      .filter((text): text is string => Boolean(text)),
+  };
 }
 
 type ClipContext = {
@@ -193,8 +212,8 @@ function buildContexts(request: HighlightCommentaryRequest, fixture: MatchFixtur
   return { contexts, fallbacks };
 }
 
-function cacheKey(fixture: MatchFixture, request: HighlightCommentaryRequest, contexts: ClipContext[]): string {
-  return createHash("sha256").update(JSON.stringify([fixture.id, request.language, contexts])).digest("hex");
+function cacheKey(fixture: MatchFixture, request: HighlightCommentaryRequest, contexts: ClipContext[], summary: unknown): string {
+  return createHash("sha256").update(JSON.stringify([fixture.id, request.language, contexts, summary])).digest("hex");
 }
 
 export function createCommentator(options: CommentatorOptions): Commentator {
@@ -211,6 +230,7 @@ export function createCommentator(options: CommentatorOptions): Commentator {
     request: HighlightCommentaryRequest,
     fixture: MatchFixture,
     contexts: ClipContext[],
+    storylines: Storyline[],
     requestId: string,
   ): Promise<z.infer<typeof modelSchema>> {
     const deadline = Date.now() + TIMEOUT_MS;
@@ -219,6 +239,7 @@ export function createCommentator(options: CommentatorOptions): Commentator {
       home: fixture.home.name,
       away: fixture.away.name,
       clips: contexts,
+      match: matchSummary(fixture, storylines, request.language),
     };
     const result = await completeWithSingleRetry(completion.client, {
       messages: [
@@ -230,15 +251,17 @@ export function createCommentator(options: CommentatorOptions): Commentator {
             "Use ONLY the information provided for each clip: players, teams, the event sequence, outcomes, where shots came from, chance quality, the score and any producer note.",
             "Do not invent anything else: no extra players, assists, skills, distances, body parts, weather, crowd, injuries, records or quotes. If the sequence is thin, keep the line short rather than embellishing.",
             "Every number you write must appear in the input; write minutes and scores as digits. Never say xG, decimals, IDs or seconds.",
-            "Each clip line is 12-26 words, present tense, made to be spoken aloud over the clip. Goals deserve real excitement; a ruled-out goal must say it was ruled out after review.",
-            "intro: one welcoming line naming both teams (at most 22 words). outro: one closing line with the score after the last clip (at most 26 words).",
+            "Each clip line is 18-40 words, present tense, made to be spoken aloud over the clip: describe the build-up from the sequence, react to the key moment, then say what it means for the score or the game (a lead, an equaliser, a team down to ten). Goals deserve real excitement; a ruled-out goal must say it was ruled out after review; a red card must name the player sent off and that their team is down a man.",
+            "Weave in each clip's producerNote when present, in your own words, without adding facts.",
+            "intro: one or two welcoming sentences naming both teams and setting up the story of the match (at most 40 words).",
+            "outro: a full-time wrap-up of 2-4 sentences (40-90 words) using match: the final score, every goal scorer, any goal ruled out, every red card and the approved storylines. Leave none of the goals or red cards out.",
             "Pick a mood for each line from calm, build, tense, excited. Return strict JSON with intro, lines (one per clip, same clipId order) and outro.",
           ].join(" "),
         },
         { role: "user", content: JSON.stringify(payload) },
       ],
       temperature: 0.8,
-      maxTokens: 1_400,
+      maxTokens: 2_400,
       timeoutMs: Math.min(25_000, getRemainingTime(deadline)),
       requestId,
       responseSchema: {
@@ -277,7 +300,7 @@ export function createCommentator(options: CommentatorOptions): Commentator {
         throw new HttpError(503, "Highlights commentary is not configured");
       }
       const { contexts, fallbacks } = buildContexts(request, fixture, storylines);
-      const key = cacheKey(fixture, request, contexts);
+      const key = cacheKey(fixture, request, contexts, matchSummary(fixture, storylines, request.language));
       const signature = commentarySignature(request);
       const hit = cache.get(key);
       if (hit && hit.expiresAt > now()) {
@@ -297,14 +320,14 @@ export function createCommentator(options: CommentatorOptions): Commentator {
       if (options.completion) {
         const lease = budget.acquire();
         try {
-          const written = await writeWithModel(options.completion, request, fixture, contexts, requestId);
+          const written = await writeWithModel(options.completion, request, fixture, contexts, storylines, requestId);
           source = "foundry";
           const sourceFor = (extra: unknown) => {
             const minutes = JSON.stringify(extra).match(/"minute":\d+/gu)?.map((item) => Number(item.split(":")[1]) + 1).join(" ") ?? "";
             return `${JSON.stringify([teams, extra])} ${minutes}`;
           };
           if (groundingProblems(written.intro.text, sourceFor(contexts.map((context) => context.minute)), fixture).length === 0) intro = written.intro;
-          if (groundingProblems(written.outro.text, sourceFor([finalScore, contexts]), fixture).length === 0) outro = written.outro;
+          if (groundingProblems(written.outro.text, sourceFor([finalScore, contexts, matchSummary(fixture, storylines, request.language)]), fixture).length === 0) outro = written.outro;
           for (const line of written.lines) {
             const context = contexts.find((item) => item.clipId === line.clipId);
             if (context && groundingProblems(line.text, sourceFor(context), fixture).length === 0) {

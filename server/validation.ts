@@ -10,7 +10,7 @@ import type {
 } from "../shared/types.js";
 
 const personaValues = ["analyst", "casual", "player"] as const satisfies readonly Persona[];
-const languageValues = ["en", "es", "fr"] as const satisfies readonly Language[];
+const languageValues = ["en", "es", "fr", "pt"] as const satisfies readonly Language[];
 const formatValues = ["story", "recap"] as const satisfies readonly NarrativeRequest["format"][];
 
 const boundedId = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_-]+$/u);

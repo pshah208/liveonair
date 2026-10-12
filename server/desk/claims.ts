@@ -117,8 +117,8 @@ export type ArchiveIndexes = {
   matches: Map<string, ArchiveMatch>;
 };
 
-function localizeText(en: string, es: string, fr: string): Localized {
-  return { en, es, fr };
+function localizeText(en: string, es: string, fr: string, pt: string): Localized {
+  return { en, es, fr, pt };
 }
 
 export function buildArchiveIndexes(archive: ArchiveSnapshot): ArchiveIndexes {
@@ -177,15 +177,18 @@ function relationLabel(relation: RelationKind, language: Language): string {
   if (language === "fr") {
     return relation === "parent" ? "parent" : relation === "child" ? "enfant" : "frère ou sœur";
   }
+  if (language === "pt") {
+    return relation === "parent" ? "pai ou mãe" : relation === "child" ? "filho ou filha" : "irmão ou irmã";
+  }
   return relation === "parent" ? "parent" : relation === "child" ? "child" : "sibling";
 }
 
 function stageLabel(stage: ArchiveMatch["stage"], language: Language): string {
   const labels: Record<ArchiveMatch["stage"], Localized> = {
-    final: { en: "final", es: "final", fr: "finale" },
-    semi_final: { en: "semi-final", es: "semifinal", fr: "demi-finale" },
-    quarter_final: { en: "quarter-final", es: "cuartos de final", fr: "quart de finale" },
-    league: { en: "league meeting", es: "partido de liga", fr: "match de championnat" },
+    final: { en: "final", es: "final", fr: "finale", pt: "final" },
+    semi_final: { en: "semi-final", es: "semifinal", fr: "demi-finale", pt: "semifinal" },
+    quarter_final: { en: "quarter-final", es: "cuartos de final", fr: "quart de finale", pt: "quartas de final" },
+    league: { en: "league meeting", es: "partido de liga", fr: "match de championnat", pt: "jogo de liga" },
   };
   return labels[stage][language];
 }
@@ -314,7 +317,7 @@ function rejectClaim(kind: ClaimKind, sources: ClaimSource[], reason: string): S
   return {
     id: randomUUID(),
     kind,
-    text: { en: "", es: "", fr: "" },
+    text: { en: "", es: "", fr: "", pt: "" },
     sources,
     status: "rejected",
     reason,
@@ -364,6 +367,9 @@ function familyLinkText(person: ArchivePerson, relative: ArchivePerson, relation
   if (language === "fr") {
     return `${relative.name}, ${relationLabel(relation, language)} de ${person.name}, a marqué lors de la ${stage} de ${match.competition} ${match.season}${opponent ? ` contre ${opponent.name}` : ""}.`;
   }
+  if (language === "pt") {
+    return `${relative.name}, ${relationLabel(relation, language)} de ${person.name}, marcou na ${stage} da ${match.competition} ${match.season}${opponent ? ` contra o ${opponent.name}` : ""}.`;
+  }
   return `${relative.name}, ${person.name}'s ${relationLabel(relation, language)}, scored in the ${match.season} ${match.competition} ${stage}${opponent ? ` against ${opponent.name}` : ""}.`;
 }
 
@@ -375,15 +381,15 @@ function goalEffect(fixture: MatchFixture, events: MatchEvent[], goal: MatchEven
   const team = goal.teamId === "home" ? fixture.home.name : fixture.away.name;
   const margin = goal.teamId === "home" ? before.home - before.away : before.away - before.home;
   if (margin === -1) {
-    return { en: `The goal levelled the score for ${team}.`, es: `El gol igualó el marcador para ${team}.`, fr: `Le but a permis à ${team} d'égaliser.` };
+    return { en: `The goal levelled the score for ${team}.`, es: `El gol igualó el marcador para ${team}.`, fr: `Le but a permis à ${team} d'égaliser.`, pt: `O gol deixou tudo igual para o ${team}.` };
   }
   if (margin === 0) {
-    return { en: `The goal put ${team} ahead.`, es: `El gol puso por delante a ${team}.`, fr: `Le but a donné l'avantage à ${team}.` };
+    return { en: `The goal put ${team} ahead.`, es: `El gol puso por delante a ${team}.`, fr: `Le but a donné l'avantage à ${team}.`, pt: `O gol colocou o ${team} na frente.` };
   }
   if (margin > 0) {
-    return { en: `The goal extended ${team}'s lead.`, es: `El gol amplió la ventaja de ${team}.`, fr: `Le but a creusé l'écart pour ${team}.` };
+    return { en: `The goal extended ${team}'s lead.`, es: `El gol amplió la ventaja de ${team}.`, fr: `Le but a creusé l'écart pour ${team}.`, pt: `O gol ampliou a vantagem do ${team}.` };
   }
-  return { en: `The goal reduced ${team}'s deficit.`, es: `El gol recortó la desventaja de ${team}.`, fr: `Le but a réduit l'écart pour ${team}.` };
+  return { en: `The goal reduced ${team}'s deficit.`, es: `El gol recortó la desventaja de ${team}.`, fr: `Le but a réduit l'écart pour ${team}.`, pt: `O gol diminuiu a desvantagem do ${team}.` };
 }
 
 /** Every cited source must exist: live events must be active at the trigger clock, archive IDs must be real records. */
@@ -438,11 +444,13 @@ export function verifyClaimProposal(
           `${ordinalMinute("en", event.minute)} ${playerName} scored for ${teamName}.`,
           `${ordinalMinute("es", event.minute)} ${playerName} marcó para ${teamName}.`,
           `${ordinalMinute("fr", event.minute)} ${playerName} a marqué pour ${teamName}.`,
+          `${ordinalMinute("pt", event.minute)} ${playerName} marcou para o ${teamName}.`,
         )
         : localizeText(
           `${ordinalMinute("en", event.minute)} ${playerName} was sent off for ${teamName}.`,
           `${ordinalMinute("es", event.minute)} ${playerName} fue expulsado con ${teamName}.`,
           `${ordinalMinute("fr", event.minute)} ${playerName} a été expulsé pour ${teamName}.`,
+          `${ordinalMinute("pt", event.minute)} ${playerName} foi expulso pelo ${teamName}.`,
         );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {
@@ -468,6 +476,7 @@ export function verifyClaimProposal(
         `${fixture.home.name} ${actualScore.home}-${actualScore.away} ${fixture.away.name} after ${minute} minutes.${effect ? ` ${effect.en}` : ""}`,
         `${fixture.home.name} ${actualScore.home}-${actualScore.away} ${fixture.away.name} tras ${minute} minutos.${effect ? ` ${effect.es}` : ""}`,
         `${fixture.home.name} ${actualScore.home}-${actualScore.away} ${fixture.away.name} après ${minute} minutes.${effect ? ` ${effect.fr}` : ""}`,
+        `${fixture.home.name} ${actualScore.home}-${actualScore.away} ${fixture.away.name} após ${minute} minutos.${effect ? ` ${effect.pt}` : ""}`,
       );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {
@@ -499,6 +508,7 @@ export function verifyClaimProposal(
         `${person.name} scored ${spell.goals} goals for ${club.name} from ${spell.fromYear} to ${spell.toYear}.`,
         `${person.name} marcó ${spell.goals} goles con ${club.name} de ${spell.fromYear} a ${spell.toYear}.`,
         `${person.name} a marqué ${spell.goals} buts pour ${club.name} de ${spell.fromYear} à ${spell.toYear}.`,
+        `${person.name} marcou ${spell.goals} gols pelo ${club.name} de ${spell.fromYear} a ${spell.toYear}.`,
       );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {
@@ -539,6 +549,7 @@ export function verifyClaimProposal(
         familyLinkText(person, relative, proposal.params.relation, match, opponent, "en"),
         familyLinkText(person, relative, proposal.params.relation, match, opponent, "es"),
         familyLinkText(person, relative, proposal.params.relation, match, opponent, "fr"),
+        familyLinkText(person, relative, proposal.params.relation, match, opponent, "pt"),
       );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {
@@ -565,6 +576,7 @@ export function verifyClaimProposal(
         `${person.name} now has ${total} documented career goals.`,
         `${person.name} suma ahora ${total} goles documentados en su carrera.`,
         `${person.name} compte désormais ${total} buts documentés en carrière.`,
+        `${person.name} soma agora ${total} gols documentados na carreira.`,
       );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {
@@ -591,6 +603,7 @@ export function verifyClaimProposal(
         `${clubA.name} vs ${clubB.name}: ${plural(tally.clubAWins + tally.clubBWins + tally.draws, "meeting", "meetings")} in the archive, ${plural(tally.clubAWins, "win", "wins")} for ${clubA.name}, ${tally.clubBWins} for ${clubB.name}, ${plural(tally.draws, "draw", "draws")}.`,
         `${clubA.name} vs ${clubB.name}: ${plural(tally.clubAWins + tally.clubBWins + tally.draws, "enfrentamiento", "enfrentamientos")} en el archivo, ${plural(tally.clubAWins, "victoria", "victorias")} para ${clubA.name}, ${tally.clubBWins} para ${clubB.name} y ${plural(tally.draws, "empate", "empates")}.`,
         `${clubA.name} contre ${clubB.name} : ${plural(tally.clubAWins + tally.clubBWins + tally.draws, "confrontation", "confrontations")} dans les archives, ${plural(tally.clubAWins, "victoire", "victoires")} pour ${clubA.name}, ${tally.clubBWins} pour ${clubB.name} et ${plural(tally.draws, "nul", "nuls")}.`,
+        `${clubA.name} x ${clubB.name}: ${plural(tally.clubAWins + tally.clubBWins + tally.draws, "confronto", "confrontos")} no arquivo, ${plural(tally.clubAWins, "vitória", "vitórias")} do ${clubA.name}, ${tally.clubBWins} do ${clubB.name} e ${plural(tally.draws, "empate", "empates")}.`,
       );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {
@@ -615,6 +628,7 @@ export function verifyClaimProposal(
           `The ${match.season} ${match.competition} final between ${homeClub.name} and ${awayClub.name} finished ${score}.`,
           `La final ${match.season} de ${match.competition} entre ${homeClub.name} y ${awayClub.name} terminó ${score}.`,
           `La finale ${match.season} de ${match.competition} entre ${homeClub.name} et ${awayClub.name} s'est terminée sur le score de ${score}.`,
+          `A final de ${match.season} da ${match.competition} entre ${homeClub.name} e ${awayClub.name} terminou ${score}.`,
         )
         : (() => {
           const [winner, loser] = match.homeScore > match.awayScore ? [homeClub, awayClub] : [awayClub, homeClub];
@@ -623,6 +637,7 @@ export function verifyClaimProposal(
             `In the ${match.season} ${match.competition} final, ${winner.name} beat ${loser.name} ${result}.`,
             `En la final ${match.season} de ${match.competition}, ${winner.name} venció a ${loser.name} por ${result}.`,
             `En finale ${match.season} de ${match.competition}, ${winner.name} a battu ${loser.name} ${result}.`,
+            `Na final de ${match.season} da ${match.competition}, o ${winner.name} venceu o ${loser.name} por ${result}.`,
           );
         })();
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
@@ -638,11 +653,12 @@ export function verifyClaimProposal(
       if (!club || !honour) {
         return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, "Unknown club honour") };
       }
-      const resultText = honour.result === "winner" ? { en: "won", es: "ganó", fr: "a remporté" } : { en: "finished runner-up in", es: "fue subcampeón en", fr: "a terminé finaliste de" };
+      const resultText = honour.result === "winner" ? { en: "won", es: "ganó", fr: "a remporté", pt: "conquistou" } : { en: "finished runner-up in", es: "fue subcampeón en", fr: "a terminé finaliste de", pt: "foi vice-campeão da" };
       const text = localizeText(
         `${club.name} ${resultText.en} the ${honour.competition} in ${honour.season}.`,
         `${club.name} ${resultText.es} ${honour.competition} en ${honour.season}.`,
         `${club.name} ${resultText.fr} ${honour.competition} en ${honour.season}.`,
+        `${club.name} ${resultText.pt} ${honour.competition} em ${honour.season}.`,
       );
       const claim = verifiedClaim(proposal.kind, proposal.sources, text);
       return {

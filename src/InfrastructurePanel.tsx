@@ -49,7 +49,7 @@ function flow(health: AppHealth | null, desk: DeskHealth | null, live: LiveStatu
 
 const DESKS = [
   { icon: "🎙️", title: "Live desk", chips: ["Live board", "Storyline queue", "Corrections"], line: "Run the match, approve storylines." },
-  { icon: "🎬", title: "Recap & highlights", chips: ["Auto-cut reel", "Written recap", "EN · ES · FR"], line: "Every goal, red card and approved story." },
+  { icon: "🎬", title: "Recap & highlights", chips: ["Auto-cut reel", "Written recap", "EN · ES · FR · PT"], line: "Every goal, red card and approved story." },
   { icon: "🔍", title: "Video lab", chips: ["Mark moments", "AI detection", "Send to desk"], line: "Pundit review that feeds the live desk." },
   { icon: "🎯", title: "Player cam", chips: ["One player", "Spotlight", "Vertical cut"], line: "A personal reel for any player." }
 ];

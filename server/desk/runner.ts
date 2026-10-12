@@ -44,6 +44,11 @@ const localizationSchema = z.object({
     onAirLine: z.string().trim().min(1),
     overlay: z.string().trim().min(1),
   }).strict(),
+  pt: z.object({
+    headline: z.string().trim().min(1),
+    onAirLine: z.string().trim().min(1),
+    overlay: z.string().trim().min(1),
+  }).strict(),
 }).strict();
 
 export type ProducerDraft = z.infer<typeof producerDraftSchema>;
@@ -493,9 +498,18 @@ class FoundryAgentRunner implements AgentRunner {
             },
             required: ["headline", "onAirLine", "overlay"],
           },
+          pt: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              headline: { type: "string" },
+              onAirLine: { type: "string" },
+              overlay: { type: "string" },
+            },
+            required: ["headline", "onAirLine", "overlay"],
+          },
         },
-        required: ["es", "fr"],
-      },
+        required: ["es", "fr", "pt"],      },
       JSON.stringify(input),
       undefined,
       undefined,

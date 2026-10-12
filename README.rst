@@ -6,7 +6,7 @@ Live on Air
 Live on Air is a live match-intelligence studio. It ingests synthetic football events through
 Microsoft Fabric, turns them into verified statistics and storylines with Microsoft Foundry agents,
 and lets a human producer put approved copy on air as lower-thirds, narrated recaps and an
-automatically cut highlight reel, in English, Spanish and French.
+automatically cut highlight reel, in English, Spanish, French and Brazilian Portuguese.
 
 It is a hackathon application, not a Premier League product or affiliation. All clubs, players,
 events and scenarios are fictional.
@@ -48,14 +48,14 @@ with live health.
   cards. Selecting a card highlights its evidence on the pitch.
 * Review the storyline queue. Every storyline shows its verified claims, sources and agent trace.
   Approve, edit or reject it; nothing goes on air without approval.
-* Preview the on-air lower-third in English, Spanish or French and export it as timed JSON.
+* Preview the on-air lower-third in English, Spanish, French or Portuguese and export it as timed JSON.
 * Rule out any goal (a VAR-style correction). The score, dependent storylines, facts and
   highlight captions are retracted and rebuilt.
 
 **Recap and highlights**
 
 * **Highlight reel**, generated automatically from the verified events and approved storylines,
-  in English, Spanish or French:
+  in English, Spanish, French or Portuguese:
 
    - *Video recap*: when the live match has matching local footage, the reel is cut around its
      analyzed events, with storyline captions and a scorebug on top. Video Lab moments reach the
@@ -64,14 +64,14 @@ with live health.
     scorebug, event trail and captions.
   - *Sound*: broadcast-style commentary. The Foundry commentator writes a spoken line for each
     moment from the verified build-up (passes, shots, saves, score), plus an intro and outro, in the
-    reel language; Azure AI Speech HD neural voices read it, and the data reel paces itself so no
+    reel language, with a full-time outro that names every scorer and red card; Azure AI Speech HD neural voices read it, and the data reel paces itself so no
     line is cut off. Video recaps duck the clip's own audio under each line. Without Azure, the
     browser voice reads the captions. One toggle turns all sound off.
   - Export the reel as WebM with the commentary (and the clip audio for video recaps), or download
     the cut list (JSON plus an ffmpeg script).
 
-* **Narrated recap** in English, Spanish or French, built from the live view so manual corrections
-  are reflected. A writer step turns the approved facts into match-report prose in the chosen
+* **Narrated recap** in English, Spanish, French or Portuguese, built from the live view so manual corrections
+  are reflected. A writer step turns the approved facts into a multi-paragraph match report (result, first and second half, every goal, red card and ruled-out goal, key chances and saves, approved storylines, what it means) in the chosen
   language, with a neural-voice reading to listen to; the grounded claims and evidence stay
   alongside it. Every red card and every producer-approved storyline must appear: a draft that
   leaves one out is rejected and the grounded fact-by-fact recap (which lists them) is used instead.
@@ -121,14 +121,14 @@ How it works
      researcher  -> Foundry IQ knowledge base over Azure AI Search (archive)
      producer    -> drafts headline, on-air line and overlay from verified claims only
      fact-checker-> re-checks every claim against feed events and archive records
-     localizer   -> Spanish and French versions
+     localizer   -> Spanish, French and Portuguese versions
      deterministic guard: rejects names or numbers not in verified claims, retries
              |
              v
    Producer approval (human in the loop)
              |
              v
-   Outputs: lower-third JSON · narrated recap · highlight reel · cut list   (EN / ES / FR)
+   Outputs: lower-third JSON · narrated recap · highlight reel · cut list   (EN / ES / FR / PT)
 
 1. **Ingest.** The simulator publishes each event to a Fabric Eventstream custom endpoint.
    Eventstream fans it out to Eventhouse and back to the app over a second custom endpoint.
@@ -140,7 +140,7 @@ How it works
 4. **Explain.** On key events the storyline desk runs four Foundry agents. Claims are verified
    deterministically before a producer ever sees them.
 5. **Render and personalise.** Approved copy becomes lower-thirds, recaps and
-   highlight captions in three languages.
+   highlight captions in four languages.
 
 Highlight reel
 ~~~~~~~~~~~~~~
@@ -166,7 +166,7 @@ The same clip list drives every output:
            edit suite.
 :Sound: The Foundry commentator writes one line per clip (``POST /api/live/highlights/commentary``)
         from the events inside the clip window; Azure AI Speech voices each line
-        (``en-GB-Ollie``, ``es-ES-Tristan``, ``fr-FR-Remy`` HD voices). Lines are mixed through
+        (``en-GB-Ollie``, ``es-ES-Tristan``, ``fr-FR-Remy``, ``pt-BR-Macerio`` HD voices). Lines are mixed through
         Web Audio so they are recorded into exports, and the data reel stretches each hold to
         the line's length. The browser speech engine reads captions when Azure is unavailable.
 
@@ -546,7 +546,7 @@ Video auto-eventing             Progressive + optional full-upload         Blob 
                                 clips, frame sampling and a vision model   Container Apps Job worker (as in
                                                                            PlayerIQ); player tracking for passes
                                                                            and speeds
-Languages                       English, Spanish, French                   More localizer languages and translated
+Languages                       English, Spanish, French, Portuguese       More localizer languages and translated
                                                                            studio UI
 Secrets and operations          Container Apps secrets, Log Analytics      Key Vault, alerts, dashboards, budgets
 Fabric capacity                 Trial capacity                             Paid F-SKU sized to match-day load

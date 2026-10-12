@@ -3,7 +3,7 @@ import { commentaryRequest, commentarySignature, type HighlightCommentary, type 
 import type { Language } from "../shared/types.js";
 import { api } from "./api.js";
 
-const VOICE_LANG: Record<Language, string> = { en: "en-GB", es: "es-ES", fr: "fr-FR" };
+const VOICE_LANG: Record<Language, string> = { en: "en-GB", es: "es-ES", fr: "fr-FR", pt: "pt-BR" };
 const DUCKED_GAIN = 0.3;
 
 export function speechSupported(): boolean {

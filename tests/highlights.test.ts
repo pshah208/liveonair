@@ -11,7 +11,7 @@ function fixture(): MatchFixture {
 }
 
 function storyline(eventId: string, status: Storyline["status"], overlay: string): Storyline {
-  const localized = (text: string) => ({ en: text, es: "", fr: "" });
+  const localized = (text: string) => ({ en: text, es: "", fr: "", pt: "" });
   return {
     id: `story-${eventId}`,
     matchId: "m1",
@@ -151,10 +151,13 @@ test("reel localizes titles and uses translated storyline captions with English 
   const french = buildHighlightReel(match, [], { language: "fr" });
   assert.ok(french.clips.every((clip) => clip.captionLanguage === "fr"));
   assert.ok(french.clips.some((clip) => /^But de /u.test(clip.caption)));
+  const portuguese = buildHighlightReel(match, [], { language: "pt" });
+  assert.ok(portuguese.clips.every((clip) => clip.captionLanguage === "pt"));
+  assert.ok(portuguese.clips.some((clip) => /^Gol de /u.test(clip.caption)));
 });
 
 test("reel branding stays Live on Air in every supported language", () => {
-  for (const language of ["en", "es", "fr"] as const) {
+  for (const language of ["en", "es", "fr", "pt"] as const) {
     assert.ok(REEL_TEXT[language].intro.includes("Live on Air"));
     assert.ok(REEL_TEXT[language].footageReel.includes("Live on Air"));
     assert.doesNotMatch(JSON.stringify(REEL_TEXT[language]), /matchlens/i);

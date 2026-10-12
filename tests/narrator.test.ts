@@ -774,7 +774,7 @@ test("recap key moments cover every red card and approved storyline, never retra
   const ledger = buildEvidenceLedger(snapshot, fixture);
   const story = (id: string, triggerEventIds: string[], status: Storyline["status"], line: string): Storyline => ({
     id, matchId: "m1", triggerEventIds, triggerMinute: 28, createdAt: "", updatedAt: "", status, priority: 1,
-    headline: { en: line, es: "", fr: "" }, onAirLine: { en: line, es: "", fr: "" }, overlay: { en: line, es: "", fr: "" },
+    headline: { en: line, es: "", fr: "", pt: "" }, onAirLine: { en: line, es: "", fr: "", pt: "" }, overlay: { en: line, es: "", fr: "", pt: "" },
     claims: [], trace: [], version: 1,
   });
   const moments = collectKeyMoments(ledger, [
@@ -791,4 +791,12 @@ test("recap key moments cover every red card and approved storyline, never retra
   const fallback = appendKeyMoments("Recap.", moments);
   assert.ok(fallback.includes("Ana Ruiz opens the scoring."));
   assert.equal(appendKeyMoments(fallback, moments), fallback, "lines are not duplicated");
+});
+test("Portuguese ledger facts read naturally and keep names and score", () => {
+  const fixture = createFixture();
+  const ledger = buildEvidenceLedger(createSnapshot("v1", 1800, "en"), fixture);
+  assert.equal(ledger.facts["event:goal-1"].text.pt, "Ana Ruiz marcou para o Sevilla aos 28:15.");
+  assert.match(ledger.facts["event:red-1"].text.pt, /Claire Dubois recebeu cartão vermelho pelo Lyon/u);
+  assert.match(ledger.facts["recap:milestones"].text.pt, /^Momentos decisivos:/u);
+  assert.match(ledger.facts.score.text.pt, /Sevilla 1-0 Lyon/u);
 });

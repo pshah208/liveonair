@@ -53,7 +53,7 @@ type MatchState = {
   triggeredEventIds: Set<string>;
 };
 
-const EMPTY_LOCALIZED = { en: "", es: "", fr: "" } as const;
+const EMPTY_LOCALIZED = { en: "", es: "", fr: "", pt: "" } as const;
 
 function iso(now: () => number): string {
   return new Date(now()).toISOString();
@@ -97,12 +97,14 @@ function eventWindowTitle(event: MatchEvent, fixture: MatchFixture) {
       en: `${event.minute}' Goal - ${player}`,
       es: `${event.minute}' Gol - ${player}`,
       fr: `${event.minute}' But - ${player}`,
+      pt: `${event.minute}' Gol - ${player}`,
     };
   }
   return {
     en: `${event.minute}' Red card - ${player}`,
     es: `${event.minute}' Roja - ${player}`,
     fr: `${event.minute}' Rouge - ${player}`,
+    pt: `${event.minute}' Vermelho - ${player}`,
   };
 }
 
@@ -114,12 +116,14 @@ function eventWindowSummary(event: MatchEvent, fixture: MatchFixture, score: { h
       en: `${player} made it ${score.home}-${score.away} for ${team}.`,
       es: `${player} puso el ${score.home}-${score.away} para ${team}.`,
       fr: `${player} a porté le score à ${score.home}-${score.away} pour ${team}.`,
+      pt: `${player} fez ${score.home}-${score.away} para o ${team}.`,
     };
   }
   return {
     en: `${player} saw red for ${team}.`,
     es: `${player} vio la roja con ${team}.`,
     fr: `${player} a été expulsé pour ${team}.`,
+    pt: `${player} foi expulso pelo ${team}.`,
   };
 }
 
@@ -130,6 +134,7 @@ function introChapter(fixture: MatchFixture, endSecond: number): RecapChapter {
       en: "Kickoff",
       es: "Inicio",
       fr: "Coup d'envoi",
+      pt: "Início de jogo",
     },
     startSecond: 0,
     endSecond,
@@ -139,6 +144,7 @@ function introChapter(fixture: MatchFixture, endSecond: number): RecapChapter {
       en: `${fixture.home.name} and ${fixture.away.name} settled into the match.`,
       es: `${fixture.home.name} y ${fixture.away.name} se asentaron en el partido.`,
       fr: `${fixture.home.name} et ${fixture.away.name} sont entrés dans le match.`,
+      pt: `${fixture.home.name} e ${fixture.away.name} entraram no ritmo da partida.`,
     },
   };
 }
@@ -439,6 +445,9 @@ export class DefaultStorylineDesk implements StorylineDesk {
         current.headline.fr = localized.fr.headline;
         current.onAirLine.fr = localized.fr.onAirLine;
         current.overlay.fr = localized.fr.overlay;
+        current.headline.pt = localized.pt.headline;
+        current.onAirLine.pt = localized.pt.onAirLine;
+        current.overlay.pt = localized.pt.overlay;
         current.status = "needs_review";
         current.trace.push(makeTrace("localizer", "complete", localized.detail, started, this.now));
       });
@@ -490,9 +499,9 @@ export class DefaultStorylineDesk implements StorylineDesk {
   private async localizeWithGuard(knownNames: Set<string>, english: { headline: string; onAirLine: string; overlay: string }): Promise<LocalizationDraft & { detail: string }> {
     const failures: string[] = [];
     const empty = { headline: "", onAirLine: "", overlay: "" };
-    const validated: LocalizationDraft = { es: { ...empty }, fr: { ...empty } };
+    const validated: LocalizationDraft = { es: { ...empty }, fr: { ...empty }, pt: { ...empty } };
     const first = await this.runner.localize(english);
-    for (const language of ["es", "fr"] as const) {
+    for (const language of ["es", "fr", "pt"] as const) {
       let selected = first[language];
       let guardError = guardLocalization(english.headline, selected.headline, knownNames)
         ?? guardLocalization(english.onAirLine, selected.onAirLine, knownNames)
@@ -514,7 +523,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
     }
     return {
       ...validated,
-      detail: failures.length > 0 ? `Translation unavailable for ${failures.join("; ")}` : "Localized English draft to es and fr",
+      detail: failures.length > 0 ? `Translation unavailable for ${failures.join("; ")}` : "Localized English draft to es, fr and pt",
     };
   }
 
@@ -631,6 +640,9 @@ export class DefaultStorylineDesk implements StorylineDesk {
       current.headline.fr = localized.fr.headline || current.headline.fr;
       current.overlay.es = localized.es.overlay || current.overlay.es;
       current.overlay.fr = localized.fr.overlay || current.overlay.fr;
+      current.onAirLine.pt = localized.pt.onAirLine;
+      current.headline.pt = localized.pt.headline || current.headline.pt;
+      current.overlay.pt = localized.pt.overlay || current.overlay.pt;
       current.status = "approved";
       current.review = { decision: "edited", at: iso(this.now), note: request.note };
       current.trace.push({
@@ -689,15 +701,15 @@ export class DefaultStorylineDesk implements StorylineDesk {
     chapters.push({
       id: "chapter-final",
       title: fullTime
-        ? { en: "Full time", es: "Final del partido", fr: "Fin du match" }
-        : { en: "Latest state", es: "Estado actual", fr: "État actuel" },
+        ? { en: "Full time", es: "Final del partido", fr: "Fin du match", pt: "Fim de jogo" }
+        : { en: "Latest state", es: "Estado actual", fr: "État actuel", pt: "Situação atual" },
       startSecond: eventSecond(lastMarker),
       endSecond: finalPhase(view),
       eventIds: events.filter((event) => eventSecond(event) >= eventSecond(lastMarker) && eventSecond(event) <= finalPhase(view)).map((event) => event.id),
       storylineIds: matchStorylines.filter((storyline) => storyline.triggerMinute * 60 >= eventSecond(lastMarker)).map((storyline) => storyline.id),
       summary: fullTime
-        ? { en: `Full time: ${scoreline}.`, es: `Final: ${scoreline}.`, fr: `Score final : ${scoreline}.` }
-        : { en: `Current score: ${scoreline}.`, es: `Marcador actual: ${scoreline}.`, fr: `Score actuel : ${scoreline}.` },
+        ? { en: `Full time: ${scoreline}.`, es: `Final: ${scoreline}.`, fr: `Score final : ${scoreline}.`, pt: `Placar final: ${scoreline}.` }
+        : { en: `Current score: ${scoreline}.`, es: `Marcador actual: ${scoreline}.`, fr: `Score actuel : ${scoreline}.`, pt: `Placar atual: ${scoreline}.` },
     });
     return {
       matchId: view.matchId,

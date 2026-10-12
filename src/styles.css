@@ -16,6 +16,7 @@
 .live-video-status { display: grid; gap: 12px; font-size: 14px; }
 .live-video-status label { display: grid; gap: 4px; }
 .live-video-status progress { width: 100%; accent-color: var(--cp-accent); }
+.recap__script { white-space: pre-line; }
 .coaching-clips { list-style: none; padding: 0; margin: 0; }
 .coaching-clips li { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 12px 0; border-top: 1px solid var(--cp-border); overflow-wrap: anywhere; }
 .coaching-clips p { margin: 4px 0; white-space: pre-wrap; }
