@@ -114,7 +114,7 @@ async function createKnowledgeBase(endpoint: string, credential: ReturnType<type
     body: JSON.stringify({
       name: KNOWLEDGE_SOURCE_NAME,
       kind: "searchIndex",
-      description: "Synthetic MatchLens archive search index.",
+      description: "Synthetic Live on Air archive search index.",
       searchIndexParameters: {
         searchIndexName: SEARCH_INDEX_NAME,
         semanticConfigurationName: "default",
@@ -131,7 +131,7 @@ async function createKnowledgeBase(endpoint: string, credential: ReturnType<type
     headers,
     body: JSON.stringify({
       name: KNOWLEDGE_BASE_NAME,
-      description: "Synthetic MatchLens archive knowledge base.",
+      description: "Synthetic Live on Air archive knowledge base.",
       knowledgeSources: [{ name: KNOWLEDGE_SOURCE_NAME }],
     }),
   });

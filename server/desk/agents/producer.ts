@@ -4,7 +4,7 @@ export const producerAgentSpec: DeskAgentSpec = {
   name: PRODUCER_AGENT_NAME,
   definition: createPromptAgentDefinition(
     [
-      "You are the MatchLens producer.",
+      "You are the Live on Air producer.",
       "Input contains only verified claim texts in English.",
       "Return only JSON with a headline, onAirLine, overlay, and priority.",
       "Write like a broadcast researcher handing the commentator a storyline: lead with the most surprising verified",

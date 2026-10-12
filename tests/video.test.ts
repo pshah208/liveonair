@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import { createApp } from "../server/app.js";
 import { analyzeFixture } from "../server/engine.js";
 import { parseLiveEnvelope } from "../server/live/transport.js";
+import { uploadExtension } from "../server/routes/video.js";
+import { HttpError } from "../server/validation.js";
 import { buildVideoFixture, MIN_CONFIDENCE } from "../server/video/events.js";
-import { sampleTimestamps } from "../server/video/ffmpeg.js";
-import { buildVisionMessages, parseVisionResult, type VisionAnalyzer, type VisionBatchResult } from "../server/video/vision.js";
-import { createVideoWorker } from "../server/video/worker.js";
+import { sampleTimestamps, videoSampleInterval, type RunCommand } from "../server/video/ffmpeg.js";
+import { buildVisionMessages, parseVisionResult, VISION_JSON_SCHEMA, VISION_INSTRUCTIONS, type VisionAnalyzer, type VisionBatchResult } from "../server/video/vision.js";
+import { BATCH_SIZE, createVideoWorker, type VideoWorker } from "../server/video/worker.js";
 import { buildHighlightReel } from "../shared/highlights.js";
 import type { MatchFixture } from "../shared/types.js";
-import type { VideoFrame, VideoJob, VideoJobRequest, VisionDetection } from "../shared/video.js";
+import { MAX_FRAME_INTERVAL_SECONDS, MAX_UPLOAD_BYTES, MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type VideoFrame, type VideoJob, type VideoJobRequest, type VisionDetection } from "../shared/video.js";
+import { uploadPlayerCam, uploadVideo } from "../src/api.js";
 
 const request: VideoJobRequest = { home: { name: "Blue Town", kit: "blue shirts" }, away: { name: "Red City", kit: "red shirts" } };
 const frames: VideoFrame[] = Array.from({ length: 30 }, (_, index) => ({ index, timestampSeconds: 1 + index * 2 }));
@@ -129,6 +131,40 @@ test("vision messages carry each frame with its index and kit context; results o
   assert.throws(() => parseVisionResult({ footageCheck: { realFootballFootage: true, reason: "" }, kits: { home: "", away: "" }, detections: [{ ...detection({}), type: "dribble" }] }, new Set([0])));
 });
 
+test("footage categories are required by the model schema but optional for legacy runtime results", () => {
+  const schema = VISION_JSON_SCHEMA.properties.footageCheck;
+  assert.ok(schema.required.some((field) => field === "category"));
+  assert.deepEqual(schema.properties.category.enum, ["match", "broadcast_graphics", "unsupported"]);
+  const base = { kits: { home: "", away: "" }, detections: [] };
+  const checks: VisionBatchResult["footageCheck"][] = [
+    { realFootballFootage: true, reason: "Legacy camera footage" },
+    { realFootballFootage: false, reason: "Legacy rejection" },
+    { realFootballFootage: true, category: "match", reason: "Camera footage" },
+    { realFootballFootage: false, category: "broadcast_graphics", reason: "A transition card." },
+    { realFootballFootage: false, category: "unsupported", reason: "Animation" },
+  ];
+  for (const footageCheck of checks) {
+    assert.deepEqual(parseVisionResult({ ...base, footageCheck }, new Set([0])).footageCheck, footageCheck);
+  }
+  for (const footageCheck of [
+    { realFootballFootage: false, category: "match", reason: "Contradiction" },
+    { realFootballFootage: true, category: "broadcast_graphics", reason: "Contradiction" },
+    { realFootballFootage: true, category: "unsupported", reason: "Contradiction" },
+    { realFootballFootage: false, category: "logo", reason: "Football broadcast graphics" },
+    { realFootballFootage: false, category: null, reason: "Football broadcast graphics" },
+  ]) {
+    assert.throws(() => parseVisionResult({ ...base, footageCheck }, new Set([0])));
+  }
+});
+
+test("vision instructions distinguish football broadcasts from unsupported content and gate mixed-frame evidence", () => {
+  assert.match(VISION_INSTRUCTIONS, /team logos, lineups, title graphics or football studio coverage/u);
+  assert.match(VISION_INSTRUCTIONS, /test patterns, video games \(even football games\)/u);
+  assert.match(VISION_INSTRUCTIONS, /detect events ONLY on the genuine match frames/u);
+  assert.match(VISION_INSTRUCTIONS, /never inferred from logos, graphics or studio clothing/u);
+  assert.match(VISION_INSTRUCTIONS, /broadcast_graphics or unsupported, return no detections/u);
+});
+
 test("frame sampling spaces frames evenly inside the clip", () => {
   const times = sampleTimestamps(120, 2, 60);
   assert.equal(times.length, 60);
@@ -137,19 +173,110 @@ test("frame sampling spaces frames evenly inside the clip", () => {
   assert.equal(sampleTimestamps(5, 2, 60).length, 2);
 });
 
-function fakeVision(results: (batch: number) => Partial<VisionBatchResult>): VisionAnalyzer & { calls: number } {
+test("video limits allow fifteen minutes, 500 MiB and 300 frames in batches of twelve", () => {
+  assert.equal(MAX_VIDEO_SECONDS, 900);
+  assert.equal(MAX_UPLOAD_BYTES, 500 * 1024 * 1024);
+  assert.equal(MAX_VIDEO_FRAMES, 300);
+  assert.equal(MAX_FRAME_INTERVAL_SECONDS, 3);
+  assert.equal(BATCH_SIZE, 12);
+});
+
+test("shared sampling preserves short clips and covers the end of fifteen-minute clips", () => {
+  for (const duration of [0.5, 5, 30, 48, 60, 90, 120, 180]) {
+    const originalInterval = Math.max(1, duration / 60);
+    assert.equal(videoSampleInterval(duration), originalInterval, `${duration} s interval`);
+    assert.deepEqual(
+      sampleTimestamps(duration, videoSampleInterval(duration), MAX_VIDEO_FRAMES),
+      sampleTimestamps(duration, originalInterval, 60),
+      `${duration} s retains the original frame count and timestamps`,
+    );
+  }
+  for (const duration of [181, 300, 600, 899, 900, 901]) {
+    const interval = videoSampleInterval(duration);
+    if (duration <= 900) assert.equal(interval, 3);
+    const times = sampleTimestamps(duration, interval, MAX_VIDEO_FRAMES);
+    assert.equal(times.length, Math.min(300, Math.floor(duration / 3)), `${duration} s frame budget`);
+    assert.ok(times[0]! > 0);
+    assert.ok(times.at(-1)! < duration && times.at(-1)! > duration - 3, "sampling reaches the end, not just the first three minutes");
+    assert.ok(times.every((second, index) => index === 0 || second > times[index - 1]!));
+    if (duration === 900) assert.deepEqual([times[0], times.at(-1)], [1.5, 898.5]);
+  }
+});
+
+test("shared upload headers accept exactly 500 MiB and reject one byte over with 413", () => {
+  const headers = (size: number) => ({
+    header: (name: string) => ({ "content-type": "video/mp4", "content-length": String(size) })[name],
+  }) as Parameters<typeof uploadExtension>[0];
+  for (const size of [MAX_UPLOAD_BYTES - 1, MAX_UPLOAD_BYTES]) {
+    assert.equal(uploadExtension(headers(size)), "mp4");
+  }
+  assert.throws(
+    () => uploadExtension(headers(MAX_UPLOAD_BYTES + 1)),
+    (error: unknown) => error instanceof HttpError && error.status === 413 && /500/u.test(error.message),
+  );
+});
+
+test("browser uploads enforce the shared byte limit before sending either video mode", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+  const sent: { url: string; file: File }[] = [];
+  let constructed = 0;
+  class FakeXhr {
+    upload = { onprogress: null };
+    status = 202;
+    responseText = JSON.stringify({ id: "accepted" });
+    onload?: () => void;
+    url = "";
+    constructor() { constructed += 1; }
+    open(_method: string, url: string) { this.url = url; }
+    setRequestHeader() {}
+    send(file: File) { sent.push({ url: this.url, file }); this.onload?.(); }
+  }
+  Object.defineProperty(globalThis, "XMLHttpRequest", { configurable: true, value: FakeXhr });
+  try {
+    const uploaders = [
+      { path: "/api/video/jobs?", upload: (file: File) => uploadVideo(file, request, () => {}) },
+      { path: "/api/player-cam/jobs?", upload: (file: File) => uploadPlayerCam(file, { name: "Maya", number: 9, kit: "red", anchor: null }, () => {}) },
+    ];
+    for (const { path, upload } of uploaders) {
+      for (const size of [MAX_UPLOAD_BYTES - 1, MAX_UPLOAD_BYTES, MAX_UPLOAD_BYTES + 1]) {
+        const file = new File(["video"], "clip.mp4", { type: "video/mp4" });
+        Object.defineProperty(file, "size", { value: size });
+        const before = constructed;
+        if (size > MAX_UPLOAD_BYTES) {
+          await assert.rejects(async () => upload(file), /500/u);
+          assert.equal(constructed, before, "oversized files never create an XHR");
+        } else {
+          assert.equal((await upload(file)).id, "accepted");
+          assert.equal(constructed, before + 1);
+          assert.ok(sent.at(-1)!.url.startsWith(path));
+          assert.equal(sent.at(-1)!.file, file);
+        }
+      }
+    }
+    assert.equal(sent.length, 4);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "XMLHttpRequest", original);
+    else Reflect.deleteProperty(globalThis, "XMLHttpRequest");
+  }
+});
+
+type VisionInput = Parameters<VisionAnalyzer["analyzeBatch"]>[0];
+
+function fakeVision(results: (batch: number, input: VisionInput) => Partial<VisionBatchResult>): VisionAnalyzer & { calls: number; inputs: VisionInput[] } {
   const analyzer = {
     configured: true,
     model: "test-vision",
     calls: 0,
-    async analyzeBatch(input: Parameters<VisionAnalyzer["analyzeBatch"]>[0]): Promise<VisionBatchResult> {
+    inputs: [] as VisionInput[],
+    async analyzeBatch(input: VisionInput): Promise<VisionBatchResult> {
       const batch = analyzer.calls++;
+      analyzer.inputs.push(input);
       return {
         footageCheck: { realFootballFootage: true, reason: "ok" },
         kits: { home: "blue", away: "red" },
         detections: [detection({ frameIndex: input.frames[0]!.index, type: "pass" })],
         usage: { inputTokens: 100, outputTokens: 10 },
-        ...results(batch),
+        ...results(batch, input),
       };
     },
   };
@@ -157,7 +284,7 @@ function fakeVision(results: (batch: number) => Partial<VisionBatchResult>): Vis
 }
 
 function workerFor(vision: VisionAnalyzer, durationSeconds: number, registered: MatchFixture[] = []) {
-  const workRoot = mkdtempSync(resolve(tmpdir(), "matchlens-video-test-"));
+  const workRoot = mkdtempSync(resolve(".matchlens-video-test-"));
   const unregistered: string[] = [];
   const worker = createVideoWorker({
     vision,
@@ -185,7 +312,9 @@ test("worker runs probe, frames, vision batches and registers a fixture", async 
     assert.equal(job.frames.length, 60);
     assert.equal(job.batchesTotal, 5);
     assert.equal(vision.calls, 5);
+    assert.ok(vision.inputs.every((input) => input.intervalSeconds === 1.5));
     assert.equal(job.usage.inputTokens, 500);
+    assert.equal(existsSync(source), false, "source is removed after success");
     assert.equal(registered[0]!.id, "video-aaaaaaaaaaaa");
     assert.ok(job.events.some((event) => event.type === "goal" && event.teamId === "away"));
 
@@ -222,6 +351,43 @@ test("worker runs probe, frames, vision batches and registers a fixture", async 
   }
 });
 
+for (const durationSeconds of [900, 901]) {
+  test(`video worker processes all 300 frames at ${durationSeconds} seconds, including the last batch`, async () => {
+    const registered: MatchFixture[] = [];
+    const vision = fakeVision((_batch, input) => ({
+      detections: input.frames.filter((frame) => frame.index === 299).map((frame) => detection({ frameIndex: frame.index, type: "goal", team: "away", shirtNumber: 9 })),
+    }));
+    const { worker, workRoot, source } = workerFor(vision, durationSeconds, registered);
+    try {
+      worker.submit({ jobId: "dddddddddddd", sourcePath: source, fileName: "fifteen-minutes.mp4", sizeBytes: 5, request });
+      await worker.idle();
+      const job = worker.get("dddddddddddd")!;
+      assert.equal(job.stage, "ready", job.error);
+      assert.equal(job.durationSeconds, durationSeconds);
+      assert.equal(job.frames.length, 300);
+      assert.equal(job.batchesTotal, 25);
+      assert.equal(job.batchesDone, 25);
+      assert.equal(vision.calls, 25);
+      assert.ok(vision.inputs.every((input) => input.frames.length === 12 && input.intervalSeconds === 3));
+      assert.deepEqual(vision.inputs.flatMap((input) => input.frames.map((frame) => frame.index)), Array.from({ length: 300 }, (_, index) => index));
+      assert.deepEqual(job.usage, { inputTokens: 2500, outputTokens: 250 });
+      const last = job.frames.at(-1)!;
+      assert.ok(last.timestampSeconds > durationSeconds - 3 && last.timestampSeconds < durationSeconds);
+      const goal = job.events.find((event) => event.type === "goal")!;
+      assert.ok(goal, "a detection from the final batch becomes an event");
+      assert.ok(goal.minute * 60 + goal.second >= durationSeconds - 3);
+      assert.ok(job.evidence.some((item) => item.eventId === goal.id && item.frameIndex === 299 && item.timestampSeconds === last.timestampSeconds));
+      assert.equal(registered.length, 1);
+      assert.equal(registered[0]!.durationSeconds, durationSeconds);
+      assert.ok(registered[0]!.events.some((event) => event.id === goal.id));
+      assert.equal(existsSync(source), false, "source is removed before idle resolves");
+    } finally {
+      await worker.close();
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+}
+
 test("worker fails closed on non-football footage and rejects over-long clips", async () => {
   const notFootball = fakeVision(() => ({ footageCheck: { realFootballFootage: false, reason: "A colour test pattern" } }));
   const first = workerFor(notFootball, 30);
@@ -233,42 +399,57 @@ test("worker fails closed on non-football footage and rejects over-long clips", 
     assert.match(job.error!, /test pattern/u);
     assert.equal(notFootball.calls, 1, "stops after the first batch");
     assert.equal(job.fixtureId, undefined);
+    assert.equal(existsSync(first.source), false, "source is removed after footage rejection");
   } finally {
     await first.worker.close();
   }
 
-  const long = workerFor(fakeVision(() => ({})), 600);
+  const vision = fakeVision(() => ({}));
+  const registered: MatchFixture[] = [];
+  const long = workerFor(vision, 902, registered);
   try {
     long.worker.submit({ jobId: "cccccccccccc", sourcePath: long.source, fileName: "long.mp4", sizeBytes: 5, request });
     await long.worker.idle();
     const job = long.worker.get("cccccccccccc")!;
     assert.equal(job.stage, "failed");
-    assert.match(job.error!, /limit is 180 s/u);
+    assert.match(job.error!, /limit is 900 s/u);
+    assert.equal(vision.calls, 0, "duration is rejected before vision");
+    assert.equal(job.frames.length, 0, "duration is rejected before frame extraction");
+    assert.equal(registered.length, 0);
+    assert.equal(existsSync(long.source), false, "source is removed after duration rejection");
   } finally {
     await long.worker.close();
   }
 });
 
-const staticDir = mkdtempSync(resolve(tmpdir(), "matchlens-video-static-"));
+const staticDir = mkdtempSync(resolve(".matchlens-video-static-"));
 writeFileSync(resolve(staticDir, "index.html"), "<!doctype html><html><body></body></html>", "utf8");
+after(() => rmSync(staticDir, { recursive: true, force: true }));
 
-async function withVideoServer(vision: VisionAnalyzer, handler: (baseUrl: string) => Promise<void>) {
-  const app = createApp({ staticDir, version: "test", video: { vision, run: async () => "" } });
+async function withVideoServer(vision: VisionAnalyzer, handler: (baseUrl: string, worker: VideoWorker) => Promise<void>, durationSeconds?: number) {
+  const workRoot = mkdtempSync(resolve(".matchlens-video-api-"));
+  const run: RunCommand = async (command) => command === "ffprobe" && durationSeconds !== undefined
+    ? JSON.stringify({ format: { duration: String(durationSeconds) }, streams: [{ codec_type: "video", codec_name: "h264", width: 1280, height: 720 }] })
+    : "";
+  const worker = createVideoWorker({ vision, workRoot, registerFixture: () => {}, run, readFrame: async () => Buffer.from("jpeg") });
+  const app = createApp({ staticDir, version: "test", logger: () => {}, video: { vision, worker, run } });
   const server = http.createServer(app);
   await new Promise<void>((resolveServer) => server.listen(0, "127.0.0.1", resolveServer));
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   try {
-    await handler(`http://127.0.0.1:${port}`);
+    await handler(`http://127.0.0.1:${port}`, worker);
   } finally {
     await new Promise<void>((resolveServer) => server.close(() => resolveServer()));
+    await worker.close();
+    rmSync(workRoot, { recursive: true, force: true });
   }
 }
 
 test("video API validates uploads and job state", async () => {
-  await withVideoServer(fakeVision(() => ({})), async (baseUrl) => {
-    const health = await (await fetch(`${baseUrl}/api/video/health`)).json() as { visionConfigured: boolean; ffmpeg: boolean };
-    assert.deepEqual([health.visionConfigured, health.ffmpeg], [true, true]);
+  await withVideoServer(fakeVision(() => ({})), async (baseUrl, worker) => {
+    const health = await (await fetch(`${baseUrl}/api/video/health`)).json();
+    assert.deepEqual(health, { visionConfigured: true, ffmpeg: true, maxUploadBytes: 500 * 1024 * 1024, maxVideoSeconds: 900, maxFrames: 300 });
 
     const query = "fileName=clip.mp4&homeName=Blue%20Town&awayName=Red%20City";
     const wrongType = await fetch(`${baseUrl}/api/video/jobs?${query}`, { method: "POST", headers: { "content-type": "image/png" }, body: "x" });
@@ -276,9 +457,6 @@ test("video API validates uploads and job state", async () => {
 
     const badName = await fetch(`${baseUrl}/api/video/jobs?fileName=a.mp4&homeName=%3Cscript%3E&awayName=Red`, { method: "POST", headers: { "content-type": "video/mp4" }, body: "x" });
     assert.equal(badName.status, 400);
-
-    const tooBig = await fetch(`${baseUrl}/api/video/jobs?${query}`, { method: "POST", headers: { "content-type": "video/mp4", "content-length": String(200 * 1024 * 1024) }, body: "x" }).catch(() => null);
-    if (tooBig) assert.equal(tooBig.status, 413);
 
     const created = await fetch(`${baseUrl}/api/video/jobs?${query}`, { method: "POST", headers: { "content-type": "video/mp4" }, body: Buffer.from("fake video bytes") });
     assert.equal(created.status, 202);
@@ -299,11 +477,51 @@ test("video API validates uploads and job state", async () => {
 
     const listed = await (await fetch(`${baseUrl}/api/video/jobs`)).json() as { id: string }[];
     assert.ok(listed.some((item) => item.id === job.id));
-    await new Promise((resolveWait) => setTimeout(resolveWait, 200)); // let the fake probe fail so the job settles
+    await worker.idle();
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}`, { method: "DELETE" })).status, 204);
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}`)).status, 404);
     assert.equal((await fetch(`${baseUrl}/api/video/jobs/${job.id}`, { method: "DELETE" })).status, 404);
   });
+});
+
+test("video API processes a fifteen-minute upload and accepts tags at 899 and 900, not 901", async () => {
+  const vision = fakeVision((_batch, input) => ({
+    detections: input.frames.filter((frame) => frame.index === 299).map((frame) => detection({ frameIndex: frame.index, type: "shot", team: "away", outcome: "miss" })),
+  }));
+  await withVideoServer(vision, async (baseUrl, worker) => {
+    const created = await fetch(`${baseUrl}/api/video/jobs?fileName=long.mp4&homeName=Blue&awayName=Red`, {
+      method: "POST", headers: { "content-type": "video/mp4" }, body: Buffer.from("fake video"),
+    });
+    assert.equal(created.status, 202);
+    const { id } = await created.json() as VideoJob;
+    await worker.idle();
+    const job = await (await fetch(`${baseUrl}/api/video/jobs/${id}`)).json() as VideoJob;
+    assert.equal(job.stage, "ready", job.error);
+    assert.equal(job.durationSeconds, 900);
+    assert.equal(job.frames.length, 300);
+    assert.equal(job.batchesDone, 25);
+    assert.equal(vision.calls, 25);
+    assert.ok(job.events.some((event) => event.type === "shot" && event.minute * 60 + event.second >= 898));
+    assert.equal(existsSync(resolve(worker.jobDirectory(id), "source.mp4")), false);
+    for (const second of [899, 900]) {
+      const response = await fetch(`${baseUrl}/api/video/jobs/${id}/tags`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: second === 899 ? "goal" : "yellow_card", team: "home", second, shirtNumber: 9 }),
+      });
+      assert.equal(response.status, 201, `tag at ${second} s`);
+      const tagged = await response.json() as VideoJob;
+      const tag = tagged.manualTags.find((item) => item.second === second)!;
+      assert.ok(tag);
+      assert.ok(tagged.evidence.some((item) => item.tagId === tag.id && item.frameIndex === 299));
+    }
+    const invalid = await fetch(`${baseUrl}/api/video/jobs/${id}/tags`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "foul", team: "home", second: 901 }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json() as { error: string }).error, /second/u);
+    assert.equal(worker.get(id)!.manualTags.length, 2, "invalid tags do not mutate the ready job");
+  }, 900);
 });
 
 test("video API refuses uploads when vision is not configured", async () => {

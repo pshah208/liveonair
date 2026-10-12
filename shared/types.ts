@@ -164,6 +164,8 @@ export interface NarrativeResponse {
   latencyMs: number;
   cached: boolean;
   usage: { inputTokens: number; outputTokens: number };
+  /** Neural-voice reading of the script, when Azure AI Speech is available. */
+  audioUrl?: string;
 }
 
 export interface AppHealth {

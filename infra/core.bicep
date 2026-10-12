@@ -13,6 +13,7 @@ var suffix = uniqueString(resourceGroup().id)
 var openAiRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
 var acrPullRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var azureAiUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '53ca6127-db72-4b80-b1b0-d745d6d5456d')
+var speechUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f2dc8367-1007-4938-bd23-fe263f013447')
 var searchIndexReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1407120a-92aa-4202-b7e9-c0e197c71c8f')
 var searchIndexContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a00-799e-43f5-93ac-243d3dce84a7')
 var searchServiceContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')
@@ -125,6 +126,17 @@ resource agentAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: identity.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: azureAiUserRoleId
+  }
+}
+
+// Neural text-to-speech for highlights commentary and recap audio (Azure AI Speech on the same account).
+resource speechAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(foundry.id, identity.id, speechUserRoleId)
+  scope: foundry
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: speechUserRoleId
   }
 }
 

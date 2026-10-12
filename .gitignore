@@ -12,3 +12,4 @@ fabric/.secrets.local.json
 .desk.local.json
 infra/*.json
 !infra/*.parameters.example.json
+tsx-shahpar/

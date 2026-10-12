@@ -4,7 +4,7 @@ import type { Storyline } from "./platform.js";
 /**
  * Deterministic highlight selection.
  *
- * MatchLens has no footage for synthetic matches, so a highlight "reel" is a list of clips in match
+ * Live on Air has no footage for synthetic matches, so a highlight "reel" is a list of clips in match
  * time. The same clip list drives two outputs: an animated data reel rendered in the browser, and a
  * cut list (timecodes + ffmpeg commands) that trims a licensed broadcast recording when one exists.
  */
@@ -40,6 +40,60 @@ export interface HighlightReel {
   clips: HighlightClip[];
   /** Sum of clip windows in match seconds. */
   totalMatchSeconds: number;
+}
+
+export type CommentaryMood = "calm" | "build" | "tense" | "excited";
+
+export interface CommentaryLine {
+  text: string;
+  mood: CommentaryMood;
+  /** Server-synthesized neural voice audio; absent when speech is not configured. */
+  audioUrl?: string;
+}
+
+/** Spoken highlights commentary written by the Foundry commentator from the verified event feed. */
+export interface HighlightCommentary {
+  fixtureId: string;
+  language: Language;
+  /** Identifies the reel the commentary was written for; see commentarySignature. */
+  signature: string;
+  intro: CommentaryLine;
+  lines: Array<CommentaryLine & { clipId: string }>;
+  outro: CommentaryLine;
+  source: "foundry" | "fallback";
+  cached: boolean;
+}
+
+export interface CommentaryClipRequest {
+  id: string;
+  keyEventId: string;
+  kind: HighlightKind;
+  startSecond: number;
+  endSecond: number;
+  storylineId?: string;
+}
+
+export interface HighlightCommentaryRequest {
+  language: Language;
+  clips: CommentaryClipRequest[];
+}
+
+export function commentaryRequest(reel: HighlightReel): HighlightCommentaryRequest {
+  return {
+    language: reel.language,
+    clips: reel.clips.map((clip) => ({
+      id: clip.id,
+      keyEventId: clip.keyEventId,
+      kind: clip.kind,
+      startSecond: clip.startSecond,
+      endSecond: clip.endSecond,
+      ...(clip.storylineId ? { storylineId: clip.storylineId } : {}),
+    })),
+  };
+}
+
+export function commentarySignature(request: HighlightCommentaryRequest): string {
+  return [request.language, ...request.clips.map((clip) => `${clip.id}:${clip.keyEventId}:${clip.kind}:${clip.startSecond}-${clip.endSecond}:${clip.storylineId ?? ""}`)].join("|");
 }
 
 export interface CutListOptions {
@@ -85,6 +139,7 @@ const WINDOWS: Record<HighlightKind, { pre: number; post: number; base: number }
 const BIG_CHANCE_XG = 0.25;
 const STORYLINE_BONUS = 20;
 const DEFAULT_MAX_CLIPS = 8;
+const MUST_INCLUDE = new Set<HighlightKind>(["goal", "disallowed_goal", "red_card"]);
 
 export function eventSecondOf(event: Pick<MatchEvent, "minute" | "second">): number {
   return event.minute * 60 + event.second;
@@ -180,16 +235,16 @@ export function highlightKindLabel(kind: HighlightKind, language: Language): str
 
 /** Fixed on-screen strings for the rendered reel. */
 export const REEL_TEXT: Record<Language, { intro: string; outro: string; moment: (index: number, total: number) => string; moments: (count: number) => string; matchTime: string; dataReel: string; footageReel: string }> = {
-  en: { intro: "MATCHLENS HIGHLIGHTS", outro: "FULL REEL", moment: (i, n) => `MOMENT ${i} OF ${n}`, moments: (n) => `${n} moments · auto-selected from the verified event feed`, matchTime: "match time", dataReel: "SYNTHETIC DATA REEL", footageReel: "VIDEO RECAP · EVENTS TAGGED BY MATCHLENS" },
-  es: { intro: "RESUMEN MATCHLENS", outro: "RESUMEN COMPLETO", moment: (i, n) => `JUGADA ${i} DE ${n}`, moments: (n) => `${n} jugadas · seleccionadas automáticamente de los eventos verificados`, matchTime: "tiempo de partido", dataReel: "RESUMEN CON DATOS SINTÉTICOS", footageReel: "RESUMEN EN VÍDEO · EVENTOS ETIQUETADOS POR MATCHLENS" },
-  fr: { intro: "RÉSUMÉ MATCHLENS", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "RÉSUMÉ VIDÉO · ÉVÉNEMENTS IDENTIFIÉS PAR MATCHLENS" }
+  en: { intro: "Live on Air HIGHLIGHTS", outro: "FULL REEL", moment: (i, n) => `MOMENT ${i} OF ${n}`, moments: (n) => `${n} moments · auto-selected from the verified event feed`, matchTime: "match time", dataReel: "SYNTHETIC DATA REEL", footageReel: "VIDEO RECAP · EVENTS TAGGED BY Live on Air" },
+  es: { intro: "RESUMEN Live on Air", outro: "RESUMEN COMPLETO", moment: (i, n) => `JUGADA ${i} DE ${n}`, moments: (n) => `${n} jugadas · seleccionadas automáticamente de los eventos verificados`, matchTime: "tiempo de partido", dataReel: "RESUMEN CON DATOS SINTÉTICOS", footageReel: "RESUMEN EN VÍDEO · EVENTOS ETIQUETADOS POR Live on Air" },
+  fr: { intro: "RÉSUMÉ Live on Air", outro: "RÉSUMÉ COMPLET", moment: (i, n) => `ACTION ${i} SUR ${n}`, moments: (n) => `${n} actions · sélectionnées automatiquement depuis les événements vérifiés`, matchTime: "temps de jeu", dataReel: "RÉSUMÉ DE DONNÉES SYNTHÉTIQUES", footageReel: "RÉSUMÉ VIDÉO · ÉVÉNEMENTS IDENTIFIÉS PAR Live on Air" }
 };
 
 function defaultTitle(kind: HighlightKind, minute: number, name: string, team: string, language: Language): string {
   return `${minute}' ${PHRASES[language].title[kind]} · ${name} (${team})`;
 }
 
-function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, byId: Map<string, MatchEvent>, language: Language): string {
+export function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, byId: Map<string, MatchEvent>, language: Language): string {
   const phrases = PHRASES[language];
   switch (kind) {
     case "goal": return phrases.scores(name, event.xg);
@@ -244,7 +299,7 @@ export function buildHighlightReel(
     }
   }
 
-  type Candidate = { event: MatchEvent; kind: HighlightKind; importance: number; start: number; end: number };
+  type Candidate = { event: MatchEvent; kind: HighlightKind; importance: number; start: number; end: number; mustInclude: boolean };
   const candidates: Candidate[] = [];
   const hasXg = events.some((event) => event.type === "shot" && event.xg !== undefined);
   for (const event of events) {
@@ -252,15 +307,18 @@ export function buildHighlightReel(
     if (!classified) continue;
     const window = WINDOWS[classified.kind];
     const at = eventSecondOf(event);
-    const importance = window.base + classified.bonus + (storylineByEvent.has(event.id) ? STORYLINE_BONUS : 0);
-    candidates.push({ event, kind: classified.kind, importance, start: Math.max(0, at - window.pre), end: Math.min(fixture.durationSeconds, at + window.post) });
+    const storyline = storylineByEvent.get(event.id);
+    const importance = window.base + classified.bonus + (storyline ? STORYLINE_BONUS : 0);
+    // Goals, red cards, ruled-out goals and producer-approved storylines are never dropped by the clip cap.
+    const mustInclude = MUST_INCLUDE.has(classified.kind) || storyline?.status === "approved";
+    candidates.push({ event, kind: classified.kind, importance, start: Math.max(0, at - window.pre), end: Math.min(fixture.durationSeconds, at + window.post), mustInclude });
   }
 
-  // Highest importance first; ties go to the earlier moment so selection is stable.
-  candidates.sort((a, b) => b.importance - a.importance || eventSecondOf(a.event) - eventSecondOf(b.event));
+  // Must-include moments first, then highest importance; ties go to the earlier moment so selection is stable.
+  candidates.sort((a, b) => Number(b.mustInclude) - Number(a.mustInclude) || b.importance - a.importance || eventSecondOf(a.event) - eventSecondOf(b.event));
   const chosen: Candidate[] = [];
   for (const candidate of candidates) {
-    if (chosen.length >= maxClips) break;
+    if (!candidate.mustInclude && chosen.length >= maxClips) break;
     const overlapping = chosen.find((item) => candidate.start < item.end && item.start < candidate.end);
     if (overlapping) {
       // Overlapping moments become one clip anchored on the more important event.
@@ -276,20 +334,27 @@ export function buildHighlightReel(
     const previous = merged[merged.length - 1];
     if (previous && candidate.start < previous.end) {
       const keep = candidate.importance > previous.importance ? candidate : previous;
-      merged[merged.length - 1] = { ...keep, start: previous.start, end: Math.max(previous.end, candidate.end) };
+      merged[merged.length - 1] = { ...keep, start: previous.start, end: Math.max(previous.end, candidate.end), mustInclude: previous.mustInclude || candidate.mustInclude };
       return merged;
     }
     merged.push(candidate);
     return merged;
   }, []);
 
+  const mustIncludeEvents = candidates.filter((candidate) => candidate.mustInclude);
   const clips = ordered
     .map((candidate, index): HighlightClip => {
       const { event, kind } = candidate;
       const name = playerName(fixture, event.playerId);
       const storyline = storylineByEvent.get(event.id);
       const fromStoryline = storylineCaption(storyline, language);
-      const caption = fromStoryline?.text ?? defaultCaption(kind, event, name, byId, language);
+      // A red card or approved moment that shares a window with a bigger moment keeps its own line in the caption.
+      const alsoInClip = mustIncludeEvents
+        .filter((other) => other.event.id !== event.id && eventSecondOf(other.event) >= candidate.start && eventSecondOf(other.event) <= candidate.end)
+        .sort((a, b) => eventSecondOf(a.event) - eventSecondOf(b.event))
+        .map((other) => storylineCaption(storylineByEvent.get(other.event.id), language)?.text
+          ?? defaultCaption(other.kind, other.event, playerName(fixture, other.event.playerId), byId, language));
+      const caption = [fromStoryline?.text ?? defaultCaption(kind, event, name, byId, language), ...alsoInClip].join(" ");
       const captionLanguage = fromStoryline?.language ?? language;
       return {
         id: `clip-${String(index + 1).padStart(2, "0")}`,
@@ -380,7 +445,7 @@ export function buildFfmpegScript(reel: HighlightReel, options: CutListOptions =
   const entries = buildCutList(reel, options);
   const lines = [
     "#!/usr/bin/env bash",
-    "# MatchLens highlight cut list. Point SOURCE at footage you own or are licensed to use.",
+    "# Live on Air highlight cut list. Point SOURCE at footage you own or are licensed to use.",
     options.mode === "fit"
       ? `# Fit mode: key moments spread across a ${Math.round(options.recordingSeconds ?? 0)}s recording, kick-off offset ${options.kickoffOffsetSeconds ?? 0}s.`
       : `# Kick-off offset: ${options.kickoffOffsetSeconds ?? 0}s, half-time break: ${options.halftimeBreakSeconds ?? 0}s.`,

@@ -14,3 +14,6 @@ scripts
 fabric/.secrets.local.json
 **/*.secrets*.json
 **/.secrets*
+.desk.local.json
+tsx-shahpar
+.playwright-mcp

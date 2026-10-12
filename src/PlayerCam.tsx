@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ACTION_LABEL, boxAt, playerLabel, type PlayerAnchor, type PlayerCamJob, type PlayerCamJobSummary } from "../shared/playercam.js";
-import type { VideoJobStage } from "../shared/video.js";
+import { MAX_FRAME_INTERVAL_SECONDS, MAX_UPLOAD_BYTES, MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type VideoJobStage } from "../shared/video.js";
 import { api, uploadPlayerCam, type VideoHealth } from "./api.js";
 import { Panel } from "./components.js";
 import { readPalette } from "./highlightRenderer.js";
@@ -364,9 +364,9 @@ export function PlayerCam() {
         <Panel eyebrow="Player cam" title={ready ? `${label}: personal highlights` : "Follow one player"} aside={<span className="tag tag--accent">Beta</span>}>
           {!ready && (
             <p className="lede">
-              Upload a short clip (up to 3 minutes), then click the player you want to follow, or give their shirt number and kit. The worker
+              Upload a clip (up to {MAX_VIDEO_SECONDS / 60} minutes, {MAX_UPLOAD_BYTES / 1_048_576} MB), then click the player you want to follow, or give their shirt number and kit. The worker
               finds them in every sampled frame, works out when they are involved and cuts a personal reel with a spotlight on them. Nothing
-              is sent to Eventstream; this is a fan experience, not match data.
+              is sent to Eventstream; this is a fan experience, not match data. Longer clips take longer to process.
             </p>
           )}
           {unavailable && <div className="banner banner--warning">Video processing isn't available on this server ({!health?.ffmpeg ? "ffmpeg missing" : "vision model not configured"}).</div>}
@@ -552,7 +552,7 @@ export function PlayerCam() {
 
         <Panel eyebrow="Honest limits" title="What Player cam can and can't do">
           <ul className="plain-list">
-            <li>It checks one frame every 1–3 seconds, so the spotlight glides between sightings rather than tracking every step.</li>
+            <li>It checks one frame every 1–{MAX_FRAME_INTERVAL_SECONDS} seconds (up to {MAX_VIDEO_FRAMES} frames), so the spotlight glides between sightings rather than tracking every step.</li>
             <li>Clicking the player is far more reliable than a number alone: numbers are often unreadable on fan footage.</li>
             <li>Team-mates in the same kit can be confused when the player is far away or turned around; untick any wrong moment.</li>
             <li>Only sightings at 50% confidence or more count. Moments are grouped and ranked by code, not by the model.</li>

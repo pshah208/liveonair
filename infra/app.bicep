@@ -1,7 +1,7 @@
 targetScope = 'resourceGroup'
 
 param location string = resourceGroup().location
-param appName string = 'matchlens'
+param appName string = 'liveonair'
 param environmentName string
 param identityName string
 param identityClientId string
@@ -47,7 +47,7 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
-  tags: { application: 'MatchLens', purpose: 'synthetic-football-hackathon' }
+  tags: { application: 'LiveOnAir', purpose: 'synthetic-football-hackathon' }
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identity.id}': {} } }
   properties: {
     managedEnvironmentId: environment.id
@@ -60,8 +60,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
     }
     template: {
       containers: [{
-        name: 'matchlens'
-        image: '${registryServer}/matchlens:${imageTag}'
+        name: 'liveonair'
+        image:'${registryServer}/matchlens:${imageTag}'
         resources: { cpu: json('0.5'), memory: '1Gi' }
         env: concat([
           { name: 'NODE_ENV', value: 'production' }

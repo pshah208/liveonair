@@ -84,7 +84,7 @@ function buildFixture(matchId: string): FixtureSummary {
   return {
     id: `${matchId}-fixture`,
     title: "Smoke FC vs Verify United",
-    description: "Synthetic smoke test fixture for MatchLens Fabric.",
+    description: "Synthetic smoke test fixture for Live on Air Fabric.",
     home: {
       id: "home",
       name: "Smoke FC",

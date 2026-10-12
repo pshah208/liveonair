@@ -4,7 +4,7 @@ export const factCheckerAgentSpec: DeskAgentSpec = {
   name: FACT_CHECKER_AGENT_NAME,
   definition: createPromptAgentDefinition(
     [
-      "You are the MatchLens fact-checker.",
+      "You are the Live on Air fact-checker.",
       "Review the draft against verified claim texts only.",
       "Flag overstatement, unsupported causation, invented emotion, invented certainty, or extra facts.",
       "Be strict about match state: words such as lead, ahead, equaliser, levelled, winner, comeback, crucial or decisive",

@@ -8,6 +8,8 @@ import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
 import { VideoLab, type VideoFootage } from "./VideoLab.js";
 import { PlayerCam } from "./PlayerCam.js";
+import { LiveVideoPanel } from "./LiveVideoPanel.js";
+import type { ProgressiveVideoSession } from "../shared/progressiveVideo.js";
 import {
   clamp,
   computeScoreFromEvents,
@@ -26,7 +28,6 @@ import {
 
 type Tab = "live" | "recap" | "video" | "player";
 type StartMode = "fixture" | "matchlab";
-type Audience = "analyst" | "casual";
 
 type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void };
 
@@ -53,6 +54,8 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   const [speed, setSpeed] = useState(30);
   const [submitting, setSubmitting] = useState(false);
   const [videoFootage, setVideoFootage] = useState<VideoFootage | null>(null);
+  const [progressiveFootage, setProgressiveFootage] = useState<VideoFootage | null>(null);
+  const [progressiveSession, setProgressiveSession] = useState<ProgressiveVideoSession | null>(null);
 
   const [deskLanguage, setDeskLanguage] = useState<Language>("en");
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(null);
@@ -61,7 +64,6 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   const [pendingById, setPendingById] = useState<Record<string, boolean>>({});
   const [reviewErrorById, setReviewErrorById] = useState<Record<string, string | undefined>>({});
 
-  const [audience, setAudience] = useState<Audience>("analyst");
   const [recapLanguage, setRecapLanguage] = useState<Language>("en");
   const [narrative, setNarrative] = useState<NarrativeResponse | null>(null);
   const [narrativeLoading, setNarrativeLoading] = useState(false);
@@ -192,8 +194,11 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   async function handleStop() {
     setSubmitting(true);
     try {
-      const next = await api.stopLive();
-      if (next) setStatus(next);
+      const ownProgressive = progressiveSession && status?.fixtureId === progressiveSession.fixtureId;
+      const stopped = ownProgressive ? await api.stopProgressiveVideo(progressiveSession.id) : null;
+      if (stopped) setProgressiveSession(stopped);
+      const next = ownProgressive ? stopped?.live : await api.stopLive();
+      if (next && next.matchId === matchIdRef.current) setStatus(next);
       setFixture(await api.getLiveFixture());
       void refreshStoryboard();
     } catch (error: unknown) {
@@ -236,7 +241,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
     setNarrativeLoading(true);
     setNarrativeError(null);
     try {
-      setNarrative(await api.narrateLive({ persona: audience, language: recapLanguage }));
+      setNarrative(await api.narrateLive({ persona: "analyst", language: recapLanguage }));
     } catch (error: unknown) {
       setNarrativeError(getErrorMessage(error));
     } finally {
@@ -246,7 +251,10 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
 
   // ---------------------------------------------------------------- derived
 
-  const state = status?.state ?? "idle";
+  const progressiveForMatch = progressiveSession?.fixtureId === status?.fixtureId ? progressiveSession : null;
+  const state = progressiveForMatch && progressiveForMatch.stage !== "complete" && status?.state === "finished" ? "idle" : status?.state ?? "idle";
+  const analyzedSecond = progressiveForMatch?.analyzedThrough ?? status?.clockSecond ?? 0;
+  const recapFootage = progressiveFootage?.fixtureId === fixture?.id ? progressiveFootage : videoFootage?.fixtureId === fixture?.id ? videoFootage : null;
   const score = snapshot?.score ?? computeScoreFromEvents(fixture);
   const approved = useMemo(() => storylines.filter((storyline) => storyline.status === "approved"), [storylines]);
   const onAir = approved.find((storyline) => storyline.id === selectedStorylineId) ?? approved[0] ?? null;
@@ -261,7 +269,8 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
     <main className="page">
       <InfrastructurePanel open={infraOpen} onToggle={onToggleInfra} health={health} desk={desk} live={status} />
 
-      <BroadcastBar fixture={fixture} score={score} clockSecond={status?.clockSecond ?? 0} state={state} transport={transport} lagMs={status?.lagMs} eventsReceived={status?.eventsReceived ?? 0} />
+      {tab !== "video" && <BroadcastBar fixture={fixture} score={score} clockSecond={analyzedSecond} state={state} transport={transport} lagMs={status?.lagMs} eventsReceived={status?.eventsReceived ?? 0} />}
+      {tab !== "video" && progressiveForMatch && <p className="banner banner--warning">Video analysis watermark · Clock, score and Live Desk stats reflect analyzed footage, not local playback. AI-detected / provisional, verify goals; replay filtering is not guaranteed.{progressiveForMatch.stage === "stopped" || progressiveForMatch.stage === "failed" ? " Analysis stopped early — not full time." : ""}</p>}
 
       <nav className="tabs" aria-label="Studio views">
         <button type="button" className={`tabs__item${tab === "live" ? " is-active" : ""}`} onClick={() => setTab("live")} aria-current={tab === "live" ? "page" : undefined}>
@@ -271,18 +280,31 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
           Recap and highlights
         </button>
         <button type="button" className={`tabs__item${tab === "video" ? " is-active" : ""}`} onClick={() => setTab("video")} aria-current={tab === "video" ? "page" : undefined}>
-          Video lab <span className="tag tag--accent">Beta</span>
+          Video lab
         </button>
         <button type="button" className={`tabs__item${tab === "player" ? " is-active" : ""}`} onClick={() => setTab("player")} aria-current={tab === "player" ? "page" : undefined}>
-          Player cam <span className="tag tag--accent">New</span>
+          Player cam
         </button>
       </nav>
 
       {pageError && <div className="banner banner--danger" role="alert">{pageError} <button type="button" className="link-button" onClick={() => setPageError(null)}>Dismiss</button></div>}
 
+      <div hidden={tab !== "live"}>
+        <LiveVideoPanel status={status} onStreamed={(next) => void handleVideoStreamed(next)} onFootage={setProgressiveFootage}
+          onSession={(next) => { if (next) setProgressiveSession(next); }}
+          onFullUpload={() => {
+            setTab("video");
+            window.requestAnimationFrame(() => {
+              const upload = document.getElementById("full-upload-video-lab");
+              upload?.scrollIntoView({ behavior: "smooth" });
+              upload?.focus({ preventScroll: true });
+            });
+          }} />
+      </div>
       {/* Kept mounted so an uploaded clip and its job survive switching tabs. */}
-      <div hidden={tab !== "video"}>
-        <VideoLab status={status} liveFixture={fixture} onStreamed={(next) => void handleVideoStreamed(next)} onOpenDesk={() => setTab("live")} onFootage={setVideoFootage} />
+      <div id="full-upload-video-lab" tabIndex={-1} hidden={tab !== "video"}>
+        <VideoLab active={tab === "video"} onFootage={setVideoFootage} status={status}
+          onStreamed={(next) => { void handleVideoStreamed(next); setTab("live"); }} />
       </div>
       <div hidden={tab !== "player"}>
         <PlayerCam />
@@ -294,7 +316,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
             <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>
               {state === "running" ? (
                 <div className="running-summary">
-                  <p className="subtle-text">{fixture?.title} · {status?.speed}× speed. Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
+                  <p className="subtle-text">{fixture?.title} · {progressiveForMatch ? "Progressive video: analysis runs independently of local playback." : `${status?.speed}× speed.`} Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
                   <button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop match</button>
                 </div>
               ) : (
@@ -355,7 +377,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
         </div>
       ) : fixture ? (
         <div className="recap-grid">
-          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={videoFootage?.fixtureId === fixture.id ? videoFootage : null} onOpenVideoLab={() => setTab("video")} />
+          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={recapFootage} onOpenVideoLab={() => setTab("video")} />
           <div className="desk-col">
             <RecapPanel
               narrative={narrative}
@@ -365,14 +387,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
               disabled={!fixture}
               onGenerate={() => void handleNarrate()}
               controls={(
-                <>
-                  <div className="segmented segmented--compact" role="radiogroup" aria-label="Recap audience">
-                    {(["analyst", "casual"] as Audience[]).map((item) => (
-                      <button type="button" role="radio" aria-checked={audience === item} key={item} className={`segmented__item${audience === item ? " is-active" : ""}`} onClick={() => setAudience(item)}>{item === "analyst" ? "Analyst" : "Casual fan"}</button>
-                    ))}
-                  </div>
-                  <label className="inline-select"><span className="sr-only">Recap language</span><select value={recapLanguage} onChange={(event) => setRecapLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
-                </>
+                <label className="inline-select"><span className="sr-only">Recap language</span><select value={recapLanguage} onChange={(event) => setRecapLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
               )}
             />
             <Panel eyebrow="Storyboard" title="Match chapters">

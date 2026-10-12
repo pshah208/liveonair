@@ -3,6 +3,7 @@ import { buildCutList, buildFfmpegScript, type CutListEntry, type CutListOptions
 import type { MatchFixture } from "../shared/types.js";
 import { REEL_HEIGHT, REEL_WIDTH, renderFootageFrame, type FootageFrame, type ReelModel } from "./highlightRenderer.js";
 import { downloadBlob, downloadJson, formatClock } from "./utils.js";
+import type { HighlightCommentaryControls } from "./narration.js";
 
 type VideoRecapProps = {
   fixture: MatchFixture;
@@ -15,23 +16,24 @@ type VideoRecapProps = {
   onActiveClip: (index: number) => void;
   onPlayingChange: (playing: boolean) => void;
   pickMimeType: () => string | undefined;
+  /** Broadcast commentary; the clip's own sound is ducked under each line. */
+  commentary: HighlightCommentaryControls;
 };
-
-type AudioTap = { context: AudioContext; destination: MediaStreamAudioDestinationNode };
 
 /**
  * Cuts the Video lab clip around the moments the reel selected. Video-lab fixtures run on the clip's own clock,
  * so each event second is the same second in the footage.
  */
-export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, onActiveClip, onPlayingChange, pickMimeType }: VideoRecapProps) {
+export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, onActiveClip, onPlayingChange, pickMimeType, commentary }: VideoRecapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameRef = useRef<number | null>(null);
   const indexRef = useRef(0);
   const finishedRef = useRef<(() => void) | null>(null);
-  const audioRef = useRef<AudioTap | null>(null);
+  const attachedRef = useRef(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [exporting, setExporting] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +55,12 @@ export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, 
   const totalSeconds = cutList.reduce((sum, entry) => sum + entry.outSeconds - entry.inSeconds, 0);
 
   useEffect(() => { onPlayingChange(playing); }, [playing]);
-  useEffect(() => () => { void audioRef.current?.context.close(); }, []);
+
+  // Duck the clip's own sound under commentary. Once routed through the mixer, the mixer ducks it instead.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video && !attachedRef.current) video.volume = commentary.speaking ? 0.3 : 1;
+  }, [commentary.speaking]);
 
   function frameFor(entryIndex: number, videoTime: number): FootageFrame | null {
     const entry: CutListEntry | undefined = cutList[entryIndex];
@@ -134,7 +141,7 @@ export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, 
   useEffect(() => {
     const video = videoRef.current;
     if (video) video.muted = !sound;
-    if (sound) void audioRef.current?.context.resume();
+    if (sound) commentary.player.resume();
   }, [sound]);
 
   function finish() {
@@ -153,32 +160,16 @@ export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, 
 
   function togglePlay() {
     if (!cutList.length) return;
-    if (!playing) {
-      setError(null);
-      const video = videoRef.current;
-      const entry = cutList[indexRef.current];
-      if (!video || !entry) return;
-      video.muted = !sound;
-      if (video.currentTime < entry.inSeconds || video.currentTime >= entry.outSeconds) seekEntry(indexRef.current >= cutList.length - 1 && video.currentTime >= entry.outSeconds ? 0 : indexRef.current);
-    }
-    setPlaying((current) => !current);
-  }
-
-  /** Routes the clip's audio through Web Audio once, so it can be both heard and recorded. */
-  function audioTap(video: HTMLVideoElement): AudioTap | null {
-    if (audioRef.current) return audioRef.current;
-    if (typeof AudioContext === "undefined") return null;
-    try {
-      const context = new AudioContext();
-      const source = context.createMediaElementSource(video);
-      const destination = context.createMediaStreamDestination();
-      source.connect(context.destination);
-      source.connect(destination);
-      audioRef.current = { context, destination };
-      return audioRef.current;
-    } catch {
-      return null;
-    }
+    if (playing) { setPlaying(false); return; }
+    setError(null);
+    const video = videoRef.current;
+    const entry = cutList[indexRef.current];
+    if (!video || !entry) return;
+    video.muted = !sound;
+    if (video.currentTime < entry.inSeconds || video.currentTime >= entry.outSeconds) seekEntry(indexRef.current >= cutList.length - 1 && video.currentTime >= entry.outSeconds ? 0 : indexRef.current);
+    if (!sound) { setPlaying(true); return; }
+    setPreparing(true);
+    void commentary.prepare().finally(() => { setPreparing(false); setPlaying(true); });
   }
 
   async function exportVideo() {
@@ -189,11 +180,16 @@ export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, 
     setError(null);
     setPlaying(false);
     try {
+      if (sound) {
+        setPreparing(true);
+        await commentary.prepare().finally(() => setPreparing(false));
+      }
       const stream = canvas.captureStream(30);
-      const tap = sound ? audioTap(video) : null;
-      if (tap) {
-        await tap.context.resume();
-        tap.destination.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
+      if (sound) {
+        commentary.player.resume();
+        attachedRef.current = commentary.player.attachMedia(video);
+        if (attachedRef.current) video.volume = 1;
+        commentary.player.recordStream()?.getAudioTracks().forEach((track) => stream.addTrack(track));
       }
       const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6_000_000 });
       const chunks: Blob[] = [];
@@ -237,12 +233,12 @@ export function VideoRecap({ fixture, reel, model, footage, sound, seekRequest, 
       <canvas ref={canvasRef} width={REEL_WIDTH} height={REEL_HEIGHT} className="reel__canvas" aria-label="Video recap player" />
       <video ref={videoRef} src={footage.url} className="footage__video" muted={!sound} playsInline preload="auto" onLoadedMetadata={onMetadata} onLoadedData={draw} onSeeked={draw} onError={() => setError("This browser can't play the Video lab clip. Try an MP4 (H.264) or WebM file.")} />
       <div className="reel__controls">
-        <button type="button" className="button button--primary" onClick={togglePlay} disabled={exporting !== null || !cutList.length}>{playing ? "Pause" : "Play recap"}</button>
+        <button type="button" className="button button--primary" onClick={togglePlay} disabled={exporting !== null || preparing || !cutList.length}>{preparing ? "Preparing commentary…" : playing ? "Pause" : "Play recap"}</button>
         <div className="footage__progress" aria-hidden="true"><span style={{ width: `${totalSeconds ? (elapsed / totalSeconds) * 100 : 0}%` }} /></div>
         <span className="mono">{formatClock(elapsed)} / {formatClock(totalSeconds)}</span>
       </div>
       <div className="control-row control-row--start">
-        <button type="button" className="button" onClick={() => void exportVideo()} disabled={!pickMimeType() || exporting !== null || !cutList.length}>
+        <button type="button" className="button" onClick={() => void exportVideo()} disabled={!pickMimeType() || exporting !== null || preparing || !cutList.length}>
           {exporting !== null ? `Rendering ${exporting}%` : "Export video"}
         </button>
         <button type="button" className="button" onClick={downloadCutList} disabled={!cutList.length}>Download cut list</button>

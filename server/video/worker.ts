@@ -3,14 +3,11 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import type { MatchFixture } from "../../shared/types.js";
-import { MAX_MANUAL_TAGS, type ManualTagInput, type VideoFrame, type VideoJob, type VideoJobRequest, type VideoJobStage, type VideoJobSummary, type VisionDetection } from "../../shared/video.js";
+import { MAX_MANUAL_TAGS, MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type ManualTagInput, type VideoFrame, type VideoJob, type VideoJobRequest, type VideoJobStage, type VideoJobSummary, type VisionDetection } from "../../shared/video.js";
 import { buildVideoFixture } from "./events.js";
-import { extractFrames, framePath, probeVideo, sampleTimestamps, type ProbeResult, type RunCommand } from "./ffmpeg.js";
-import type { VisionAnalyzer } from "./vision.js";
+import { extractFrames, framePath, probeVideo, sampleTimestamps, videoSampleInterval, type ProbeResult, type RunCommand } from "./ffmpeg.js";
+import { parseVisionResult, type VisionAnalyzer } from "./vision.js";
 
-export const MAX_VIDEO_SECONDS = 180;
-export const MAX_FRAMES = 60;
-export const MIN_INTERVAL_SECONDS = 1;
 export const BATCH_SIZE = 12;
 export const FRAME_WIDTH = 768;
 const MAX_JOBS = 6;
@@ -108,8 +105,8 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
       }
       update(job, { durationSeconds: Math.round(info.durationSeconds * 10) / 10, width: info.width, height: info.height }, `${info.codec} ${info.width}×${info.height}, ${info.durationSeconds.toFixed(1)} s`);
 
-      const interval = Math.max(MIN_INTERVAL_SECONDS, info.durationSeconds / MAX_FRAMES);
-      const timestamps = sampleTimestamps(info.durationSeconds, interval, MAX_FRAMES);
+      const interval = videoSampleInterval(info.durationSeconds);
+      const timestamps = sampleTimestamps(info.durationSeconds, interval, MAX_VIDEO_FRAMES);
       setStage(job, "extracting", 8, `Extracting ${timestamps.length} frames, one every ${interval.toFixed(1)} s`);
       const frames: VideoFrame[] = await extract({
         inputPath: sourcePath,
@@ -125,30 +122,40 @@ export function createVideoWorker(deps: VideoWorkerDeps): VideoWorker {
       setStage(job, "analysing", 25, `Sending ${batchesTotal} batch(es) of frames to ${deps.vision.model}`);
       const detections: VisionDetection[] = [];
       let knownKits = job.request.home.kit && job.request.away.kit ? { home: job.request.home.kit, away: job.request.away.kit } : undefined;
-      let rejectedBatches = 0;
+      let matchBatches = 0;
+      let graphicsBatches = 0;
       for (let batch = 0; batch < batchesTotal; batch += 1) {
         const slice = frames.slice(batch * BATCH_SIZE, (batch + 1) * BATCH_SIZE);
         const inputs = await Promise.all(slice.map(async (frame) => ({ ...frame, jpegBase64: (await readFrame(framePath(path.join(directory(job.id), "frames"), frame.index))).toString("base64") })));
-        const result = await deps.vision.analyzeBatch({ frames: inputs, request: job.request, knownKits, intervalSeconds: Math.round(interval * 10) / 10 });
-        job.usage.inputTokens += result.usage.inputTokens;
-        job.usage.outputTokens += result.usage.outputTokens;
-        if (!result.footageCheck.realFootballFootage) {
-          rejectedBatches += 1;
-          update(job, { footageCheck: result.footageCheck });
-          // Fail closed early: if the opening frames are not football, stop before spending more tokens.
-          if (batch === 0) throw new RejectedFootage(result.footageCheck.reason || "The frames do not show real football footage.");
+        const response = await deps.vision.analyzeBatch({ frames: inputs, request: job.request, knownKits, intervalSeconds: Math.round(interval * 10) / 10 });
+        job.usage.inputTokens += response.usage.inputTokens;
+        job.usage.outputTokens += response.usage.outputTokens;
+        const result = parseVisionResult(response, new Set(slice.map((frame) => frame.index)));
+        update(job, { batchesDone: batch + 1, progress: 25 + Math.round(((batch + 1) / batchesTotal) * 65) });
+        if (result.footageCheck.category === "broadcast_graphics") {
+          graphicsBatches += 1;
+          update(job, {}, `Batch ${batch + 1}/${batchesTotal}: skipped football broadcast graphics (${slice[0]!.timestampSeconds.toFixed(1)}–${slice.at(-1)!.timestampSeconds.toFixed(1)} s sampled coverage); no detections or kit updates`);
+          continue;
         }
+        if (!result.footageCheck.realFootballFootage) {
+          update(job, { footageCheck: result.footageCheck });
+          // Unsupported content at any point invalidates the source; do not consume its detections or kits.
+          throw new RejectedFootage(result.footageCheck.reason || "The frames do not show real football footage.");
+        }
+        matchBatches += 1;
         if (!knownKits && result.kits.home.trim() && result.kits.away.trim()) {
           knownKits = { home: result.kits.home.trim(), away: result.kits.away.trim() };
           update(job, { kits: knownKits }, `Kits identified: home ${knownKits.home}; away ${knownKits.away}`);
         }
         detections.push(...result.detections);
-        update(job, { batchesDone: batch + 1, detectionsRaw: detections.length, progress: 25 + Math.round(((batch + 1) / batchesTotal) * 65) }, `Batch ${batch + 1}/${batchesTotal}: ${result.detections.length} detection(s)`);
+        update(job, { detectionsRaw: detections.length }, `Batch ${batch + 1}/${batchesTotal}: ${result.detections.length} detection(s)`);
       }
-      if (rejectedBatches * 2 > batchesTotal) {
-        throw new RejectedFootage(job.footageCheck?.reason || "Most frames do not show real football footage.");
+      if (matchBatches === 0) {
+        const reason = "No match footage was found in the sampled frames.";
+        update(job, { footageCheck: { realFootballFootage: false, reason } });
+        throw new RejectedFootage(reason);
       }
-      if (!job.footageCheck) update(job, { footageCheck: { realFootballFootage: true, reason: "All batches reported real football footage." } });
+      update(job, { footageCheck: { realFootballFootage: true, reason: `${matchBatches} batch(es) reported real football footage; ${graphicsBatches} football broadcast graphics batch(es) skipped.` } });
       if (knownKits && !job.kits) update(job, { kits: knownKits });
 
       setStage(job, "building", 92, "Applying confidence, de-duplication and football consistency rules");

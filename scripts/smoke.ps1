@@ -68,4 +68,4 @@ if ($IncludeAI) {
   Write-Output "Foundry recap: $($narrative.title)"
 }
 
-Write-Output "MatchLens smoke exercise passed for $base"
+Write-Output "Live on Air smoke exercise passed for $base"

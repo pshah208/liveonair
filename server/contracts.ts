@@ -58,6 +58,10 @@ export interface LiveService {
   status(): LiveStatus;
   current(): LiveMatchView | undefined;
   start(request: StartLiveRequest): Promise<LiveStatus>;
+  /** Incremental video uses an analysis watermark, not a precomputed event schedule. */
+  startProgressive?(fixture: MatchFixture): Promise<LiveStatus>;
+  appendProgressive?(fixture: MatchFixture, analyzedThrough: number): Promise<LiveStatus>;
+  completeProgressive?(fixtureId: string): Promise<LiveStatus>;
   stop(): Promise<LiveStatus>;
   /** Publishes a revision of an existing goal marking it rescinded. */
   publishCorrection(eventId: string): Promise<void>;

@@ -126,7 +126,7 @@ export const researcherAgentSpec: DeskAgentSpec = {
   name: RESEARCHER_AGENT_NAME,
   definition: createPromptAgentDefinition(
     [
-      "You are the MatchLens storyline researcher for a synthetic football broadcast product.",
+      "You are the Live on Air storyline researcher for a synthetic football broadcast product.",
       "Return only JSON matching the response schema.",
       "Always call get_trigger_context first. It includes playerArchive (career spells, careerGoals, relatives with",
       "relativeRole and historicGoals). Call get_head_to_head for the two clubs. Use search_archive only to discover extra record IDs.",

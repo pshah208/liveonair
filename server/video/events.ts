@@ -2,7 +2,7 @@ import type { MatchEvent, MatchFixture, Player, Team, TeamId } from "../../share
 import type { ManualTag, VideoEventEvidence, VideoFrame, VideoJobRequest, VisionDetection } from "../../shared/video.js";
 
 /**
- * Turns raw vision detections into a MatchLens fixture. Everything here is deterministic code: the model
+ * Turns raw vision detections into a Live on Air fixture. Everything here is deterministic code: the model
  * only reports what it saw; thresholds, de-duplication and football consistency rules live here.
  */
 
@@ -190,7 +190,7 @@ export function buildVideoFixture(input: {
       id: fixtureId,
       seed: 1,
       title: `${input.request.home.name} vs ${input.request.away.name} (video)`,
-      description: "Events detected by the MatchLens video worker from an uploaded clip. Positions are approximate frame positions, not tracking data.",
+      description: "Events detected by the Live on Air video worker from an uploaded clip. Positions are approximate frame positions, not tracking data.",
       home: buildTeam("home", input.request.home.name, events),
       away: buildTeam("away", input.request.away.name, events),
       events,

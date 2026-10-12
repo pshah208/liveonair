@@ -1,6 +1,10 @@
-# MatchLens Live Fabric real-time layer
+# Live on Air Fabric real-time layer
 
 This workspace was provisioned with `scripts/provision-fabric.ps1`.
+
+Live on Air is the product brand. The legacy `MatchLens Live` workspace name and all
+`matchlens-*` resource names, IDs, URLs and configuration paths below are intentionally
+retained; the rebrand does not rename or reprovision infrastructure.
 
 ## Provisioned items
 

@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  appendKeyMoments,
   buildEvidenceLedger,
+  collectKeyMoments,
   createNarrator,
+  missingKeyMoments,
   validateGroundedNarrativeDraft,
 } from "../server/narrator.js";
 import { HttpError } from "../server/validation.js";
 import type { MatchEvent, MatchFixture, MatchSnapshot, NarrativeRequest } from "../shared/types.js";
+import type { Storyline } from "../shared/platform.js";
 
 function createFixture(): MatchFixture {
   return {
@@ -185,7 +189,7 @@ function createHappyCompletionClient() {
   return {
     async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
       const system = String(messages[0]?.content ?? "");
-      if (system.includes("MatchLens analyst")) {
+      if (system.includes("Live on Air analyst")) {
         if (messages.some((message) => message.role === "tool")) {
           return {
             text: JSON.stringify({
@@ -293,7 +297,7 @@ test("recap accepts null focus and supplies strict output schemas", async () => 
       }) {
         if (args.responseSchema) schemaNames.push(args.responseSchema.name);
         const result = await client.createChatCompletion(args);
-        if (String(args.messages[0]?.content).includes("MatchLens analyst")
+        if (String(args.messages[0]?.content).includes("Live on Air analyst")
           && args.messages.some((message) => message.role === "tool")) {
           return {
             ...result,
@@ -346,7 +350,8 @@ test("cache separates state version and format and skips repeated budget use", a
   assert.equal(cached.cached, true);
   assert.equal(differentFormat.cached, false);
   assert.equal(differentState.cached, false);
-  assert.equal(calls, 9);
+  // Story narrations: analyst x2 + producer. The recap also runs the writer step.
+  assert.equal(calls, 10);
 });
 
 test("quota and concurrency are enforced on cache misses", async () => {
@@ -358,7 +363,7 @@ test("quota and concurrency are enforced on cache misses", async () => {
   const completionClient = {
     async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
       const system = String(messages[0]?.content ?? "");
-      if (system.includes("MatchLens analyst") && !messages.some((message) => message.role === "tool")) {
+      if (system.includes("Live on Air analyst") && !messages.some((message) => message.role === "tool")) {
         return {
           text: "",
           usage: { inputTokens: 1, outputTokens: 1 },
@@ -369,7 +374,7 @@ test("quota and concurrency are enforced on cache misses", async () => {
           assistantMessage: { role: "assistant", content: "", tool_calls: [] },
         };
       }
-      if (system.includes("MatchLens analyst")) {
+      if (system.includes("Live on Air analyst")) {
         await wait;
         return {
           text: JSON.stringify({ selectedFactIds: ["score", "event:goal-1"], rationale: "ok" }),
@@ -427,7 +432,7 @@ test("analyst must call match state and a supporting tool", async () => {
     completionClient: {
       async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
         const system = String(messages[0]?.content ?? "");
-        if (system.includes("MatchLens analyst") && !messages.some((message) => message.role === "tool")) {
+        if (system.includes("Live on Air analyst") && !messages.some((message) => message.role === "tool")) {
           return {
             text: "",
             usage: { inputTokens: 1, outputTokens: 1 },
@@ -435,7 +440,7 @@ test("analyst must call match state and a supporting tool", async () => {
             assistantMessage: { role: "assistant", content: "", tool_calls: [] },
           };
         }
-        if (system.includes("MatchLens analyst")) {
+        if (system.includes("Live on Air analyst")) {
           return {
             text: JSON.stringify({ selectedFactIds: ["score", "story:s1"], focusStoryId: "s1", rationale: "ok" }),
             usage: { inputTokens: 1, outputTokens: 1 },
@@ -466,7 +471,7 @@ test("invalid analyst and producer shapes are rejected", async () => {
     completionClient: {
       async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
         const system = String(messages[0]?.content ?? "");
-        if (system.includes("MatchLens analyst") && !messages.some((message) => message.role === "tool")) {
+        if (system.includes("Live on Air analyst") && !messages.some((message) => message.role === "tool")) {
           return {
             text: "",
             usage: { inputTokens: 1, outputTokens: 1 },
@@ -498,7 +503,7 @@ test("invalid analyst and producer shapes are rejected", async () => {
     completionClient: {
       async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
         const system = String(messages[0]?.content ?? "");
-        if (system.includes("MatchLens analyst")) {
+        if (system.includes("Live on Air analyst")) {
           if (messages.some((message) => message.role === "tool")) {
             return {
               text: JSON.stringify({ selectedFactIds: ["score", "story:s1"], focusStoryId: "s1", rationale: "ok" }),
@@ -540,7 +545,7 @@ test("unknown analyst facts and producer facts outside selection are rejected", 
     completionClient: {
       async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
         const system = String(messages[0]?.content ?? "");
-        if (system.includes("MatchLens analyst")) {
+        if (system.includes("Live on Air analyst")) {
           if (messages.some((message) => message.role === "tool")) {
             return {
               text: JSON.stringify({ selectedFactIds: ["score", "story:s1", "event:not-real"], focusStoryId: "s1", rationale: "bad" }),
@@ -580,7 +585,7 @@ test("unknown analyst facts and producer facts outside selection are rejected", 
     completionClient: {
       async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
         const system = String(messages[0]?.content ?? "");
-        if (system.includes("MatchLens analyst")) {
+        if (system.includes("Live on Air analyst")) {
           if (messages.some((message) => message.role === "tool")) {
             return {
               text: JSON.stringify({ selectedFactIds: ["score", "story:s1"], focusStoryId: "s1", rationale: "ok" }),
@@ -666,7 +671,7 @@ test("recap always includes score and active goal plus red-card coverage", async
     completionClient: {
       async createChatCompletion({ messages }: { messages: Record<string, unknown>[] }) {
         const system = String(messages[0]?.content ?? "");
-        if (system.includes("MatchLens analyst")) {
+        if (system.includes("Live on Air analyst")) {
           if (messages.some((message) => message.role === "tool")) {
             return {
               text: JSON.stringify({
@@ -713,4 +718,77 @@ test("recap always includes score and active goal plus red-card coverage", async
   assert.match(response.script, /Ana Ruiz scored for Sevilla/);
   assert.match(response.script, /Lucia Vega scored for Sevilla/);
   assert.match(response.script, /Claire Dubois received a red card for Lyon/);
+});
+
+function writerClient(script: string, title = "Ruiz strikes as Sevilla edge Lyon") {
+  const happy = createHappyCompletionClient();
+  return {
+    async createChatCompletion(args: { messages: Record<string, unknown>[] }) {
+      if (String(args.messages[0]?.content).includes("Live on Air match reporter")) {
+        return {
+          text: JSON.stringify({ title, script }),
+          usage: { inputTokens: 1, outputTokens: 1 },
+          toolCalls: [],
+          assistantMessage: { role: "assistant", content: "" },
+        };
+      }
+      return happy.createChatCompletion(args);
+    },
+  };
+}
+
+test("recap writer turns approved facts into match-report prose and keeps grounded claims", async () => {
+  const script = "Sevilla lead Lyon 1-0. Ana Ruiz broke the deadlock in the 28th minute after a spell of relentless pressing, and the visitors' task grew harder still when Claire Dubois was sent off in minute 29.";
+  const narrator = createNarrator({
+    endpoint: "https://example.openai.azure.com",
+    deployment: "test-model",
+    completionClient: writerClient(script),
+  });
+  const response = await narrator.narrate(request({ format: "recap", storyId: undefined }), createSnapshot(), { requestId: "writer", fixture: createFixture() });
+  assert.equal(response.script, script);
+  assert.equal(response.title, "Ruiz strikes as Sevilla edge Lyon");
+  assert.ok(response.claims.length > 0);
+  assert.equal(response.trace.find((step) => step.role === "writer")?.status, "complete");
+});
+
+test("recap writer falls back to the fact script when prose invents numbers or players", async () => {
+  for (const script of [
+    "Sevilla beat Lyon 3-0 thanks to a stunning hat-trick from Ana Ruiz, who has now scored in every home game this season.",
+    "Sevilla lead Lyon 1-0 after Ana Ruiz scored, with Eva Martin denied repeatedly by a heroic home defence in the first half.",
+  ]) {
+    const narrator = createNarrator({
+      endpoint: "https://example.openai.azure.com",
+      deployment: "test-model",
+      completionClient: writerClient(script),
+    });
+    const response = await narrator.narrate(request({ format: "recap", storyId: undefined }), createSnapshot(), { requestId: "writer-bad", fixture: createFixture() });
+    assert.notEqual(response.script, script);
+    assert.match(response.script, /Here is the match recap so far\./u);
+    assert.equal(response.trace.find((step) => step.role === "writer")?.status, "rejected");
+  }
+});
+
+test("recap key moments cover every red card and approved storyline, never retracted or future ones", () => {
+  const fixture = createFixture();
+  const snapshot = createSnapshot("v1", 1800, "en");
+  const ledger = buildEvidenceLedger(snapshot, fixture);
+  const story = (id: string, triggerEventIds: string[], status: Storyline["status"], line: string): Storyline => ({
+    id, matchId: "m1", triggerEventIds, triggerMinute: 28, createdAt: "", updatedAt: "", status, priority: 1,
+    headline: { en: line, es: "", fr: "" }, onAirLine: { en: line, es: "", fr: "" }, overlay: { en: line, es: "", fr: "" },
+    claims: [], trace: [], version: 1,
+  });
+  const moments = collectKeyMoments(ledger, [
+    story("approved", ["goal-1"], "approved", "Ana Ruiz opens the scoring."),
+    story("draft", ["goal-1"], "needs_review", "Draft line."),
+    story("future", ["future-goal"], "approved", "Eva Martin equalises."),
+  ], fixture, "en");
+  assert.deepEqual(moments.map((moment) => moment.kind), ["approved_storyline", "red_card"]);
+  assert.deepEqual(moments.find((moment) => moment.kind === "red_card")?.playerNames, ["Claire Dubois"]);
+
+  assert.deepEqual(missingKeyMoments("Ana Ruiz struck first before Claire Dubois saw red.", moments), []);
+  assert.deepEqual(missingKeyMoments("Ana Ruiz struck first.", moments).map((moment) => moment.kind), ["red_card"]);
+
+  const fallback = appendKeyMoments("Recap.", moments);
+  assert.ok(fallback.includes("Ana Ruiz opens the scoring."));
+  assert.equal(appendKeyMoments(fallback, moments), fallback, "lines are not duplicated");
 });

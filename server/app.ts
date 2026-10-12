@@ -11,11 +11,14 @@ import type {
   AnalysisRequest,
   AppHealth,
   FixtureSummary,
+  Language,
   MatchFixture,
   MatchSnapshot,
   NarrativeRequest,
 } from "../shared/types.js";
-import { createNarrator, hashInlineScript, type Narrator } from "./narrator.js";
+import { createNarrator, createCompletionClientFromEnv, hashInlineScript, type Narrator } from "./narrator.js";
+import { commentaryRequestSchema, createCommentator, type Commentator } from "./commentary.js";
+import { createSpeechService, type SpeechService } from "./speech.js";
 import { analyzeFixture, analyzeMatch } from "./engine.js";
 import { getFixture, listFixtures, registerFixture, unregisterFixture } from "./fixtures.js";
 import { generateMatch } from "./matchlab/generator.js";
@@ -24,6 +27,8 @@ import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
 import { createStudioRouter } from "./routes/studio.js";
 import { createVideoRouter } from "./routes/video.js";
+import { createProgressiveVideoRouter, isProgressiveFrameRequest, PROGRESSIVE_BODY_LIMIT } from "./routes/progressiveVideo.js";
+import { createProgressiveVideoService } from "./video/progressive.js";
 import { createPlayerCamRouter } from "./routes/playercam.js";
 import { createPlayerVisionAnalyzer, type PlayerVisionAnalyzer } from "./video/playerVision.js";
 import { createPlayerCamWorker, type PlayerCamWorker } from "./video/playerWorker.js";
@@ -38,6 +43,7 @@ import {
   isHttpError,
   parseAnalysisRequest,
   parseNarrativeRequest,
+  parseStrict,
 } from "./validation.js";
 
 export type EngineAdapter = {
@@ -48,6 +54,8 @@ export type EngineAdapter = {
 
 type CreateAppOptions = {
   narrator?: Narrator;
+  speech?: SpeechService;
+  commentator?: Commentator;
   engine?: EngineAdapter;
   platform?: Platform;
   video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand; playerVision?: PlayerVisionAnalyzer; playerWorker?: PlayerCamWorker };
@@ -149,6 +157,17 @@ function buildCspHeader(staticMeta: StaticMeta): string {
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const narrator = options.narrator ?? createNarrator();
+  // Tests that inject a narrator get no speech unless they inject it too, so they never reach Azure.
+  const speech = options.speech ?? (options.narrator ? createSpeechService({ endpoint: "" }) : createSpeechService());
+  const voiceRecap = (script: string, language: Language) => {
+    const audioUrl = speech.register(script, language, "calm");
+    if (audioUrl) speech.warm?.(audioUrl);
+    return audioUrl;
+  };
+  const commentator = options.commentator ?? createCommentator({
+    completion: options.narrator ? undefined : createCompletionClientFromEnv(),
+    speech,
+  });
   const getEngine = createEngineResolver(options.engine);
   const staticDir = options.staticDir ?? resolve(process.cwd(), "dist", "client");
   const staticMeta = createStaticMeta(staticDir);
@@ -170,7 +189,13 @@ export function createApp(options: CreateAppOptions = {}) {
     next();
   });
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-  app.use(express.json({ limit: "16kb" }));
+  const smallJson = express.json({ limit: "16kb" });
+  const frameJson = express.json({ limit: PROGRESSIVE_BODY_LIMIT });
+  app.use((request, response, next) => {
+    const frames = isProgressiveFrameRequest(request);
+    response.locals.jsonBodyLimit = frames ? PROGRESSIVE_BODY_LIMIT : "16kb";
+    (frames ? frameJson : smallJson)(request, response, next);
+  });
 
   const analyzeLimiter = rateLimit({
     windowMs: 60_000,
@@ -240,7 +265,7 @@ export function createApp(options: CreateAppOptions = {}) {
         requestId: response.locals.requestId as string,
         fixture,
       });
-      response.json(narrative);
+      response.json({ ...narrative, audioUrl: voiceRecap(narrative.script, parsed.language) });
     } catch (error) {
       next(error);
     }
@@ -276,8 +301,50 @@ export function createApp(options: CreateAppOptions = {}) {
       const narrative = await narrator.narrate(parsed, snapshot, {
         requestId: response.locals.requestId as string,
         fixture,
+        storylines: platform.desk.list(view.matchId),
       });
-      response.json(narrative);
+      response.json({ ...narrative, audioUrl: voiceRecap(narrative.script, parsed.language) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Spoken highlights commentaryfor the live match's reel, grounded in the live view's events.
+  app.post("/api/live/highlights/commentary", narrateLimiter, async (request, response, next) => {
+    try {
+      if (!commentator.configured) {
+        throw new HttpError(503, "Highlights commentary is not configured");
+      }
+      const parsed = parseStrict(commentaryRequestSchema, request.body);
+      const view = platform.live.current();
+      if (!view) {
+        throw new HttpError(404, "Live match not found");
+      }
+      const fixture = deepClone(view.fixture);
+      const commentary = await commentator.write(parsed, fixture, platform.desk.list(view.matchId), response.locals.requestId as string);
+      response.json(commentary);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const audioLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 240,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many audio requests" },
+  });
+  app.get("/api/audio/:file", audioLimiter, async (request, response, next) => {
+    try {
+      const match = /^([a-f0-9]{32})\.mp3$/u.exec(String(request.params.file));
+      if (!match) {
+        throw new HttpError(404, "Audio not found");
+      }
+      const audio = await speech.synthesize(match[1]);
+      response.setHeader("Content-Type", "audio/mpeg");
+      response.setHeader("Cache-Control", "private, max-age=3600, immutable");
+      response.send(audio);
     } catch (error) {
       next(error);
     }
@@ -288,6 +355,12 @@ export function createApp(options: CreateAppOptions = {}) {
 
   const visionCaller = createVisionCallerFromEnv();
   const vision = options.video?.vision ?? createVisionAnalyzerFromEnv(process.env, visionCaller);
+  app.use(createProgressiveVideoRouter(createProgressiveVideoService({
+    vision, live: platform.live, registerFixture, unregisterFixture,
+    logger: ({ sessionId, reason }) => logger({
+      level: "error", requestId: sessionId, reason, path: "/api/video/live-sessions",
+    }),
+  })));
   const videoWorker = options.video?.worker ?? createVideoWorker({
     vision,
     registerFixture,
@@ -323,7 +396,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
     if (typeof error === "object" && error !== null && "type" in error && error.type === "entity.too.large") {
-      sendJsonError(response, 413, "JSON body exceeds the 16kb limit");
+      sendJsonError(response, 413, `JSON body exceeds the ${String(response.locals.jsonBodyLimit ?? "16kb")} limit`);
       return;
     }
     if (error instanceof SyntaxError && "body" in error) {

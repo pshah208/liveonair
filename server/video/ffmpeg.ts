@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { VideoFrame } from "../../shared/video.js";
+import { MAX_FRAME_INTERVAL_SECONDS, MAX_VIDEO_FRAMES, type VideoFrame } from "../../shared/video.js";
 
 /** Adapted from the PlayerIQ worker: ffprobe/ffmpeg run as argument arrays, never through a shell. */
 
@@ -24,6 +24,11 @@ export async function probeVideo(filePath: string, run: RunCommand = runCommand)
     throw new Error("The file does not contain a readable video stream.");
   }
   return { durationSeconds, width: Number(stream.width || 0), height: Number(stream.height || 0), codec: stream.codec_name || "unknown" };
+}
+
+/** Preserve the original 60-frame sampling for short clips, then grow at a three-second cadence. */
+export function videoSampleInterval(durationSeconds: number): number {
+  return Math.max(1, Math.min(durationSeconds / 60, MAX_FRAME_INTERVAL_SECONDS), durationSeconds / MAX_VIDEO_FRAMES);
 }
 
 /** Evenly spaced sample times, starting half an interval in so the first frame is not a black lead-in. */

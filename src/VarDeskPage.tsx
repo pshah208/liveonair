@@ -18,7 +18,7 @@ const REUSED = [
 ];
 
 const GUARDRAILS = [
-  "Advisory only. MatchLens never makes or announces a decision; officials do.",
+  "Advisory only. Live on Air never makes or announces a decision; officials do.",
   "Every recommendation cites the frames and the Law passage it relies on.",
   "Clearly time-boxed so it never delays the restart.",
   "Full audit trail of what the agents saw, retrieved and suggested.",
@@ -40,7 +40,7 @@ export function VarDeskPage({ onOpenStudio }: { onOpenStudio: () => void }) {
           <span className="eyebrow">VAR Desk · next phase</span>
           <h1>An assistant that only wakes up when the referee checks the screen</h1>
           <p className="lede">
-            When a VAR check or review is called during a live match, MatchLens agents pull the incident from the feed, read it frame by frame,
+            When a VAR check or review is called during a live match, Live on Air agents pull the incident from the feed, read it frame by frame,
             look up the current Laws of the Game with Foundry IQ and give officials a cited recommendation in seconds. The decision stays
             with the referee. This page is a design preview; nothing on it is connected yet.
           </p>

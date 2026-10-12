@@ -1,6 +1,11 @@
 // Contracts for the Video lab: an uploaded clip is processed by the video worker into match events.
 import type { EventType, MatchEvent, TeamId } from "./types.js";
 
+export const MAX_VIDEO_SECONDS = 15 * 60;
+export const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+export const MAX_FRAME_INTERVAL_SECONDS = 3;
+export const MAX_VIDEO_FRAMES = MAX_VIDEO_SECONDS / MAX_FRAME_INTERVAL_SECONDS;
+
 export type VideoJobStage = "queued" | "probing" | "extracting" | "analysing" | "building" | "ready" | "rejected" | "failed";
 
 /** Event types the vision model may report. Kickoff/fulltime are added in code. */

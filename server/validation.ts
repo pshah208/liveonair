@@ -43,7 +43,7 @@ export function isHttpError(error: unknown): error is HttpError {
   return error instanceof HttpError;
 }
 
-function parseStrict<T>(schema: z.ZodType<T>, payload: unknown): T {
+export function parseStrict<T>(schema: z.ZodType<T>, payload: unknown): T {
   const result = schema.safeParse(payload);
   if (!result.success) {
     const issue = result.error.issues[0];

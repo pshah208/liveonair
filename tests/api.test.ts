@@ -390,12 +390,13 @@ test("POST /api/live/narrate narrates the live view, honouring live corrections"
     },
   };
   let view: { matchId: string; fixture: MatchFixture; clockSecond: number } | undefined;
+  let deskMatchId: string | undefined;
   const platform = {
     live: {
       status: () => ({ state: view ? "finished" : "idle", transport: "local", transportConfigured: false, clockSecond: 0, speed: 1, eventsReceived: 0, duplicatesIgnored: 0, stress: false }),
       current: () => view,
     },
-    desk: {},
+    desk: { list: (matchId: string) => { deskMatchId = matchId; return []; } },
     close: async () => undefined,
   };
   const app = createApp({ narrator: narrator as never, platform: platform as never, staticDir, version: "test-version" });
@@ -417,6 +418,7 @@ test("POST /api/live/narrate narrates the live view, honouring live corrections"
     assert.equal(seen.request?.atSecond, liveFixture.durationSeconds);
     assert.equal(seen.request?.format, "recap");
     assert.equal(seen.request?.language, "es");
+    assert.equal(deskMatchId, "m1", "approved storylines are looked up by live match id, not fixture id");
     const activeGoals = liveFixture.events.filter((event) => event.type === "goal" && event.revision === 1 && event.id !== goal.id).length;
     assert.equal((seen.snapshot?.score.home ?? 0) + (seen.snapshot?.score.away ?? 0), activeGoals);
   } finally {

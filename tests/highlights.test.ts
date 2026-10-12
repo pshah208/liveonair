@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCutList, buildFfmpegScript, buildHighlightReel, eventSecondOf, formatTimecode, latestRevisions, toRecordingSeconds } from "../shared/highlights.js";
+import { buildCutList, buildFfmpegScript, buildHighlightReel, eventSecondOf, formatTimecode, latestRevisions, REEL_TEXT, toRecordingSeconds } from "../shared/highlights.js";
 import type { Storyline } from "../shared/platform.js";
 import type { MatchFixture } from "../shared/types.js";
 import { getFixture } from "../server/fixtures.js";
@@ -55,12 +55,40 @@ test("clip windows contain their key event and score progresses", () => {
   }
 });
 
-test("selection is deterministic and respects maxClips", () => {
-  const first = buildHighlightReel(fixture(), [], { maxClips: 3 });
-  const second = buildHighlightReel(fixture(), [], { maxClips: 3 });
+test("selection is deterministic; maxClips caps optional moments but never drops goals or red cards", () => {
+  const match = fixture();
+  const first = buildHighlightReel(match, [], { maxClips: 3 });
+  const second = buildHighlightReel(match, [], { maxClips: 3 });
   assert.deepEqual(first, second);
-  assert.ok(first.clips.length <= 3);
-  assert.ok(first.clips.every((clip) => clip.kind === "goal" || clip.importance >= 75));
+  const decisive = match.events.filter((event) => event.type === "goal" || event.type === "red_card");
+  for (const event of decisive) {
+    assert.ok(first.clips.some((clip) => clip.eventIds.includes(event.id)), `${event.type} ${event.id} missing`);
+  }
+  assert.ok(first.clips.every((clip) => clip.kind === "goal" || clip.kind === "red_card" || clip.kind === "disallowed_goal" || clip.importance >= 75));
+});
+
+test("every red card and approved storyline reaches the reel, even past the clip cap", () => {
+  const match = fixture();
+  const booking = match.events.find((event) => event.type === "yellow_card");
+  const red = { ...match.events.find((event) => event.type === "foul" || event.type === "tackle")!, id: "red-1", type: "red_card" as const, minute: 61, second: 0, revision: 1 };
+  match.events.push(red);
+  const stories = booking ? [storyline(booking.id, "approved", "Approved booking story")] : [];
+  const reel = buildHighlightReel(match, stories, { maxClips: 1 });
+  assert.ok(reel.clips.some((clip) => clip.eventIds.includes("red-1") && clip.caption.length > 0), "red card missing");
+  if (booking) {
+    const clip = reel.clips.find((item) => item.eventIds.includes(booking.id));
+    assert.ok(clip, "approved storyline moment missing");
+    assert.ok(clip.caption.includes("Approved booking story"));
+  }
+});
+
+test("a red card sharing a window with a goal keeps its own caption line", () => {
+  const match = fixture();
+  const goal = match.events.find((event) => event.type === "goal" && !event.rescinded)!;
+  match.events.push({ ...goal, id: "red-near-goal", type: "red_card", second: goal.second, minute: goal.minute, revision: 1, xg: undefined });
+  const reel = buildHighlightReel(match);
+  const clip = reel.clips.find((item) => item.eventIds.includes("red-near-goal"))!;
+  assert.match(clip.caption, /sent off/u);
 });
 
 test("approved storyline supplies the caption; retracted storylines are ignored", () => {
@@ -123,6 +151,17 @@ test("reel localizes titles and uses translated storyline captions with English 
   const french = buildHighlightReel(match, [], { language: "fr" });
   assert.ok(french.clips.every((clip) => clip.captionLanguage === "fr"));
   assert.ok(french.clips.some((clip) => /^But de /u.test(clip.caption)));
+});
+
+test("reel branding stays Live on Air in every supported language", () => {
+  for (const language of ["en", "es", "fr"] as const) {
+    assert.ok(REEL_TEXT[language].intro.includes("Live on Air"));
+    assert.ok(REEL_TEXT[language].footageReel.includes("Live on Air"));
+    assert.doesNotMatch(JSON.stringify(REEL_TEXT[language]), /matchlens/i);
+    const script = buildFfmpegScript(buildHighlightReel(fixture(), [], { language }));
+    assert.match(script, /# Live on Air highlight cut list\./u);
+    assert.doesNotMatch(script, /matchlens/i);
+  }
 });
 
 test("cut list maps match time to recording time with half-time break", () => {

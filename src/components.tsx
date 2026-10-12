@@ -24,11 +24,11 @@ import {
 
 export function BrandMark() {
   return (
-    <svg viewBox="0 0 220 44" className="brandmark" role="img" aria-label="MatchLens">
+    <svg viewBox="0 0 240 44" className="brandmark" role="img" aria-label="Live on Air">
       <rect x="2" y="4" width="36" height="36" rx="8" fill="var(--cp-accent)" />
       <path d="M11 30 19 17l8 13 6-9" fill="none" stroke="var(--cp-accent-fg)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3.5" />
       <circle cx="30" cy="14" r="4.5" fill="var(--team-away)" />
-      <text x="50" y="30" fill="var(--cp-text)" fontSize="24" fontWeight="700" letterSpacing="-0.5" fontFamily="var(--font)">MatchLens</text>
+      <text x="50" y="30" fill="var(--cp-text)" fontSize="24" fontWeight="700" letterSpacing="-0.5" fontFamily="var(--font)">Live on Air</text>
     </svg>
   );
 }
@@ -414,7 +414,7 @@ export function OverlayPreview({ storyline, language, onExport }: OverlayPreview
   return (
     <div className="overlay-preview">
       <div className="lower-third">
-        <span className="lower-third__label">{storyline.triggerMinute}' · MatchLens</span>
+        <span className="lower-third__label">{storyline.triggerMinute}' · Live on Air</span>
         <strong>{headline.text}</strong>
         <span>{overlay.text}</span>
       </div>
@@ -465,6 +465,7 @@ export function RecapPanel({ narrative, loading, error, aiReady, disabled, onGen
             <button type="button" className="button button--ghost button--small" onClick={() => void copy()}>{copied ?? "Copy"}</button>
           </div>
           <p className="recap__script">{narrative.script}</p>
+          {narrative.audioUrl && <audio className="recap__audio" controls preload="none" src={narrative.audioUrl} aria-label="Listen to the recap" />}
           <details className="disclosure disclosure--compact">
             <summary>How this recap was generated</summary>
             <dl className="meta-grid">

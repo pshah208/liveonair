@@ -22,6 +22,7 @@ const resultSchema = z.object({
     frameIndex: z.number().int(),
     visible: z.boolean(),
     box: boxSchema,
+    ballContact: z.boolean().optional().default(false),
     action: z.enum(PLAYER_ACTIONS),
     confidence: z.number().min(0).max(1),
     description: z.string(),
@@ -44,7 +45,7 @@ export const PLAYER_JSON_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["frameIndex", "visible", "box", "action", "confidence", "description"],
+        required: ["frameIndex", "visible", "box", "ballContact", "action", "confidence", "description"],
         properties: {
           frameIndex: { type: "integer" },
           visible: { type: "boolean" },
@@ -54,6 +55,7 @@ export const PLAYER_JSON_SCHEMA = {
             required: ["x", "y", "w", "h"],
             properties: { x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } },
           },
+          ballContact: { type: "boolean" },
           action: { type: "string", enum: [...PLAYER_ACTIONS] },
           confidence: { type: "number" },
           description: { type: "string" },
@@ -69,7 +71,9 @@ export const PLAYER_INSTRUCTIONS = [
   "Return exactly one sighting per frame, in frame order.",
   "visible: true only if you are reasonably sure the target is in the frame. Never pick a different player just to have someone; prefer visible=false.",
   "box: the target's bounding box in the frame, 0-100 from the left and top (x, y = top-left corner; w, h = size). Use 0,0,0,0 when not visible.",
-  "action: what the target is doing: shot, header, save, dribble (running with the ball past or at opponents), tackle, pass, on_ball (in possession or receiving), celebration, off_ball (visible but not involved).",
+  "ballContact: decide this BEFORE action. true if the ball is at the target's feet, head or hands, being controlled, received, carried, shielded, passed or shot by the target in this frame (the ball within roughly a stride of them counts). false only if the ball is clearly away from the target.",
+  "action: what the target is doing: shot, header, save, dribble (running with the ball past or at opponents), tackle, pass, on_ball (in possession, controlling, shielding or receiving the ball), celebration, off_ball (visible but NOT on the ball: running, marking or positioning without it).",
+  "Rule: if ballContact is true, action must NEVER be off_ball; use the most specific on-ball action (shot, header, pass, dribble, save) or on_ball.",
   "confidence: 0-1, how sure you are that this is the target AND the action is right.",
   "description: one short factual sentence about the target in that frame. Do not use the player's name.",
   "footageCheck.realFootballFootage: true only for real camera footage of football. False for test patterns, animations, diagrams, video games or screenshots.",
@@ -98,6 +102,16 @@ export function buildPlayerMessages(input: Parameters<PlayerVisionAnalyzer["anal
   ];
 }
 
+const ON_BALL_TEXT = /\b(on|with|controls?|controlling|receiv\w*|carr\w*|dribbl\w*|shield\w*|collect\w*|trap\w*|plays?|playing|touch\w*|passes|passing|strikes?|striking|shoots?|shooting|kicks?|kicking|heads?|heading)\s+the\s+ball\b|\bin possession\b|\bball at (his|her|their) feet\b/iu;
+const OFF_BALL_TEXT = /\b(without|off|away from|no)\s+(the\s+)?ball\b|\bnot (on|with|near) the ball\b|\bout of possession\b/iu;
+
+/** The model sometimes says "off_ball" while also saying the player has it; trust the ball evidence. */
+function reconcileAction(action: PlayerSighting["action"], ballContact: boolean, description: string): PlayerSighting["action"] {
+  if (action !== "off_ball") return action;
+  const describedOnBall = ON_BALL_TEXT.test(description) && !OFF_BALL_TEXT.test(description);
+  return ballContact || describedOnBall ? "on_ball" : action;
+}
+
 const clamp = (value: number) => Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
 
 /** Keeps one sighting per frame of this batch; boxes are clamped to the frame and dropped when not visible. */
@@ -111,13 +125,14 @@ export function parsePlayerResult(raw: unknown, frameIndexes: Set<number>): Omit
     const box = { x, y, w: Math.min(100 - x, clamp(sighting.box.w)), h: Math.min(100 - y, clamp(sighting.box.h)) };
     const hasBox = box.w > 0.5 && box.h > 0.5;
     const visible = sighting.visible && hasBox;
+    const description = sighting.description.trim().slice(0, 240);
     byFrame.set(sighting.frameIndex, {
       frameIndex: sighting.frameIndex,
       visible,
       box: visible ? box : null,
-      action: visible ? sighting.action : "off_ball",
+      action: visible ? reconcileAction(sighting.action, sighting.ballContact, description) : "off_ball",
       confidence: visible ? sighting.confidence : 0,
-      description: sighting.description.trim().slice(0, 240),
+      description,
     });
   }
   return { footageCheck: parsed.footageCheck, sightings: [...byFrame.values()].sort((a, b) => a.frameIndex - b.frameIndex) };

@@ -9,12 +9,10 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 
 import type { LiveService } from "../contracts.js";
-import { DETECTABLE_EVENT_TYPES, type VideoJob } from "../../shared/video.js";
+import { DETECTABLE_EVENT_TYPES, MAX_UPLOAD_BYTES, MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type VideoJob } from "../../shared/video.js";
 import { runCommand, type RunCommand } from "../video/ffmpeg.js";
-import { MAX_VIDEO_SECONDS, VideoJobConflict, type VideoWorker } from "../video/worker.js";
+import { VideoJobConflict, type VideoWorker } from "../video/worker.js";
 import { HttpError } from "../validation.js";
-
-export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 const CONTENT_TYPES: Record<string, string> = {
   "video/mp4": "mp4",
@@ -118,7 +116,7 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
   }
 
   router.get("/api/video/health", async (_request, response) => {
-    response.json({ visionConfigured: options.visionConfigured, ffmpeg: await checkFfmpeg(), maxUploadBytes: MAX_UPLOAD_BYTES });
+    response.json({ visionConfigured: options.visionConfigured, ffmpeg: await checkFfmpeg(), maxUploadBytes: MAX_UPLOAD_BYTES, maxVideoSeconds: MAX_VIDEO_SECONDS, maxFrames: MAX_VIDEO_FRAMES });
   });
 
   router.post("/api/video/jobs", uploadLimiter, async (request, response, next) => {

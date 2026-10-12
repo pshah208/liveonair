@@ -114,6 +114,16 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   let lastEventAt: string | undefined;
   let lagMs: number | undefined;
   let matchStartReceivedAt: number | undefined;
+  let progressive = false;
+  let analyzedThrough = 0;
+  let progressiveCompleted = false;
+  let ending = false;
+  let endReceived = false;
+  let generation = 0;
+  let operationQueue: Promise<unknown> = Promise.resolve();
+  const pendingEnvelopes: Array<{ envelope: LiveEnvelope; receivedAt: number }> = [];
+  const publishedEvents = new Map<string, MatchEvent>();
+  const manualRescissions = new Map<string, MatchEvent>();
   const acceptedRevisions = new Set<string>();
   const listeners = new Set<LiveListener>();
   const tickListeners = new Set<(view: LiveMatchView | undefined) => void>();
@@ -123,19 +133,35 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
 
   const ensureSubscribed = () => {
     stopConsumerPromise ??= transport.subscribe((envelope, receivedAt) => {
-      void handleEnvelope(envelope, receivedAt).catch((error) => {
+      try {
+        handleEnvelope(envelope, receivedAt);
+      } catch (error) {
         console.error(JSON.stringify({
           level: "error",
           transport: transport.name,
           reason: "Live envelope handling failed",
           message: error instanceof Error ? error.message : "Unknown error",
         }));
-      });
+      }
     });
     return stopConsumerPromise;
   };
 
-  void ensureSubscribed();
+  // The same subscription rejection is surfaced to start(), without an unhandled rejection.
+  void ensureSubscribed().catch(() => undefined);
+
+  function serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = operationQueue.then(operation);
+    operationQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  function requireProgressive(fixtureId: string, matchId: string | undefined): void {
+    if (!progressive || state !== "running" || ending || !matchId
+      || currentMatchId !== matchId || activeFixture?.id !== fixtureId) {
+      throw new HttpError(409, "No matching progressive live match is running");
+    }
+  }
 
   function clearPublishTimers(): void {
     for (const handle of scheduledPublishes) {
@@ -153,6 +179,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
 
   function computeClock(minimumSecond = 0): number {
     const duration = activeFixture?.durationSeconds ?? currentView?.fixture.durationSeconds ?? 0;
+    if (progressive) {
+      return Math.min(duration, analyzedThrough);
+    }
     if (matchStartReceivedAt === undefined) {
       return Math.min(duration, minimumSecond);
     }
@@ -217,16 +246,44 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     await transport.publish(envelope);
   }
 
-  async function finishActiveMatch(): Promise<void> {
+  async function finishActiveMatch(complete = false): Promise<void> {
     clearPublishTimers();
     stopTicker();
-    state = "finished";
-    if (currentMatchId) {
-      await publishEnvelope("match_end");
+    const previousWatermark = analyzedThrough;
+    ending = true;
+    if (progressive && complete) {
+      progressiveCompleted = true;
+      analyzedThrough = activeFixture!.durationSeconds;
+    }
+    try {
+      if (currentMatchId) {
+        await publishEnvelope("match_end");
+      }
+      state = "finished";
+      if (progressive && !complete) {
+        pendingEnvelopes.length = 0;
+      }
+      if (progressive && currentView) {
+        currentView.clockSecond = computeClock();
+      }
+      notifyTick();
+    } catch (error) {
+      progressiveCompleted = false;
+      analyzedThrough = previousWatermark;
+      endReceived = false;
+      state = "running";
+      if (progressive && currentView) {
+        currentView.clockSecond = computeClock();
+      } else if (!progressive && currentMatchId) {
+        beginTicker(currentMatchId);
+      }
+      throw error;
+    } finally {
+      ending = false;
     }
   }
 
-  async function handleEnvelope(envelope: LiveEnvelope, receivedAt: number): Promise<void> {
+  function handleEnvelope(envelope: LiveEnvelope, receivedAt: number): void {
     if (envelope.kind !== "match_start" && envelope.matchId !== currentMatchId) {
       return;
     }
@@ -240,22 +297,41 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       if (!activeFixture) {
         return;
       }
+      if (progressive && (currentView || (!progressiveCompleted && state !== "running"))) {
+        return;
+      }
 
       const registered = cloneFixture(registry.getFixture(activeFixture.id));
       registered.events = [];
       currentView = {
         matchId: envelope.matchId,
         fixture: registered,
-        clockSecond: 0,
+        clockSecond: progressive ? computeClock() : 0,
       };
       matchStartReceivedAt = receivedAt;
-      state = "running";
-      beginTicker(envelope.matchId);
+      if (!progressiveCompleted) {
+        state = "running";
+      }
+      if (!progressive) {
+        beginTicker(envelope.matchId);
+      }
       const snapshot = cloneView(currentView);
       for (const listener of listeners) {
         listener.onMatchStart?.(snapshot);
       }
       notifyTick();
+      const pending = pendingEnvelopes.splice(0).sort((left, right) => left.envelope.sequence - right.envelope.sequence);
+      for (const received of pending) {
+        handleEnvelope(received.envelope, received.receivedAt);
+      }
+      return;
+    }
+
+    // Fabric may deliver different partitions out of order. Receipt still gates visibility.
+    if (progressive && !currentView) {
+      if (state === "running" || progressiveCompleted) {
+        pendingEnvelopes.push({ envelope, receivedAt });
+      }
       return;
     }
 
@@ -291,8 +367,12 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       return;
     }
 
+    if (progressive && (endReceived || (!ending && state === "running"))) {
+      return;
+    }
+    endReceived = true;
     stopTicker();
-    currentView.clockSecond = currentView.fixture.durationSeconds;
+    currentView.clockSecond = progressive ? computeClock() : currentView.fixture.durationSeconds;
     state = "finished";
     const snapshot = cloneView(currentView);
     for (const listener of listeners) {
@@ -301,61 +381,32 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     notifyTick();
   }
 
-  return {
-    status() {
-      return makeStatus();
-    },
-    current() {
-      return currentView ? cloneView(currentView) : undefined;
-    },
-    async start(request) {
-      await ensureSubscribed();
+  async function startFixture(fixture: MatchFixture, speed: number, stress: boolean, isProgressive: boolean): Promise<void> {
+    clearPublishTimers();
+    stopTicker();
+    activeFixture = cloneFixture(fixture);
+    currentView = undefined;
+    currentMatchId = `${fixture.id}-${now()}-${++generation}`;
+    currentSpeed = speed;
+    currentStress = stress;
+    progressive = isProgressive;
+    analyzedThrough = 0;
+    progressiveCompleted = false;
+    ending = false;
+    endReceived = false;
+    state = "running";
+    sequence = 1;
+    eventsReceived = 0;
+    duplicatesIgnored = 0;
+    lastEventAt = undefined;
+    lagMs = undefined;
+    matchStartReceivedAt = undefined;
+    acceptedRevisions.clear();
+    publishedEvents.clear();
+    manualRescissions.clear();
+    pendingEnvelopes.length = 0;
 
-      if (state === "running") {
-        throw new HttpError(409, "Live match already running");
-      }
-
-      const speed = Math.floor(request.speed);
-      if (!Number.isInteger(speed) || speed < 1 || speed > 60) {
-        throw new HttpError(400, "speed must be an integer between 1 and 60");
-      }
-
-      const fixture = request.fixtureId
-        ? (() => {
-          try {
-            return registry.getFixture(request.fixtureId as string);
-          } catch (error) {
-            if (error instanceof RangeError) {
-              throw new HttpError(404, "Fixture not found");
-            }
-            throw error;
-          }
-        })()
-        : (() => {
-          if (!request.generate) {
-            throw new HttpError(400, "Exactly one of fixtureId or generate is required");
-          }
-          const generated = generateMatch(request.generate);
-          registry.registerFixture(generated);
-          return generated;
-        })();
-
-      clearPublishTimers();
-      stopTicker();
-      activeFixture = cloneFixture(fixture);
-      currentView = undefined;
-      currentMatchId = `${fixture.id}-${now()}`;
-      currentSpeed = speed;
-      currentStress = Boolean(request.stress);
-      state = "running";
-      sequence = 1;
-      eventsReceived = 0;
-      duplicatesIgnored = 0;
-      lastEventAt = undefined;
-      lagMs = undefined;
-      matchStartReceivedAt = undefined;
-      acceptedRevisions.clear();
-
+    try {
       await publishEnvelope("match_start", {
         fixture: {
           id: fixture.id,
@@ -368,56 +419,184 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
           correctionAvailableAt: fixture.correctionAvailableAt,
         },
       });
+    } catch (error) {
+      stopTicker();
+      state = "idle";
+      currentView = undefined;
+      currentMatchId = undefined;
+      activeFixture = undefined;
+      pendingEnvelopes.length = 0;
+      throw error;
+    }
+  }
 
-      const matchId = currentMatchId;
-      for (const item of buildFeedPlan(fixture, Boolean(request.stress))) {
-        const timeoutHandle = scheduler.setTimeout(() => {
-          scheduledPublishes.delete(timeoutHandle);
-          if (state !== "running" || currentMatchId !== matchId) {
-            return;
-          }
-          void publishEnvelope("match_event", { event: item.event });
-        }, Math.max(0, Math.floor((item.publishAtSecond * 1_000) / speed)));
-        scheduledPublishes.add(timeoutHandle);
-      }
+  return {
+    status() {
+      return makeStatus();
+    },
+    current() {
+      return currentView ? cloneView(currentView) : undefined;
+    },
+    start(request) {
+      return serialize(async () => {
+        await ensureSubscribed();
 
-      const endHandle = scheduler.setTimeout(() => {
-        scheduledPublishes.delete(endHandle);
-        if (state !== "running" || currentMatchId !== matchId) {
-          return;
+        if (state === "running") {
+          throw new HttpError(409, "Live match already running");
         }
-        void finishActiveMatch();
-      }, Math.max(0, Math.floor((fixture.durationSeconds * 1_000) / speed)));
-      scheduledPublishes.add(endHandle);
 
-      return makeStatus();
-    },
-    async stop() {
-      if (state !== "running") {
+        const speed = Math.floor(request.speed);
+        if (!Number.isInteger(speed) || speed < 1 || speed > 60) {
+          throw new HttpError(400, "speed must be an integer between 1 and 60");
+        }
+
+        const fixture = request.fixtureId
+          ? (() => {
+            try {
+              return registry.getFixture(request.fixtureId as string);
+            } catch (error) {
+              if (error instanceof RangeError) {
+                throw new HttpError(404, "Fixture not found");
+              }
+              throw error;
+            }
+          })()
+          : (() => {
+            if (!request.generate) {
+              throw new HttpError(400, "Exactly one of fixtureId or generate is required");
+            }
+            const generated = generateMatch(request.generate);
+            registry.registerFixture(generated);
+            return generated;
+          })();
+
+        await startFixture(fixture, speed, Boolean(request.stress), false);
+
+        const matchId = currentMatchId;
+        for (const item of buildFeedPlan(fixture, Boolean(request.stress))) {
+          const timeoutHandle = scheduler.setTimeout(() => {
+            scheduledPublishes.delete(timeoutHandle);
+            void serialize(async () => {
+              if (state === "running" && currentMatchId === matchId) {
+                await publishEnvelope("match_event", { event: item.event });
+              }
+            });
+          }, Math.max(0, Math.floor((item.publishAtSecond * 1_000) / speed)));
+          scheduledPublishes.add(timeoutHandle);
+        }
+
+        const endHandle = scheduler.setTimeout(() => {
+          scheduledPublishes.delete(endHandle);
+          void serialize(async () => {
+            if (state === "running" && currentMatchId === matchId) {
+              await finishActiveMatch();
+            }
+          });
+        }, Math.max(0, Math.floor((fixture.durationSeconds * 1_000) / speed)));
+        scheduledPublishes.add(endHandle);
+
         return makeStatus();
-      }
-      await finishActiveMatch();
-      return makeStatus();
+      });
     },
-    async publishCorrection(eventId) {
-      if (!currentView || !currentMatchId) {
-        throw new HttpError(404, "Live match not found");
-      }
+    startProgressive(fixture) {
+      const supplied = cloneFixture(fixture);
+      return serialize(async () => {
+        await ensureSubscribed();
+        if (state === "running") {
+          throw new HttpError(409, "Live match already running");
+        }
+        if (!Number.isFinite(supplied.durationSeconds) || supplied.durationSeconds <= 0) {
+          throw new HttpError(400, "durationSeconds must be finite and positive");
+        }
+        registry.registerFixture(supplied);
+        await startFixture(supplied, 0, false, true);
+        return makeStatus();
+      });
+    },
+    appendProgressive(fixture, watermark) {
+      const matchId = currentMatchId;
+      const supplied = cloneFixture(fixture);
+      return serialize(async () => {
+        requireProgressive(supplied.id, matchId);
+        if (!Number.isFinite(watermark) || watermark < analyzedThrough || watermark < 0
+          || !Number.isFinite(supplied.durationSeconds) || supplied.durationSeconds <= 0
+          || watermark > supplied.durationSeconds) {
+          throw new HttpError(400, "Analysis watermark must be finite, monotonic, and within the fixture duration");
+        }
 
-      const currentGoal = currentGoalRevision(currentView.fixture.events, eventId);
-      if (!currentGoal) {
-        throw new HttpError(404, "Goal event not found");
-      }
-      if (currentGoal.rescinded) {
-        throw new HttpError(409, "Goal has already been rescinded");
-      }
+        supplied.events = supplied.events.filter((event) => !manualRescissions.has(event.id));
+        supplied.events.push(...[...manualRescissions.values()].map((event) => ({ ...event })));
+        registry.registerFixture(supplied);
+        activeFixture = cloneFixture(supplied);
+        analyzedThrough = watermark;
+        if (currentView) {
+          currentView.fixture = { ...cloneFixture(supplied), events: currentView.fixture.events };
+          currentView.clockSecond = computeClock();
+        }
 
-      await publishEnvelope("match_event", {
-        event: {
-          ...currentGoal,
-          revision: currentGoal.revision + 1,
-          rescinded: true,
-        },
+        for (const event of supplied.events) {
+          requireProgressive(supplied.id, matchId);
+          const key = `${event.id}@${event.revision}`;
+          if (publishedEvents.has(key) || acceptedRevisions.has(key)) {
+            continue;
+          }
+          await publishEnvelope("match_event", { event });
+          publishedEvents.set(key, { ...event });
+        }
+        notifyTick();
+        return makeStatus();
+      });
+    },
+    completeProgressive(fixtureId) {
+      const matchId = currentMatchId;
+      return serialize(async () => {
+        requireProgressive(fixtureId, matchId);
+        await finishActiveMatch(true);
+        return makeStatus();
+      });
+    },
+    stop() {
+      const matchId = currentMatchId;
+      return serialize(async () => {
+        if (state !== "running" || currentMatchId !== matchId) {
+          return makeStatus();
+        }
+        await finishActiveMatch();
+        return makeStatus();
+      });
+    },
+    publishCorrection(eventId) {
+      const matchId = currentMatchId;
+      return serialize(async () => {
+        if (!currentView || !currentMatchId) {
+          throw new HttpError(404, "Live match not found");
+        }
+        if (matchId !== currentMatchId) {
+          throw new HttpError(409, "Live match has changed");
+        }
+
+        const currentGoal = currentGoalRevision([
+          ...currentView.fixture.events,
+          ...publishedEvents.values(),
+        ], eventId);
+        if (!currentGoal) {
+          throw new HttpError(404, "Goal event not found");
+        }
+        if (currentGoal.rescinded) {
+          throw new HttpError(409, "Goal has already been rescinded");
+        }
+
+        const correction = { ...currentGoal, revision: currentGoal.revision + 1, rescinded: true };
+        await publishEnvelope("match_event", { event: correction });
+        if (progressive) {
+          publishedEvents.set(`${eventId}@${correction.revision}`, correction);
+          manualRescissions.set(eventId, correction);
+          if (activeFixture) {
+            activeFixture.events = activeFixture.events.filter((event) => event.id !== eventId);
+            activeFixture.events.push(correction);
+            registry.registerFixture(activeFixture);
+          }
+        }
       });
     },
     addListener(listener) {
@@ -432,16 +611,21 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         tickListeners.delete(listener);
       };
     },
-    async close() {
-      clearPublishTimers();
-      stopTicker();
-      const stopConsumer = stopConsumerPromise ? await stopConsumerPromise : undefined;
-      if (stopConsumer) {
-        await stopConsumer();
-      }
-      if (isClosableTransport(transport)) {
-        await transport.close();
-      }
+    close() {
+      return serialize(async () => {
+        clearPublishTimers();
+        stopTicker();
+        state = "finished";
+        currentMatchId = undefined;
+        pendingEnvelopes.length = 0;
+        const stopConsumer = stopConsumerPromise ? await stopConsumerPromise : undefined;
+        if (stopConsumer) {
+          await stopConsumer();
+        }
+        if (isClosableTransport(transport)) {
+          await transport.close();
+        }
+      });
     },
   };
 }

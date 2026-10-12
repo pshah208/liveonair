@@ -13,7 +13,7 @@ export interface VisionFrameInput {
 }
 
 export interface VisionBatchResult {
-  footageCheck: { realFootballFootage: boolean; reason: string };
+  footageCheck: { realFootballFootage: boolean; reason: string; category?: "match" | "broadcast_graphics" | "unsupported" };
   kits: { home: string; away: string };
   detections: VisionDetection[];
   usage: { inputTokens: number; outputTokens: number };
@@ -41,7 +41,13 @@ const detectionSchema = z.object({
 });
 
 const batchSchema = z.object({
-  footageCheck: z.object({ realFootballFootage: z.boolean(), reason: z.string() }),
+  footageCheck: z.object({
+    realFootballFootage: z.boolean(),
+    reason: z.string(),
+    category: z.enum(["match", "broadcast_graphics", "unsupported"]).optional(),
+  }).refine((check) => check.category === undefined || check.realFootballFootage === (check.category === "match"), {
+    message: "Footage category contradicts realFootballFootage",
+  }),
   kits: z.object({ home: z.string(), away: z.string() }),
   detections: z.array(detectionSchema),
 });
@@ -54,8 +60,12 @@ export const VISION_JSON_SCHEMA = {
     footageCheck: {
       type: "object",
       additionalProperties: false,
-      required: ["realFootballFootage", "reason"],
-      properties: { realFootballFootage: { type: "boolean" }, reason: { type: "string" } },
+      required: ["realFootballFootage", "reason", "category"],
+      properties: {
+        realFootballFootage: { type: "boolean" },
+        reason: { type: "string" },
+        category: { type: "string", enum: ["match", "broadcast_graphics", "unsupported"] },
+      },
     },
     kits: {
       type: "object",
@@ -95,8 +105,11 @@ export const VISION_INSTRUCTIONS = [
   "x, y: where the action happens in the visible frame, 0-100 from left to right and top to bottom.",
   "confidence: 0-1, how sure you are that the event happened as described.",
   "description: one short factual sentence about what the frame shows. No names.",
-  "footageCheck.realFootballFootage: true only for real camera footage of a football match. False for test patterns, animations, diagrams, video games, screenshots or anything that is not football.",
-  "kits: one short description of each team's kit as seen (e.g. 'red shirts, white shorts').",
+  "footageCheck.category: match for real camera footage of a football match; broadcast_graphics for legitimate football broadcast intros/interstitials such as team logos, lineups, title graphics or football studio coverage without match footage; unsupported for unrelated content, test patterns, video games (even football games), standalone animations, diagrams or screenshots.",
+  "footageCheck.realFootballFootage: true only when category is match; false for broadcast_graphics or unsupported. If any frame contains unsupported content, classify the batch as unsupported.",
+  "For a batch mixing genuine match frames and football broadcast graphics, use match and detect events ONLY on the genuine match frames, never on graphics or studio coverage. Logos, lineup portraits and scoreboard graphics are not evidence of goals, shots or other events.",
+  "For broadcast_graphics or unsupported, return no detections and empty kit descriptions.",
+  "kits: one short description of each team's kit as seen in genuine match frames (e.g. 'red shirts, white shorts'), never inferred from logos, graphics or studio clothing.",
 ].join("\n");
 
 function describeTeams(request: VideoJobRequest, knownKits?: { home: string; away: string }): string {

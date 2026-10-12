@@ -19,13 +19,22 @@ import type {
   Storyline,
   VerifiedFact
 } from "../shared/platform.js";
-import type { ManualTagInput, VideoJob, VideoJobRequest, VideoJobSummary } from "../shared/video.js";
+import { MAX_UPLOAD_BYTES, type ManualTagInput, type VideoJob, type VideoJobRequest, type VideoJobSummary } from "../shared/video.js";
+import type { HighlightCommentary, HighlightCommentaryRequest } from "../shared/highlights.js";
 import type { PlayerCamJob, PlayerCamJobSummary, PlayerCamRequest } from "../shared/playercam.js";
+import type { ProgressiveVideoBatch, ProgressiveVideoSession, StartProgressiveVideo } from "../shared/progressiveVideo.js";
 
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
   allowNotFound?: boolean;
 };
+
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 async function readError(response: Response): Promise<string> {
   try {
@@ -48,7 +57,7 @@ export async function requestJson<T>(input: RequestInfo | URL, init?: RequestOpt
     body: hasBody ? JSON.stringify(init?.body) : undefined
   });
   if (init?.allowNotFound && response.status === 404) return null;
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw new ApiError(await readError(response), response.status);
   if (response.status === 204) return null;
   return (await response.json()) as T;
 }
@@ -60,6 +69,7 @@ export const api = {
   analyze(body: AnalysisRequest, signal?: AbortSignal) { return requestJson<MatchSnapshot>("/api/analyze", { method: "POST", body, signal }); },
   narrate(body: NarrativeRequest, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/narrate", { method: "POST", body, signal }); },
   narrateLive(body: { persona: "analyst" | "casual"; language: Language }, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/live/narrate", { method: "POST", body, signal }); },
+  highlightCommentary(body: HighlightCommentaryRequest, signal?: AbortSignal) { return requestJson<HighlightCommentary>("/api/live/highlights/commentary", { method: "POST", body, signal }); },
   getArchiveSummary(signal?: AbortSignal) { return requestJson<ArchiveSummary>("/api/archive/summary", { signal }); },
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },
@@ -74,6 +84,11 @@ export const api = {
   getStudioStoryboard(signal?: AbortSignal) { return requestJson<RecapStoryboard>("/api/studio/storyboard", { signal, allowNotFound: true }); },
   getStudioHealth(signal?: AbortSignal) { return requestJson<{ mode: "foundry-agents" | "unconfigured"; agents: string[]; retrieval: string }>("/api/studio/health", { signal }); },
   getVideoHealth(signal?: AbortSignal) { return requestJson<VideoHealth>("/api/video/health", { signal }); },
+  startProgressiveVideo(body: StartProgressiveVideo, signal?: AbortSignal) { return requestJson<ProgressiveVideoSession>("/api/video/live-sessions", { method: "POST", body, signal }); },
+  getProgressiveVideo(id: string, signal?: AbortSignal) { return requestJson<ProgressiveVideoSession>(`/api/video/live-sessions/${encodeURIComponent(id)}`, { signal }); },
+  sendProgressiveBatch(id: string, body: ProgressiveVideoBatch, signal?: AbortSignal) { return requestJson<ProgressiveVideoSession>(`/api/video/live-sessions/${encodeURIComponent(id)}/batches`, { method: "POST", body, signal }); },
+  completeProgressiveVideo(id: string, signal?: AbortSignal) { return requestJson<ProgressiveVideoSession>(`/api/video/live-sessions/${encodeURIComponent(id)}/complete`, { method: "POST", signal }); },
+  stopProgressiveVideo(id: string, signal?: AbortSignal) { return requestJson<ProgressiveVideoSession>(`/api/video/live-sessions/${encodeURIComponent(id)}`, { method: "DELETE", signal, keepalive: true }); },
   getVideoJob(id: string, signal?: AbortSignal) { return requestJson<VideoJob>(`/api/video/jobs/${id}`, { signal }); },
   startVideoLive(id: string) { return requestJson<LiveStatus>(`/api/video/jobs/${id}/live`, { method: "POST" }); },
   swapVideoTeams(id: string) { return requestJson<VideoJob>(`/api/video/jobs/${id}/swap-teams`, { method: "POST" }); },
@@ -86,11 +101,15 @@ export const api = {
   deletePlayerCamJob(id: string) { return requestJson<null>(`/api/player-cam/jobs/${id}`, { method: "DELETE" }); }
 };
 
-export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number };
+export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number; maxVideoSeconds: number; maxFrames: number };
 
 /** Streams a file to a worker endpoint. XHR rather than fetch so the UI can show upload progress. */
 function uploadFile<T>(url: string, file: File, onProgress: (fraction: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      reject(new Error(`The clip is too large. Choose a video up to ${MAX_UPLOAD_BYTES / 1_048_576} MB.`));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", file.type || "video/mp4");

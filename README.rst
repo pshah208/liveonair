@@ -1,9 +1,9 @@
-MatchLens
-=========
+Live on Air
+===========
 
 **The story behind the score.**
 
-MatchLens is a live match-intelligence studio. It ingests synthetic football events through
+Live on Air is a live match-intelligence studio. It ingests synthetic football events through
 Microsoft Fabric, turns them into verified statistics and storylines with Microsoft Foundry agents,
 and lets a human producer put approved copy on air as lower-thirds, narrated recaps and an
 automatically cut highlight reel, in English, Spanish and French.
@@ -11,7 +11,13 @@ automatically cut highlight reel, in English, Spanish and French.
 It is a hackathon application, not a Premier League product or affiliation. All clubs, players,
 events and scenarios are fictional.
 
-Live demo: https://matchlens.whiteisland-f5b236ef.eastus2.azurecontainerapps.io
+Live demo: https://liveonair.whiteisland-f5b236ef.eastus2.azurecontainerapps.io
+
+**Legacy technical identifiers:** Live on Air is the product brand. The source folder and npm
+package remain ``matchlens``. Existing infrastructure resource names, URLs, deployment and agent
+IDs (including the ``MatchLens Live`` Fabric workspace), resource tags, JSON schema names,
+storage keys, temporary folder names and API contracts are intentionally unchanged. References
+to those legacy identifiers in commands and configuration are not the product's display name.
 
 .. contents::
    :local:
@@ -27,12 +33,15 @@ The app has two desks, switched at the top of the page:
 * **VAR Desk** (next phase): a design preview of an assistant for VAR reviews. See `VAR Desk
   (next phase)`_.
 
-A collapsible **How MatchLens works** panel at the top of the Studio Desk shows each pipeline stage
+A collapsible **How Live on Air works** panel at the top of the Studio Desk shows each pipeline stage
 with live health.
 
 **Live desk**
 
-* Start a seeded fixture or generate a new match (comeback, red card, set piece, late winner,
+* Select a local video in **Choose a video and play**. Playback starts without a full-file upload;
+  after rights confirmation, sampled frames upload in bounded batches while analysis publishes
+  events through the live transport. The original file remains on your device.
+* Start a seeded fixtureor generate a new match (comeback, red card, set piece, late winner,
   goal fest) at up to 60x speed. Events flow through Fabric Eventstream with the measured lag
   shown in the broadcast bar.
 * Follow the scorebug, animated pitch, live stats, notable-event feed and match-intelligence
@@ -48,31 +57,50 @@ with live health.
 * **Highlight reel**, generated automatically from the verified events and approved storylines,
   in English, Spanish or French:
 
-  - *Video recap*: when the match came from the Video lab, the reel is cut from that clip
-    automatically, around the events the worker and the producer tagged, with storyline captions
-    and a scorebug on top.
+   - *Video recap*: when the live match has matching local footage, the reel is cut around its
+     analyzed events, with storyline captions and a scorebug on top. Video Lab moments reach the
+     reel once they are sent to the live desk as producer tags.
   - *Data-rendered*: synthetic matches have no footage, so the reel is an animated pitch with
     scorebug, event trail and captions.
-  - *Sound*: a commentary voice reads each moment's caption in the reel language; video recaps
-    also play the clip's own audio. One toggle turns both off.
-  - Export the reel as WebM (with the clip audio for video recaps), or download the cut list
-    (JSON plus an ffmpeg script).
+  - *Sound*: broadcast-style commentary. The Foundry commentator writes a spoken line for each
+    moment from the verified build-up (passes, shots, saves, score), plus an intro and outro, in the
+    reel language; Azure AI Speech HD neural voices read it, and the data reel paces itself so no
+    line is cut off. Video recaps duck the clip's own audio under each line. Without Azure, the
+    browser voice reads the captions. One toggle turns all sound off.
+  - Export the reel as WebM with the commentary (and the clip audio for video recaps), or download
+    the cut list (JSON plus an ffmpeg script).
 
-* **Narrated recap** for an analyst or casual audience, in English, Spanish or French, built
-  from the live view so manual corrections are reflected.
+* **Narrated recap** in English, Spanish or French, built from the live view so manual corrections
+  are reflected. A writer step turns the approved facts into match-report prose in the chosen
+  language, with a neural-voice reading to listen to; the grounded claims and evidence stay
+  alongside it. Every red card and every producer-approved storyline must appear: a draft that
+  leaves one out is rejected and the grounded fact-by-fact recap (which lists them) is used instead.
 * **Recap chapters** that link each phase of the match to its storylines.
 
-**Video lab (beta)**
+**Video lab**
 
-* Upload a short clip you own. The video worker samples frames, a vision model tags events and
-  deterministic rules turn them into a match that streams through Eventstream to the live desk.
-  Tag up to five moments the model missed yourself.
+* A dedicated **local-first match review** workbench, not the Live Desk progressive panel.
+  Watch browser-playable footage with slow motion and approximate stepping, without cloud setup
+  or upload permission. Limits: **15 minutes / 500 MB (500 MiB) / 200 annotations per file**.
+* Mark **I/O** ranges or use moment presets; edit categories, team, players, outcome and notes.
+  Preview, edit and delete annotations in the timeline and reviewed clip library.
+* Filter the timeline, library and detailed tagged-observation analysis together. Counts describe
+  saved tags, not inferred possession, xG, tracking or authoritative match statistics.
+* Save reviews per local file fingerprint; export/import a matching-source JSON backup or export
+  the filtered annotations as CSV. Backups contain metadata, not video.
+* Optionally authorize a full upload for AI suggestions, inspect their evidence and explicitly
+  add selected suggestions to the review timeline.
+* **Send to the live desk**: once AI detection has built the match feed, send up to five marked
+  moments (goal, red card, save, foul, card, set piece...) as producer tags, then **Go live on the
+  desk**. The clip's events stream in real time, agents draft storylines, and approved moments and
+  red cards land in the highlights and recap cut from this footage. Nothing changes the live score
+  until you go live.
 
 **Player cam (beta)**
 
-* A fan experience: upload a clip, click the player you want to follow (or give their shirt
-  number and kit) and get a personal highlight reel with a spotlight on them, in landscape or a
-  vertical 9:16 cut that pans with the player. Nothing is sent to Eventstream.
+* A fan experience: upload a clip (up to 15 minutes and 500 MB), click the player you want to follow
+  (or give their shirt number and kit) and get a personal highlight reel with a spotlight on them,
+  in landscape or a vertical 9:16 cut that pans with the player. Nothing is sent to Eventstream.
 
 How it works
 ------------
@@ -111,69 +139,168 @@ How it works
    evidence-linked story cards on every event. Only the latest revision of each event counts.
 4. **Explain.** On key events the storyline desk runs four Foundry agents. Claims are verified
    deterministically before a producer ever sees them.
-5. **Render and personalise.** Approved copy becomes lower-thirds, recaps (analyst or casual) and
+5. **Render and personalise.** Approved copy becomes lower-thirds, recaps and
    highlight captions in three languages.
 
 Highlight reel
 ~~~~~~~~~~~~~~
 
 ``shared/highlights.ts`` ranks verified events: goals, ruled-out goals, red cards, big chances
-(xG >= 0.25), key saves (shot xG >= 0.15) and bookings. Video-lab matches have no xG, so every
+(xG >= 0.25), key saves (shot xG >= 0.15) and bookings. Video-derived matches have no xG, so every
 missed or saved attempt and every save counts. A moment scores higher if an approved
-storyline covers it. The top moments (eight by default) get a time window that starts before the
-moment; overlapping windows are merged so no footage repeats. Each clip's caption is the approved
+storyline covers it. Goals, ruled-out goals, red cards and moments with an approved storyline are
+always included; other moments fill up to eight clips by default. Each gets a time window that starts
+before the moment; overlapping windows are merged so no footage repeats, and a red card or approved
+moment that shares a window with a bigger one keeps its own line in the caption.Each clip's caption is the approved
 storyline overlay in the chosen language, falling back to English (flagged in the UI) or to a
 built-in caption.
 
 The same clip list drives every output:
 
-:Video recap: For a Video lab match, the processed clip plays in a hidden video element and a
-              canvas draws it with the overlays. Video-lab events run on the clip's own clock, so
-              each event second is the same second in the footage; no manual alignment is needed.
+:Video recap: For a video-derived live match with matching local footage, the clip plays in a
+              hidden video element and a canvas draws it with the overlays. Video-derived events
+              run on the clip's own clock; no manual alignment is needed. Local review annotations
+              become recap events only when sent to the desk as producer tags.
 :Data-rendered: Canvas animation at 1280x720, recorded to WebM with ``MediaRecorder``.
 :Cut list: JSON timecodes plus a bash script that cuts and joins the clips with ffmpeg in an
            edit suite.
-:Sound: The browser's speech engine reads each clip's caption as the reel reaches it. Video
-        recap exports include the clip audio through Web Audio; the voice is live only.
+:Sound: The Foundry commentator writes one line per clip (``POST /api/live/highlights/commentary``)
+        from the events inside the clip window; Azure AI Speech voices each line
+        (``en-GB-Ollie``, ``es-ES-Tristan``, ``fr-FR-Remy`` HD voices). Lines are mixed through
+        Web Audio so they are recorded into exports, and the data reel stretches each hold to
+        the line's length. The browser speech engine reads captions when Azure is unavailable.
 
 Synthetic matches have no footage of their own, so their reel is always data-rendered.
 
-Video lab (beta)
-~~~~~~~~~~~~~~~~
+Live Desk progressive video
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Video lab turns a short clip you own into match events, the way a vision feed could replace a
-data provider. It follows the PlayerIQ worker pattern, in-process for this demo:
+**Choose a video and play** belongs to Live Desk, not Video Lab. It accepts browser-decodable
+MP4, MOV and WebM within the 15-minute / 500 MB limits.
+The browser plays a local object URL and samples a separate decoder at fixed timestamps,
+sending up to four JPEG frames per batch, with at most two batches pending. Cloud analysis
+starts before the remaining frames are uploaded. No full source file is stored in this mode.
 
-1. **Upload.** The browser streams the clip (MP4, MOV or WebM, at most 100 MB and 3 minutes) to
-   ``POST /api/video/jobs``. Uploading requires confirming you filmed it or have a licence.
-2. **Probe and sample.** ffprobe checks the stream; ffmpeg extracts up to 60 frames (one every 1–3
-   seconds) at 768 px.
-3. **Tag.** Batches of 12 frames go to gpt-4.1-mini with a strict JSON schema. The model reports
-   event type, team (by kit), legible shirt number, frame position and confidence, plus a footage
-   check. Test patterns, animations and games are rejected after the first batch.
+Playback can run ahead of analysis. The live match clock represents the analysis watermark;
+AI-detected events are provisional observations, not human-confirmed goals. Pausing playback
+does not discard queued analysis. Stop/failure preserves partial coverage rather than claiming
+the whole video was analyzed. Uploaded/analyzed timestamps, frame counts, pending batches and
+errors expose progress. After a stopped or failed session, **Retry live analysis** deliberately
+starts the same file from the beginning once no match is running; it is not an automatic restart.
+
+Video Lab: pundit review and hand-off
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Video Lab is a dedicated workbench for manual tagging and detailed local analysis. Its state
+stays mounted across tab switches, separately from the Live Desk progressive panel; leaving
+Video Lab pauses its player. A four-step strip (mark, build the match feed, add key calls, go live)
+shows where the review stands. Nothing starts a live session until **Go live on the desk**.
+
+1. **Watch.** Select a local MP4, MOV or WebM, up to 900 seconds and 524288000 bytes (500 MiB,
+   labelled 500 MB). Use play/pause, ±5-second seeks, 0.25x/0.5x slow motion or faster playback.
+   Step controls seek approximately 0.04 seconds, not exact video frames.
+2. **Annotate.** Mark in/out with buttons or **I/O** while the workbench has focus outside inputs
+   and native controls. Category presets pad the current moment by 3 seconds before and 5 after,
+   bounded by the source. Save a title, category (goal, shot, pass, tackle, pressing, set piece,
+   defensive shape, custom, save, foul, yellow card or red card), home/away/neutral team, player
+   tags, observed outcome and notes.
+   Up to 200 annotations are allowed; a preset does not count until saved.
+3. **Review.** Timeline markers and library clips play to their out point. Edit ranges and details
+   or delete annotations. Search and filter by team, player, category, manual/AI origin and
+   overlapping time window; the timeline, library, statistics and CSV use the same filters.
+4. **Understand.** Analysis shows tagged shots, goals, passes and defensive actions, team and
+   outcome breakdowns, player tag counts and activity by clip start. Tagged pass success excludes
+   unknown outcomes. Goals do not automatically add shots to these counts. Only saved manual
+   tags and intentionally imported AI suggestions count: no possession, xG or tracking is
+   inferred, and review coverage is not a performance ranking or match truth.
+5. **Keep a backup.** Annotations and filters are saved in browser local storage keyed by filename,
+   size and last-modified time, not a content hash. Reselect the same original file after reload.
+   JSON backup/report export includes all annotations, active filters and recomputed filtered
+   statistics. Import validates the matching fingerprint and duration before an explicit
+   replacement; supplied statistics are recomputed. JSON is limited to 1 MiB. CSV exports only
+   filtered annotations, with formula-like cells escaped. Neither export contains video.
+
+Storage failures, corrupt saved data or changes from another tab pause automatic saving and
+preserve existing storage; export the in-memory review before explicitly replacing saved data.
+This is per-browser, per-device storage, not an account or cloud library.
+
+**Browser decoding is required for local tagging and the optional AI action in this UI.**
+If decoding fails, convert the source to a supported codec such as H.264 MP4 or WebM and
+reselect it. Although the full-upload API uses ffmpeg, it is not a browser-codec workaround
+for the current Video Lab workbench. Manual tagging needs neither Azure nor upload permission.
+
+Optional full-upload AI suggestions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Expand **AI-assisted event detection**, supply team names and kit descriptions, and explicitly
+confirm permission to use the footage and upload the full original for AI analysis. This
+requires configured vision and video processing; manual tagging remains available while it runs.
+The in-process worker follows these steps:
+
+1. **Upload.** ``POST /api/video/jobs`` accepts the full MP4, MOV or WebM within the same limits
+   and returns ``202`` with a job to poll.
+2. **Probe and sample.** ffprobe checks the stream; ffmpeg extracts frames at 768 px. Clips of
+   180 seconds or less keep the original sampling: at most 60 frames, one every 1–3 seconds.
+   Longer clips sample approximately every 3 seconds, up to 300 frames.
+3. **Tag.** Sequential batches of up to 12 frames (at most 25 batches) go to gpt-4.1-mini with a
+   strict JSON schema. The model reports event type, team (by kit), legible shirt number, frame
+   position and confidence, plus the footage classification described below.
 4. **Apply rules.** Deterministic code keeps detections at 50% confidence or more with a known team,
    merges repeats, adds a shot before every goal, links saves to shots and registers a fixture.
-5. **Stream.** *Stream to live desk* publishes the events through Fabric Eventstream at real time
-   while the clip plays with a scorebug and event overlays. Storyline agents, stats and the
-   highlight reel then run on what the camera saw.
+   Registering a fixture does not start a live stream.
+5. **Review and import.** Inspect suggestions and evidence, select the ones to keep and press
+   **Add to review timeline**. Imports deduplicate by job/event provenance, which remains immutable
+   when annotation details are edited. Rule-inferred shots are labelled as such, with no visual
+   frame evidence or measured confidence; uncertain/defaulted outcomes remain unknown.
 
-Each detected event shows the model's description, its confidence and the exact frame it saw.
-*Swap teams* fixes a clip where the model put the kits on the wrong sides. *Tag a missed moment*
-adds up to five producer events (type, team, time, optional shirt number and note). Tags are
-trusted over model reports of the same moment, still get the shot-before-goal rule, and are marked
-"you" in the evidence table. Once streamed, **Recap and highlights** cuts a video recap from the
-clip.
+Processing is asynchronous; longer clips require more time and vision batches, not instant
+analysis. Jobs are in memory, not durable across server restarts. Uploaded sources are deleted
+after processing; sampled frames remain as session evidence until cleanup/eviction and playback
+uses the local file. Imported annotations persist with the local review, not as a durable AI job.
+**Stop waiting and unlock source** detaches the result from this review; it does not cancel
+server processing. A failed analysis requires a deliberate new upload, not an automatic rerun.
 
-Limits: sampled stills miss quick passes; there is no player tracking, so positions are frame
-positions; players are identified only by legible numbers. A fan-filmed clip that cuts away at the
-goal produces a shot, not a goal. In production a licensed event feed such as Opta replaces this
-step; the rest of the pipeline is unchanged.
+**Send to the live desk** uses ``POST /api/video/jobs/{id}/tags`` (up to five producer tags; the
+tag time is the marked moment, 3 s after a preset's in point) and ``POST /api/video/jobs/{id}/live``
+to stream the ready job in real time. Pressing, defensive shape and custom moments stay as analysis
+only. Saving or importing review annotations never calls these endpoints on its own.
+
+Footage classification and coverage
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Progressive analysis and the full-upload event worker explicitly distinguish ``match``,
+``broadcast_graphics`` and ``unsupported`` footage:
+
+* Football broadcast intros, team logos, lineups, title graphics and studio/interstitial coverage
+  without match footage are skipped only when explicitly classified as ``broadcast_graphics``.
+  Such batches contribute no detections or kit updates; graphics are not goal or player evidence.
+* Mixed match/football-graphics batches are classified as match, with instructions to detect
+  events and identify kits only from genuine match frames. Unrelated content, test patterns,
+  video games, standalone animations, diagrams and screenshots are unsupported. Unsupported
+  content in any batch rejects the source rather than being silently skipped.
+* Graphics-only input does not fail at the intro: analysis continues looking for match footage.
+  If none is found by completion, the progressive session fails and the full-upload job is
+  rejected instead of returning a successful empty match.
+* Progressive status exposes ``skippedFrames`` and ``coverageNote`` alongside uploaded/analyzed
+  watermarks; graphics can advance sampled coverage without producing match events. Full-upload
+  job logs record skipped batch coverage and ``footageCheck`` summarizes the result. These are
+  sampled coverage signals, not proof that every moment was understood.
+
+Sampled stills can miss quick passes or goals, frame coordinates are not player tracking, and
+model player identification relies on legible numbers. Goal investigation and replay recognition
+are deferred; guaranteed goal detection and reliable replay filtering are not implemented.
+Team sharing, accounts, collaborative comments and drawing overlays are also outside this release.
 
 Player cam (beta)
 ~~~~~~~~~~~~~~~~~
 
 Player cam reuses the video worker to follow one player instead of tagging match events. It is a
 fan product, so it never touches Eventstream or the live desk.
+
+The same 15-minute / 500 MB limit and asynchronous processing apply. Clips of 180 seconds or less
+still use at most 60 frames at 1–3 second intervals; longer clips sample approximately every
+3 seconds, up to 300 frames in at most 25 sequential batches of 12. Longer clips take longer to
+process. The uploaded source is deleted after processing; the reel plays from the local clip.
 
 1. **Identify.** The fan pauses the clip and clicks the player; the shirt number and kit are
    optional extra hints. At least one of the three is required.
@@ -201,7 +328,8 @@ Microsoft Fabric Eventstream       Real-time event ingestion and fan-out
 Fabric Eventhouse (KQL)            Event store, update policy, archive, producer KQL functions
 Microsoft Foundry Agent Service    Researcher, producer, fact-checker and localizer agents
 Foundry IQ and Azure AI Search     Knowledge base over the synthetic archive
-Azure OpenAI (gpt-4.1-mini)        Agents, recap narration and Video lab frame tagging (vision)
+Azure OpenAI (gpt-4.1-mini)        Agents, narration, progressive vision and optional Video Lab suggestions
+Azure AI Speech (HD neural TTS)    Spoken highlights commentary and recap audio, on the Foundry account
 Azure Container Apps               API and studio UI, server-sent events for live updates
 Azure Container Registry           Image builds (``az acr build``)
 Managed identity and RBAC          Keyless access to Foundry, Search and the registry
@@ -214,13 +342,17 @@ Trust and guardrails
 
 * Every claim is matched to feed events or archive records before it reaches a producer.
 * Agent copy that adds names or numbers not in its verified claims is rejected and retried.
+* Recap prose and spoken commentary are checked the same way: a line that names an unlisted player
+  or uses an unlisted number falls back to the verified caption or fact text.
 * Nothing goes on air without producer approval. Edits are recorded in the trace.
 * A goal correction keeps the original event in the audit trail and retracts dependent output.
-* Uploading a clip to the Video lab requires confirming you filmed it or have a licence. The
-  source file is deleted once processing finishes; the video recap plays from the copy in your
-  browser.
-* The video worker fails closed: frames that are not real football footage stop the job before any
-  events exist, and only detections that cite a sampled frame are kept.
+* Video Lab manual review stays local. Optional full-upload AI requires explicit footage/upload
+  permission; Live Desk progressive AI separately requires permission to send sampled frames.
+  Full-upload sources are deleted after processing and playback uses the local file.
+* Progressive/full-upload event analysis skips explicitly classified football broadcast graphics
+  without using detections or kits, rejects unsupported footage and fails completion if no match
+  footage was seen. Progressive failures preserve partial coverage, not a claim of full-time
+  analysis. Model detections must cite sampled frames; rule-inferred suggestions are labelled.
 * When the model is unavailable, AI features say so; there is no hidden mock narration.
 
 Synthetic data and footage policy
@@ -249,7 +381,8 @@ Requires Node.js 22 or later.
    npm start          # http://localhost:3000
 
 Without Azure configuration the live desk, engine, highlight reel and corrections all work, using
-the in-process event bus. Agents and recaps report that they are not configured.
+the in-process event bus. Video Lab local playback, tagging, analysis and backups also work without
+Azure. Agents, recaps and optional AI detection report missing configuration.
 
 To enable AI and Fabric locally, copy ``.env.example`` to ``.env.local``, fill in the values below,
 sign in with ``az login`` and run ``node --env-file=.env.local --import tsx server/index.ts``.
@@ -261,7 +394,9 @@ sign in with ``az login`` and run ``node --env-file=.env.local --import tsx serv
    * - Variable
      - Purpose
    * - ``AZURE_OPENAI_ENDPOINT``, ``AZURE_OPENAI_DEPLOYMENT``
-     - Recap narrator model
+     - Recap narrator and highlights commentator model; the Speech endpoint is derived from it
+   * - ``AZURE_SPEECH_ENDPOINT``, ``SPEECH_VOICE_EN``/``_ES``/``_FR``
+     - Optional Speech endpoint and voice overrides
    * - ``PROJECT_ENDPOINT``
      - Foundry project for the storyline agents
    * - ``AZURE_SEARCH_ENDPOINT``, ``AZURE_SEARCH_INDEX``, ``AZURE_SEARCH_KNOWLEDGE_BASE``,
@@ -324,7 +459,11 @@ API
    * - ``GET /api/live/status``, ``GET /api/live/fixture``
      - Clock, transport and lag; the live view with every event revision
    * - ``POST /api/live/narrate``
-     - Recap of the live view (persona and language)
+     - Recap of the live view (persona and language), with ``audioUrl``
+   * - ``POST /api/live/highlights/commentary``
+     - Spoken commentary for the reel's clips (language, clip windows), with audio URLs
+   * - ``GET /api/audio/{id}.mp3``
+     - Neural-voice audio for server-generated recap and commentary text only
    * - ``GET /api/studio/storylines``
      - Storyline queue with claims and traces
    * - ``POST /api/studio/storylines/{id}/review``
@@ -333,23 +472,35 @@ API
      - Verified facts; recap chapters
    * - ``GET /api/archive/summary``, ``/players/{id}``, ``/export``
      - Synthetic archive
+   * - ``GET /api/video/health``
+     - Worker availability (``visionConfigured``, ``ffmpeg``) and shared limits: ``maxUploadBytes`` (524288000), ``maxVideoSeconds`` (900), ``maxFrames`` (300)
+   * - ``POST /api/video/live-sessions``
+     - Start progressive analysis with source metadata, teams/kits and rights confirmation; no source-file upload
+   * - ``POST /api/video/live-sessions/{id}/batches``
+     - Upload up to four sequential sampled JPEGs; returns ``202`` before inference finishes, or ``429`` for backpressure
+   * - ``GET /api/video/live-sessions/{id}``
+      - Uploaded/analyzed watermarks, skipped frames and coverage note, partial events, evidence, live status and errors
+   * - ``POST /api/video/live-sessions/{id}/complete``, ``DELETE /api/video/live-sessions/{id}``
+     - Finish after all planned frames are received and analyzed, or stop while preserving partial coverage
    * - ``POST /api/video/jobs``
-     - Upload a clip (raw MP4, MOV or WebM body, at most 100 MB and 3 minutes; team names and kits as query parameters)
+     - Upload a clip (raw MP4, MOV or WebM body, at most 500 MB and 15 minutes; team names and kits as query parameters); returns ``202`` with a job to poll
    * - ``GET /api/video/jobs/{id}``, ``/frames/{n}``
-     - Worker progress, detected events with evidence; the exact frame the model saw
+      - Worker progress, coverage logs/footage check, detected events with evidence; the exact frame the model saw
    * - ``POST /api/video/jobs/{id}/swap-teams``, ``/live``
-     - Flip home and away kits; stream the detected events through the live pipeline at real time
+      - Supported programmatic controls: flip home/away kits or stream a ready job through the live pipeline; not the main Video Lab UI
    * - ``POST /api/video/jobs/{id}/tags``, ``DELETE .../tags/{tagId}``
-     - Add or remove a producer tag (at most five per clip; ``type``, ``team``, ``second``, optional ``shirtNumber`` and ``note``)
+      - Add/remove producer event tags (five per job; ``type``, ``team``, ``second``, optional ``shirtNumber`` and ``note``); separate from 200 local review annotations
    * - ``GET /api/video/jobs``, ``DELETE /api/video/jobs/{id}``
      - Clip library, newest first; delete a finished clip with its frames, events, tags and fixture
    * - ``POST /api/player-cam/jobs``
-     - Upload a Player cam clip; query ``playerName`` plus at least one of ``number``, ``kit`` or ``anchorSecond``/``anchorX``/``anchorY`` (the click)
+     - Upload a Player cam clip (raw MP4, MOV or WebM body, at most 500 MB and 15 minutes); returns ``202`` with a job to poll. Query ``playerName`` plus at least one of ``number``, ``kit`` or ``anchorSecond``/``anchorX``/``anchorY`` (the click)
    * - ``GET /api/player-cam/jobs``, ``/{id}``, ``/{id}/frames/{n}``, ``/{id}/reference``, ``DELETE /{id}``
      - Library, job with sightings, track and moments, evidence frames, the reference crop, delete
 
-Request and response contracts are in ``shared/types.ts`` and ``shared/platform.ts``. Inputs are
-validated with zod; bodies, request rates and AI concurrency are bounded.
+Request and response contracts are in ``shared/types.ts``, ``shared/platform.ts`` and
+``shared/video.ts`` / ``shared/progressiveVideo.ts``. API inputs are validated with zod;
+bodies, request rates and AI concurrency are bounded. ``shared/videoLab.ts`` defines and validates
+the separate browser-local annotations, filters, statistics and JSON backup format.
 
 Testing
 -------
@@ -362,12 +513,12 @@ production build on every push.
 Two-minute demo
 ---------------
 
-1. Open **How MatchLens works** and explain the pipeline. Collapse it.
+1. Open **How Live on Air works** and explain the pipeline. Collapse it.
 2. Start the comeback fixture at 60x speed. Point out Fabric transport and lag.
 3. Open a storyline: claims, sources, agent trace. Approve it and show the lower-third in Spanish.
 4. Rule out a goal. The score, storylines and captions update.
 5. Switch to **Recap and highlights**. Play the reel, switch it to French and export it.
-6. Generate a casual recap in Spanish.
+6. Generate a recap in Spanish.
 
 Phase 2: path to production
 ---------------------------
@@ -379,7 +530,7 @@ as a league or broadcaster. This build is a single-tenant demo. A pilot would ne
 Area                            Today                                      Phase 2
 ==============================  =========================================  ==========================================
 Event source                    Built-in synthetic feed                    Adapter that maps a licensed live data
-                                                                           feed into the MatchLens event schema and
+                                                                           feed into the Live on Air event schema and
                                                                            publishes to Eventstream
 Access control                  Public demo, no sign-in                    Microsoft Entra ID with producer, editor
                                                                            and viewer roles
@@ -391,7 +542,7 @@ Live video                      Recorded file in the browser               Sync 
                                                                            by timecode
 Highlights                      WebM export and ffmpeg cut list            Media-asset-management integration and
                                                                            server-side rendering (Container Apps Jobs)
-Video auto-eventing             Video lab: in-process worker, short        Blob upload, Service Bus queue and a
+Video auto-eventing             Progressive + optional full-upload         Blob upload, Service Bus queue and a
                                 clips, frame sampling and a vision model   Container Apps Job worker (as in
                                                                            PlayerIQ); player tracking for passes
                                                                            and speeds

@@ -1,4 +1,4 @@
-name: MatchLens CI
+name: Live on Air CI
 on:
   push:
   pull_request:

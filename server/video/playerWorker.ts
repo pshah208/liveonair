@@ -3,11 +3,11 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { playerLabel, type PlayerCamJob, type PlayerCamJobSummary, type PlayerCamRequest, type PlayerSighting } from "../../shared/playercam.js";
-import type { VideoFrame, VideoJobStage } from "../../shared/video.js";
-import { extractFrames, extractReferenceCrop, framePath, probeVideo, sampleTimestamps, type ProbeResult, type RunCommand } from "./ffmpeg.js";
+import { MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type VideoFrame, type VideoJobStage } from "../../shared/video.js";
+import { extractFrames, extractReferenceCrop, framePath, probeVideo, sampleTimestamps, videoSampleInterval, type ProbeResult, type RunCommand } from "./ffmpeg.js";
 import { buildPlayerMoments } from "./playerMoments.js";
 import type { PlayerVisionAnalyzer } from "./playerVision.js";
-import { BATCH_SIZE, FRAME_WIDTH, MAX_FRAMES, MAX_VIDEO_SECONDS, MIN_INTERVAL_SECONDS, VideoJobConflict } from "./worker.js";
+import { BATCH_SIZE, FRAME_WIDTH, VideoJobConflict } from "./worker.js";
 
 const MAX_JOBS = 6;
 const MAX_LOG = 40;
@@ -82,8 +82,8 @@ export function createPlayerCamWorker(deps: PlayerCamWorkerDeps): PlayerCamWorke
       if (info.durationSeconds > MAX_VIDEO_SECONDS + 1) throw new Error(`The clip is ${Math.round(info.durationSeconds)} s long; the limit is ${MAX_VIDEO_SECONDS} s.`);
       update(job, { durationSeconds: Math.round(info.durationSeconds * 10) / 10, width: info.width, height: info.height }, `${info.codec} ${info.width}×${info.height}, ${info.durationSeconds.toFixed(1)} s`);
 
-      const interval = Math.max(MIN_INTERVAL_SECONDS, info.durationSeconds / MAX_FRAMES);
-      const timestamps = sampleTimestamps(info.durationSeconds, interval, MAX_FRAMES);
+      const interval = videoSampleInterval(info.durationSeconds);
+      const timestamps = sampleTimestamps(info.durationSeconds, interval, MAX_VIDEO_FRAMES);
       update(job, { stage: "extracting", progress: 8 }, `Extracting ${timestamps.length} frames, one every ${interval.toFixed(1)} s`);
       let referenceJpegBase64: string | undefined;
       const anchor = job.request.anchor;

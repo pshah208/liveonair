@@ -114,7 +114,7 @@ export function renderPlayerFrame(
     }
   }
 
-  pill(ctx, "PLAYER CAM · MATCHLENS", 20 * unit, 20 * unit, 13 * unit, "rgba(9, 9, 11, 0.78)", palette.accentText);
+  pill(ctx, "PLAYER CAM · Live on Air", 20 * unit, 20 * unit, 13 * unit, "rgba(9, 9, 11, 0.78)", palette.accentText);
   if (!frame) return;
 
   const chip = `MOMENT ${frame.index + 1} OF ${frame.total} · ${ACTION_LABEL[frame.moment.action].toUpperCase()}`;

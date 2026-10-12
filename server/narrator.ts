@@ -26,7 +26,9 @@ import type {
   StoryCard,
   TeamId,
 } from "../shared/types.js";
+import type { Storyline } from "../shared/platform.js";
 import { HttpError } from "./validation.js";
+import { groundingProblems } from "./spokenGuard.js";
 
 type ModelUsage = { inputTokens: number; outputTokens: number };
 
@@ -47,7 +49,7 @@ type CompletionResult = {
   assistantMessage: ChatMessage;
 };
 
-type CompletionClient = {
+export type CompletionClient = {
   createChatCompletion(args: {
     messages: ChatMessage[];
     tools?: unknown[];
@@ -62,7 +64,75 @@ type CompletionClient = {
 type NarrationContext = {
   requestId: string;
   fixture?: MatchFixture;
+  /** Live desk storylines; approved ones must reach the recap. */
+  storylines?: Storyline[];
 };
+
+/** A moment the recap may not leave out: every red card and every producer-approved storyline. */
+export type KeyMoment = {
+  kind: "red_card" | "approved_storyline";
+  minute: number;
+  text: string;
+  english: string;
+  playerNames: string[];
+};
+
+export function collectKeyMoments(
+  ledger: EvidenceLedger,
+  storylines: Storyline[],
+  fixture: MatchFixture | undefined,
+  language: Language,
+): KeyMoment[] {
+  const moments: KeyMoment[] = [];
+  for (const event of Object.values(ledger.eventIndex)) {
+    if (event.type !== "red_card") continue;
+    const fact = ledger.facts[`event:${event.id}`];
+    if (!fact) continue;
+    moments.push({
+      kind: "red_card",
+      minute: event.minute,
+      text: fact.text[language],
+      english: fact.text.en,
+      playerNames: namedPlayers(fixture, [event.playerId]),
+    });
+  }
+  for (const storyline of storylines) {
+    if (storyline.status !== "approved") continue;
+    const triggers = storyline.triggerEventIds.map((id) => ledger.eventIndex[id]);
+    // A rescinded or not-yet-played trigger is absent from the ledger, so its storyline cannot be recapped.
+    if (triggers.length === 0 || triggers.some((event) => !event)) continue;
+    const english = storyline.onAirLine.en?.trim() || storyline.headline.en?.trim();
+    if (!english) continue;
+    moments.push({
+      kind: "approved_storyline",
+      minute: storyline.triggerMinute,
+      text: storyline.onAirLine[language]?.trim() || storyline.headline[language]?.trim() || english,
+      english,
+      playerNames: namedPlayers(fixture, triggers.map((event) => event!.playerId)),
+    });
+  }
+  return moments.sort((left, right) => left.minute - right.minute);
+}
+
+function namedPlayers(fixture: MatchFixture | undefined, playerIds: string[]): string[] {
+  const players = fixture ? [...fixture.home.players, ...fixture.away.players] : [];
+  return [...new Set(playerIds.map((id) => players.find((player) => player.id === id)?.name).filter((name): name is string => Boolean(name)))];
+}
+
+/** Moments whose player the written recap never names. */
+export function missingKeyMoments(script: string, moments: KeyMoment[]): KeyMoment[] {
+  const haystack = script.toLocaleLowerCase();
+  return moments.filter((moment) => moment.playerNames.length > 0
+    && !moment.playerNames.some((name) => haystack.includes(name.toLocaleLowerCase())));
+}
+
+function storylineSignature(storylines: Storyline[] | undefined): string {
+  return (storylines ?? [])
+    .filter((storyline) => storyline.status === "approved")
+    .map((storyline) => `${storyline.id}@${storyline.version}`)
+    .sort()
+    .join(",") || "-";
+}
 
 export interface Narrator {
   health(): AppHealth["ai"];
@@ -180,7 +250,7 @@ function inferAuthentication(endpoint?: string, apiKey?: string): AppHealth["ai"
   return apiKey ? "api_key" : "managed_identity_or_cli";
 }
 
-function parseJsonWithSchema<T>(value: string, label: string, schema: z.ZodType<T>): T {
+export function parseJsonWithSchema<T>(value: string, label: string, schema: z.ZodType<T>): T {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -331,7 +401,7 @@ function createLruCache(maxEntries: number, ttlMs: number, now: () => number) {
   };
 }
 
-function createBudget(maxRequestsPerHour: number, maxConcurrent: number, now: () => number) {
+export function createBudget(maxRequestsPerHour: number, maxConcurrent: number, now: () => number) {
   const issuedAt: number[] = [];
   let inFlight = 0;
 
@@ -643,7 +713,7 @@ export function validateGroundedNarrativeDraft(
   }
 }
 
-function createNarrativeCacheKey(request: NarrativeRequest, snapshot: MatchSnapshot): string {
+function createNarrativeCacheKey(request: NarrativeRequest, snapshot: MatchSnapshot, storylines?: Storyline[]): string {
   return [
     snapshot.fixtureId,
     snapshot.stateVersion,
@@ -654,6 +724,7 @@ function createNarrativeCacheKey(request: NarrativeRequest, snapshot: MatchSnaps
     request.favoritePlayerId ?? "-",
     String(request.atSecond),
     request.correction ? "1" : "0",
+    storylineSignature(storylines),
   ].join("|");
 }
 
@@ -840,7 +911,7 @@ function isRetryableError(error: unknown): boolean {
   return metadata?.retryable === true;
 }
 
-async function completeWithSingleRetry(
+export async function completeWithSingleRetry(
   client: CompletionClient,
   args: Parameters<CompletionClient["createChatCompletion"]>[0],
   deadline: number,
@@ -1036,7 +1107,7 @@ async function runAnalystStep(
     {
       role: "system",
       content: [
-        `You are the MatchLens analyst for ${MODEL_LABEL}.`,
+        `You are the Live on Air analyst for ${MODEL_LABEL}.`,
         `Call get_match_state and at least one supporting tool (get_story_evidence or query_events) before returning final JSON.`,
         `Only choose 1-${MAX_FACTS} selectedFactIds from approvedFactIds returned by the tools you actually called.`,
         "Set focusStoryId to null if no single story is the focus. Otherwise it must be a returned story ID whose story fact is also selected.",
@@ -1168,7 +1239,7 @@ async function runProducerStep(
       {
         role: "system",
         content: [
-          `You are the MatchLens producer for ${MODEL_LABEL}.`,
+          `You are the Live on Air producer for ${MODEL_LABEL}.`,
           `Choose 1-${MAX_FACTS} orderedFactIds only from the provided selectedFactIds.`,
           `Accepted titleMode values: ${titleModeValues.join(", ")}.`,
           `Accepted emphasis values: ${emphasisValues.join(", ")}.`,
@@ -1219,8 +1290,128 @@ async function runProducerStep(
   };
 }
 
+const LANGUAGE_NAME: Record<Language, string> = { en: "British English", es: "Spanish (Spain)", fr: "French (France)" };
+const WRITER_FLOW_TYPES = new Set(["goal", "red_card", "yellow_card", "shot", "save"]);
+const writerSchema = z.object({
+  title: z.string().trim().min(3).max(140),
+  script: z.string().trim().min(120).max(1_600),
+}).strict();
+
+function describeMatchFlow(ledger: EvidenceLedger, fixture: MatchFixture | undefined) {
+  const flow = Object.values(ledger.eventIndex)
+    .filter((event) => WRITER_FLOW_TYPES.has(event.type))
+    .filter((event) => event.type !== "shot" || (event.xg ?? 0) >= 0.2)
+    .sort((left, right) => toSecond(left) - toSecond(right));
+  // Goals and red cards always fit in the flow; chances, saves and bookings fill the remaining slots.
+  const decisive = flow.filter((event) => event.type === "goal" || event.type === "red_card");
+  const rest = flow.filter((event) => event.type !== "goal" && event.type !== "red_card").slice(0, Math.max(0, 24 - decisive.length));
+  return [...decisive, ...rest]
+    .sort((left, right) => toSecond(left) - toSecond(right))
+    .map((event) => ({
+      minute: event.minute,
+      type: event.type,
+      player: resolvePlayerName(fixture, event.playerId),
+      team: resolveTeamName("en", fixture, event.teamId),
+      outcome: event.outcome,
+      chanceQuality: event.xg === undefined ? undefined : event.xg >= 0.35 ? "big chance" : "half chance",
+    }));
+}
+
+/**
+ * Turns the approved, ordered facts into a flowing match report. The deterministic script stays the
+ * fallback, and claims are unchanged, so every sentence remains traceable to evidence.
+ */
+async function runWriterStep(
+  client: CompletionClient,
+  request: NarrativeRequest,
+  snapshot: MatchSnapshot,
+  ledger: EvidenceLedger,
+  orderedFacts: LedgerFact[],
+  emphasis: ProducerPlan["emphasis"],
+  fixture: MatchFixture | undefined,
+  keyMoments: KeyMoment[],
+  requestId: string,
+  deadline: number,
+): Promise<{ draft?: { title: string; script: string }; usage: ModelUsage; problem?: string }> {
+  const fullTime = snapshot.atSecond >= (fixture?.durationSeconds ?? 5400);
+  const context = {
+    language: request.language,
+    persona: request.persona,
+    emphasis,
+    status: fullTime ? "full time" : `in play, ${Math.floor(snapshot.atSecond / 60)} minutes played`,
+    home: fixture?.home.name ?? localize("home_side", "en"),
+    away: fixture?.away.name ?? localize("away_side", "en"),
+    score: snapshot.score,
+    approvedFacts: orderedFacts.map((fact) => ({ kind: fact.kind, text: fact.text[request.language], english: fact.text.en })),
+    mustMention: keyMoments.map((moment) => ({ kind: moment.kind, minute: moment.minute, text: moment.text, english: moment.english })),
+    matchFlow: describeMatchFlow(ledger, fixture),
+  };
+  const usage = createUsage();
+  try {
+    const completion = await completeWithSingleRetry(client, {
+      messages: [
+        {
+          role: "system",
+          content: [
+            `You are the Live on Air match reporter for ${MODEL_LABEL}.`,
+            `Write a match recap in natural, idiomatic ${LANGUAGE_NAME[request.language]}, as a seasoned football journalist or broadcaster would, never as a translated list of tagged events.`,
+            "Tell the story of the match: how it unfolded, the turning points, momentum and what the result means, in 4-7 flowing sentences of connected prose.",
+            request.persona === "casual" ? "The audience is casual fans: warm, vivid and jargon-free." : "The audience is analysts: precise and insightful, but still readable prose.",
+            "Use ONLY the approved facts and match flow provided. Never invent players, assists, minutes, scores, statistics, injuries, records, quotes, weather or crowd details, and do not speculate about league position or future fixtures.",
+            "Every item in mustMention is a red card or a producer-approved storyline: the recap MUST cover each one, naming the player involved.",
+            "Every number you write must appear in the input. Write minutes as digits. Do not mention xG values, IDs or clock seconds.",
+            "Translate any English source text naturally; keep team and player names exactly as given.",
+            "Return strict JSON with keys title (a short headline in the same language) and script.",
+          ].join(" "),
+        },
+        { role: "user", content: JSON.stringify(context) },
+      ],
+      temperature: 0.6,
+      maxTokens: 700,
+      timeoutMs: Math.min(15_000, getRemainingTime(deadline)),
+      requestId,
+      responseSchema: {
+        name: "matchlens_writer",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["title", "script"],
+          properties: { title: { type: "string" }, script: { type: "string" } },
+        },
+      },
+    }, deadline);
+    addUsage(usage, completion.usage);
+    const draft = parseJsonWithSchema(completion.text, "writer", writerSchema);
+    // Broadcasters round 28:49 up to "the 29th minute", so the next minute is also supported.
+    const roundedMinutes = Object.values(ledger.eventIndex).map((event) => event.minute + 1).join(" ");
+    const problems = groundingProblems(`${draft.title} ${draft.script}`, `${JSON.stringify(context)} ${roundedMinutes}`, fixture);
+    const missing = missingKeyMoments(draft.script, keyMoments);
+    if (missing.length > 0) {
+      problems.push(`left out key moments: ${missing.map((moment) => `${moment.minute}' ${moment.kind.replace("_", " ")}`).join(", ")}`);
+    }
+    if (problems.length > 0) {
+      return { usage, problem: problems.join("; ") };
+    }
+    return { draft, usage };
+  } catch (error) {
+    return { usage, problem: error instanceof Error ? error.message : "writer failed" };
+  }
+}
+
 function supportsMomentumTitle(fact: LedgerFact): boolean {
   return fact.kind === "story" && (fact.storyKind === "pressure" || fact.storyKind === "rhythm");
+}
+
+/** The fact-by-fact fallback already lists red cards; this adds approved storylines it would otherwise drop. */
+export function appendKeyMoments(script: string, moments: KeyMoment[]): string {
+  let result = script;
+  for (const moment of moments) {
+    if (moment.kind !== "approved_storyline" || result.includes(moment.text)) continue;
+    const next = `${result} ${moment.text}`;
+    if (next.length > 1_900) break;
+    result = next;
+  }
+  return result;
 }
 
 function createTitle(orderedFacts: LedgerFact[], plan: ProducerPlan, request: NarrativeRequest, ledger: EvidenceLedger): string {
@@ -1342,7 +1533,7 @@ class ConfiguredNarrator implements Narrator {
     }
 
     const startedAt = this.now();
-    const cacheKey = createNarrativeCacheKey(request, snapshot);
+    const cacheKey = createNarrativeCacheKey(request, snapshot, context.storylines);
     const cached = this.cache.get(cacheKey);
     if (cached) {
       cached.cached = true;
@@ -1391,6 +1582,32 @@ class ConfiguredNarrator implements Narrator {
         detail: "Validated approved evidence IDs, active windows, and bounded text output.",
         durationMs: this.now() - guardStarted,
       });
+
+      if (request.format === "recap") {
+        const writerStarted = this.now();
+        const keyMoments = collectKeyMoments(ledger, context.storylines ?? [], context.fixture, request.language);
+        const orderedFacts = buildRenderableFactIds(request, ledger, producer.plan, analyst.plan)
+          .map((factId) => ledger.facts[factId])
+          .filter((fact): fact is LedgerFact => Boolean(fact));
+        const writer = await runWriterStep(
+          this.client, request, snapshot, ledger, orderedFacts, producer.plan.emphasis, context.fixture, keyMoments, context.requestId, deadline,
+        );
+        addUsage(usage, writer.usage);
+        if (writer.draft) {
+          narrative.title = writer.draft.title;
+          narrative.script = writer.draft.script;
+        } else {
+          narrative.script = appendKeyMoments(narrative.script, keyMoments);
+        }
+        trace.push({
+          role: "writer",
+          status: writer.draft ? "complete" : "rejected",
+          detail: writer.draft
+            ? "Wrote the recap as match-report prose; every number and player checked against approved facts."
+            : `Kept the fact-by-fact recap: ${(writer.problem ?? "writer unavailable").slice(0, 160)}.`,
+          durationMs: this.now() - writerStarted,
+        });
+      }
 
       const response: NarrativeResponse = {
         title: narrative.title,
@@ -1466,3 +1683,16 @@ export function createNarrator(options: NarratorOptions = {}): Narrator {
 export function hashInlineScript(script: string): string {
   return `sha256-${createHash("sha256").update(script, "utf8").digest("base64")}`;
 }
+
+/** The narrator's Azure OpenAI client for other bounded writers (e.g. highlights commentary). */
+export function createCompletionClientFromEnv(env: NodeJS.ProcessEnv = process.env): { client: CompletionClient; deployment: string } | undefined {
+  const endpoint = env.AZURE_OPENAI_ENDPOINT;
+  const deployment = env.AZURE_OPENAI_DEPLOYMENT;
+  if (!endpoint || !deployment) return undefined;
+  return {
+    client: createAzureCompletionClient({ endpoint, deployment, apiVersion: env.AZURE_OPENAI_API_VERSION ?? "2024-10-21", apiKey: env.AZURE_OPENAI_API_KEY }),
+    deployment,
+  };
+}
+
+export { getRemainingTime, LANGUAGE_NAME };

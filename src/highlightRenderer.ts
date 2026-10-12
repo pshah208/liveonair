@@ -25,20 +25,26 @@ export interface ReelTimeline {
   clipStarts: number[];
 }
 
-export function buildTimeline(reel: HighlightReel, keySeconds: Map<string, number>): ReelTimeline {
+/**
+ * `voiceSeconds` (keyed "intro", "outro" or clip id) stretches segments so each commentary line
+ * finishes before the reel moves on.
+ */
+export function buildTimeline(reel: HighlightReel, keySeconds: Map<string, number>, voiceSeconds: Map<string, number> = new Map()): ReelTimeline {
   const segments: Segment[] = [];
   const clipStarts: number[] = [];
+  const voice = (key: string) => (voiceSeconds.get(key) ?? 0) + 0.5;
   let cursor = 0;
-  segments.push({ kind: "intro", start: cursor, end: (cursor += INTRO_SECONDS) });
+  segments.push({ kind: "intro", start: cursor, end: (cursor += Math.max(INTRO_SECONDS, voice("intro"))) });
   reel.clips.forEach((clip, index) => {
     clipStarts.push(cursor);
     segments.push({ kind: "card", start: cursor, end: (cursor += CARD_SECONDS), clip, index });
     const keyAt = keyEventSecond(clip, keySeconds);
     const playSeconds= Math.max(1.5, (keyAt - clip.startSecond) / PLAYBACK_RATE);
     segments.push({ kind: "play", start: cursor, end: (cursor += playSeconds), clip, index });
-    segments.push({ kind: "hold", start: cursor, end: (cursor += HOLD_SECONDS), clip, index });
+    const holdSeconds = Math.max(HOLD_SECONDS, voice(clip.id) - CARD_SECONDS - playSeconds);
+    segments.push({ kind: "hold", start: cursor, end: (cursor += holdSeconds), clip, index });
   });
-  segments.push({ kind: "outro", start: cursor, end: (cursor += OUTRO_SECONDS) });
+  segments.push({ kind: "outro", start: cursor, end: (cursor += Math.max(OUTRO_SECONDS, voice("outro"))) });
   return { segments, duration: cursor, clipStarts };
 }
 
@@ -94,7 +100,7 @@ export interface ReelModel {
   palette: Palette;
 }
 
-export function createReelModel(fixture: MatchFixture, reel: HighlightReel, palette: Palette): ReelModel {
+export function createReelModel(fixture: MatchFixture, reel: HighlightReel, palette: Palette, voiceSeconds?: Map<string, number>): ReelModel {
   const events = new Map(latestRevisions(fixture.events).map((event) => [event.id, event]));
   const keySeconds = new Map<string, number>();
   for (const clip of reel.clips) {
@@ -102,7 +108,7 @@ export function createReelModel(fixture: MatchFixture, reel: HighlightReel, pale
     if (key) keySeconds.set(clip.keyEventId, eventSecondOf(key));
   }
   const players = new Map([...fixture.home.players, ...fixture.away.players].map((player) => [player.id, player.name]));
-  return { fixture, reel, timeline: buildTimeline(reel, keySeconds), events, players, keySeconds, palette };
+  return { fixture, reel, timeline: buildTimeline(reel, keySeconds, voiceSeconds), events, players, keySeconds, palette };
 }
 
 // ------------------------------------------------------------------ geometry
@@ -246,7 +252,7 @@ function drawScorebug(ctx: CanvasRenderingContext2D, model: ReelModel, second: n
 
 function drawBrand(ctx: CanvasRenderingContext2D, model: ReelModel, subtitle = REEL_TEXT[model.reel.language].dataReel) {
   const { palette } = model;
-  drawText(ctx, "MatchLens", REEL_WIDTH - 24, 46, 24, palette.text, 700, "right");
+  drawText(ctx, "Live on Air", REEL_WIDTH - 24, 46, 24, palette.text, 700, "right");
   drawText(ctx, subtitle, REEL_WIDTH - 24, 68, 12, palette.textMuted, 700, "right");
 }
 
@@ -454,7 +460,7 @@ function drawMomentChip(ctx: CanvasRenderingContext2D, model: ReelModel, frame: 
   drawText(ctx, label, REEL_WIDTH / 2, 50, 14, palette.accentText, 700, "center");
 }
 
-/** Composites licensed or self-recorded footage with MatchLens overlays driven by the synthetic events. */
+/** Composites licensed or self-recorded footage with Live on Air overlays driven by the synthetic events. */
 export function renderFootageFrame(ctx: CanvasRenderingContext2D, model: ReelModel, video: HTMLVideoElement | null, frame: FootageFrame | null) {
   const { palette } = model;
   ctx.fillStyle = palette.bg;

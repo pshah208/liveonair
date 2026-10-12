@@ -1,4 +1,4 @@
-// Shared contracts for MatchLens v2: synthetic archive, MatchLab, live feed and Storyline Desk.
+// Shared contracts for Live on Air v2: synthetic archive, MatchLab, live feed and Storyline Desk.
 // Browser and server both import these types. Keep them serialisable JSON.
 import type {
   AgentStep,

@@ -6,7 +6,7 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 
 import { runCommand, type RunCommand } from "../video/ffmpeg.js";
-import { MAX_VIDEO_SECONDS } from "../video/worker.js";
+import { MAX_VIDEO_SECONDS } from "../../shared/video.js";
 import type { PlayerCamWorker } from "../video/playerWorker.js";
 import { HttpError } from "../validation.js";
 import { conflictTo409, createFfmpegCheck, jobIdSchema, kitSchema, nameSchema, parseOr400, uploadExtension, writeUpload } from "./video.js";

@@ -11,7 +11,7 @@ const app = createApp({ platform });
 const server = app.listen(port, "0.0.0.0", () => {
   const transport = platform.live.status();
   console.log(JSON.stringify({
-    message: "MatchLens backend listening",
+    message: "Live on Air backend listening",
     port,
     liveTransport: transport.transport,
     liveTransportConfigured: transport.transportConfigured,

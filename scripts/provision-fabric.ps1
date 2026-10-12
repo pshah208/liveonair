@@ -407,7 +407,7 @@ function Get-OrCreateEventstream {
   $createUri = "https://api.fabric.microsoft.com/v1/workspaces/$WorkspaceId/items"
   $createBody = @{
     displayName = $EventstreamName
-    description = 'Custom endpoint in, Eventhouse + custom endpoint out for MatchLens live envelopes.'
+    description = 'Custom endpoint in, Eventhouse + custom endpoint out for Live on Air live envelopes.'
     type        = 'Eventstream'
     definition  = @{
       parts = $parts
@@ -589,7 +589,7 @@ function Try-CreateDataAgent {
       payload     = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(@'
 {
   "$schema": "1.0.0",
-  "aiInstructions": "Answer producer questions about the synthetic MatchLens archive and live events using the KQL functions in this database; never invent facts."
+  "aiInstructions": "Answer producer questions about the synthetic Live on Air archive and live events using the KQL functions in this database; never invent facts."
 }
 '@))
       payloadType = 'InlineBase64'
@@ -602,7 +602,7 @@ function Try-CreateDataAgent {
         workspaceId            = $WorkspaceId
         displayName            = $KqlDatabase.displayName
         type                   = 'kusto'
-        userDescription        = 'Synthetic MatchLens archive plus live-event tables and helper functions.'
+        userDescription        = 'Synthetic Live on Air archive plus live-event tables and helper functions.'
         dataSourceInstructions = 'Prefer the helper functions LiveTimeline, LiveScore, HeadToHead, PlayerCareer, FamilyLinks, and FinalsBetween before writing raw KQL.'
       } | ConvertTo-Json -Depth 20)))
       payloadType = 'InlineBase64'
@@ -611,7 +611,7 @@ function Try-CreateDataAgent {
 
   $body = @{
     displayName = 'matchlens-producer-desk'
-    description = 'Producer-facing Fabric data agent for MatchLens synthetic archive and live events.'
+    description = 'Producer-facing Fabric data agent for Live on Air synthetic archive and live events.'
     definition  = @{
       parts = $definitionParts
     }
@@ -657,7 +657,7 @@ The public REST API didn't complete the ${bt}matchlens-producer-desk${bt} data a
 3. Name it ${bt}matchlens-producer-desk${bt}.
 4. Add the KQL database ${bt}$($KqlDatabase.displayName)${bt} as the source.
 5. Keep the helper tables selected and use this instruction text:
-   ${bt}Answer producer questions about the synthetic MatchLens archive and live events using the KQL functions; never invent facts.${bt}
+   ${bt}Answer producer questions about the synthetic Live on Air archive and live events using the KQL functions; never invent facts.${bt}
 6. Publish the agent when you're satisfied with the draft.
 "@
   }
@@ -671,9 +671,13 @@ The public REST API didn't complete the ${bt}matchlens-producer-desk${bt} data a
     }
 
   $content = @"
-# MatchLens Live Fabric real-time layer
+# Live on Air Fabric real-time layer
 
 This workspace was provisioned with ${bt}scripts/provision-fabric.ps1${bt}.
+
+Live on Air is the product brand. The legacy ${bt}MatchLens Live${bt} workspace name and all
+${bt}matchlens-*${bt} resource names, IDs, URLs and configuration paths below are intentionally
+retained; the rebrand does not rename or reprovision infrastructure.
 
 ## Provisioned items
 

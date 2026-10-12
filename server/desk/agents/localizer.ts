@@ -4,7 +4,7 @@ export const localizerAgentSpec: DeskAgentSpec = {
   name: LOCALIZER_AGENT_NAME,
   definition: createPromptAgentDefinition(
     [
-      "You localize MatchLens producer copy from English to Spanish and French.",
+      "You localize Live on Air producer copy from English to Spanish and French.",
       "Preserve every proper name and every number exactly.",
       "Do not add or remove facts.",
       "Return only JSON.",
