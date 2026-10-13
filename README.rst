@@ -46,6 +46,11 @@ with live health.
   shown in the broadcast bar.
 * Follow the scorebug, animated pitch, live stats, notable-event feed and match-intelligence
   cards. Selecting a card highlights its evidence on the pitch.
+* The live board has two views. **Ball movement** (default) animates the ball through the latest
+  events on one pitch frame (home attacks left to right, away coordinates mirrored): solid arrows
+  for passes, crosses and shots, dotted lines for the inferred route between logged events, shots
+  ending at the goal line or in the net, and **Replay sequence** to watch it again. **Action areas**
+  shows where the latest events happened. Video-derived matches use camera-view positions.
 * Review the storyline queue. Every storyline shows its verified claims, sources and agent trace.
   Approve, edit or reject it; nothing goes on air without approval.
 * Preview the on-air lower-third in English, Spanish, French or Portuguese and export it as timed JSON.

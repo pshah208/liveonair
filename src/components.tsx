@@ -121,50 +121,7 @@ export function Scorebug({ home, away, score, clock }: { home: string; away: str
 
 // ------------------------------------------------------------------ pitch
 
-type PitchProps = { fixture: MatchFixture; events: MatchEvent[]; highlightIds?: string[] };
-export function Pitch({ fixture, events, highlightIds }: PitchProps) {
-  const shown = useMemo(() => {
-    if (highlightIds && highlightIds.length > 0) {
-      const ids = new Set(highlightIds);
-      const linked = latestRevisions(fixture.events).filter((event) => ids.has(event.id));
-      if (linked.length > 0) return linked.slice(-10);
-    }
-    return events.slice(-8);
-  }, [events, fixture.events, highlightIds]);
-  const ordered = shown.slice().sort((a, b) => eventSecond(a) - eventSecond(b));
-  const latest = ordered[ordered.length - 1];
-  return (
-    <figure className="pitch-figure">
-      <svg viewBox="0 0 100 68" className="pitch" role="img" aria-label={`${fixture.title} pitch map`}>
-        <rect x="1" y="1" width="98" height="66" rx="3" fill="var(--cp-surface-soft)" stroke="var(--cp-border-strong)" strokeWidth="0.8" />
-        <path d="M50 1v66" stroke="var(--cp-border)" strokeWidth="0.6" />
-        <circle cx="50" cy="34" r="9" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-        <rect x="1" y="18" width="16" height="32" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-        <rect x="83" y="18" width="16" height="32" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-        <rect x="1" y="26" width="5" height="16" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-        <rect x="94" y="26" width="5" height="16" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-        {ordered.map((event, index) => {
-          const active = event.id === latest?.id;
-          const x = event.x;
-          const y = (event.y / 100) * 68;
-          const hasEnd = event.endX !== undefined && event.endY !== undefined;
-          const opacity = event.rescinded ? 0.3 : 0.45 + (0.55 * (index + 1)) / ordered.length;
-          return (
-            <g key={`${event.id}-${event.revision}`} opacity={opacity}>
-              {hasEnd && <line x1={x} y1={y} x2={event.endX} y2={((event.endY ?? 0) / 100) * 68} stroke={teamTint(event.teamId)} strokeWidth={active ? 1 : 0.7} strokeDasharray={event.type === "pass" || event.type === "corner" ? "2 1.6" : undefined} />}
-              <circle cx={x} cy={y} r={active ? 1.9 : 1.3} fill={teamTint(event.teamId)} className={active ? "pitch-pulse" : undefined} />
-            </g>
-          );
-        })}
-      </svg>
-      <figcaption className="pitch-legend">
-        <span><i className="swatch swatch--home" />{fixture.home.shortName} attacks →</span>
-        <span>← {fixture.away.shortName} <i className="swatch swatch--away" /></span>
-        <span className="subtle-text">{latest ? `${latest.minute}' ${labelize(latest.type)}` : "Awaiting feed"}</span>
-      </figcaption>
-    </figure>
-  );
-}
+export { Pitch } from "./LivePitch.js";
 
 // ------------------------------------------------------------------ stats + intelligence
 
