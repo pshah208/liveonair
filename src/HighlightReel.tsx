@@ -249,7 +249,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
         <p className="lede">
           Live on Air ranks every verified event and cuts a reel around them. Every goal, red card, ruled-out goal and
           producer-approved storyline is always included, captioned with the approved copy. This match is synthetic, so the reel is drawn from the event data.{" "}
-          <button type="button" className="link-button" onClick={onOpenVideoLab}>Process a clip in Video lab</button> to get a recap cut from real footage.
+          <button type="button" className="link-button" onClick={onOpenVideoLab}>Tag moments in Video lab</button> to cut a pundit reel from your own footage.
         </p>
       )}
 
@@ -297,7 +297,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
           </ol>
         </div>
       ) : (
-        <div className="empty-state">{source === "footage" ? "No recap moments in this clip yet. Stream it to the live desk, or tag a missed goal or chance in Video lab." : "No highlight moments yet. Goals, big chances and corrections will appear here as the match plays."}</div>
+        <div className="empty-state">{source === "footage" ? "No recap moments in this clip yet. They appear as the live video analysis detects goals, cards and chances." : "No highlight moments yet. Goals, big chances and corrections will appear here as the match plays."}</div>
       )}
     </section>
   );

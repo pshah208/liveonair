@@ -20,7 +20,7 @@ function flow(health: AppHealth | null, desk: DeskHealth | null, live: LiveStatu
   return [
     {
       icon: "⚽", title: "Sources", service: "Feed or footage", line: "Pick one input.",
-      chips: ["MatchLab feed", "Live video", "Video lab clip"],
+      chips: ["MatchLab feed", "Live video"],
       state: running ? "ok" : "idle", stateLabel: running ? `Live · ${live?.eventsReceived ?? 0} events` : live?.state === "finished" ? "Full time" : "Idle"
     },
     {
@@ -32,7 +32,7 @@ function flow(health: AppHealth | null, desk: DeskHealth | null, live: LiveStatu
       state: health ? "ok" : "warn", stateLabel: health ? `API v${health.version}` : "Checking"
     },
     {
-      icon: "🤖", title: "Storyline agents", service: "Microsoft Foundry", line: "Research, draft, fact-check, translate.",
+      icon: "🤖", title: "Storyline agents", service: "Microsoft Foundry", line: "Storylines plus a player-analyst note.",
       state: desk?.mode === "foundry-agents" ? "ok" : "warn", stateLabel: desk?.mode === "foundry-agents" ? `${desk.agents.length} agents` : "Not configured"
     },
     {
@@ -50,7 +50,8 @@ function flow(health: AppHealth | null, desk: DeskHealth | null, live: LiveStatu
 const DESKS = [
   { icon: "🎙️", title: "Live desk", chips: ["Live board", "Storyline queue", "Corrections"], line: "Run the match, approve storylines." },
   { icon: "🎬", title: "Recap & highlights", chips: ["Auto-cut reel", "Written recap", "EN · ES · FR · PT"], line: "Every goal, red card and approved story." },
-  { icon: "🔍", title: "Video lab", chips: ["Mark moments", "AI detection", "Send to desk"], line: "Pundit review that feeds the live desk." },
+  { icon: "📈", title: "Player analysis", chips: ["Heat maps", "Impact rating", "Analyst note"], line: "Every player's numbers from the feed." },
+  { icon: "🔍", title: "Video lab", chips: ["Hudl-style tags", "Notes", "Pundit reel"], line: "Manual tagging cut into highlights." },
   { icon: "🎯", title: "Player cam", chips: ["One player", "Spotlight", "Vertical cut"], line: "A personal reel for any player." }
 ];
 
@@ -64,7 +65,7 @@ const GUARDRAILS = [
 
 const HOSTING = ["Container Apps", "Container Registry", "Managed identity", "Fabric Eventstream", "Eventhouse (KQL)", "Foundry agents", "AI Search", "Azure AI Speech", "Bicep", "GitHub Actions"];
 
-const NEXT = ["Licensed data feed", "Entra ID roles", "Multi-match state", "Graphics-engine output", "Blob + Service Bus video jobs"];
+const NEXT = ["Player tracking feed (distance, sprints)", "Licensed data feed", "Entra ID roles", "Multi-match state", "Graphics-engine output"];
 
 export function InfrastructurePanel({ open, onToggle, health, desk, live }: InfrastructurePanelProps) {
   return (
@@ -92,7 +93,7 @@ export function InfrastructurePanel({ open, onToggle, health, desk, live }: Infr
           </ol>
 
           <div className="how-section">
-            <h3 className="how-section__title">Four desks</h3>
+            <h3 className="how-section__title">Five desks</h3>
             <div className="how-desks">
               {DESKS.map((item) => (
                 <article className="how-desk" key={item.title}>

@@ -40,7 +40,8 @@ function useBallMotion() {
     const started = performance.now();
     setPlaying(true);
     const step = (now: number) => {
-      const progress = Math.min(1, (now - started) / total);
+      // The first frame's timestamp can precede the start time, so clamp progress to 0–1.
+      const progress = Math.min(1, Math.max(0, (now - started) / total));
       const scaled = progress * (route.length - 1);
       const index = Math.min(route.length - 2, Math.floor(scaled));
       const local = scaled - index;

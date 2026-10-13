@@ -229,7 +229,7 @@ export async function createWithRateLimitRetry(
   }
 }
 
-async function invokeAgentJson<T>(
+export async function invokeAgentJson<T>(
   client: OpenAI,
   agentName: string,
   schemaName: string,

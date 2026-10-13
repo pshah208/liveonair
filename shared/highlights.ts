@@ -14,6 +14,8 @@ export type HighlightKind = "goal" | "disallowed_goal" | "red_card" | "big_chanc
 export interface HighlightClip {
   id: string;
   kind: HighlightKind;
+  /** Display label that overrides the kind's name, e.g. a Video Lab tag such as "Clearance". */
+  label?: string;
   keyEventId: string;
   /** Match-time window in seconds. */
   startSecond: number;

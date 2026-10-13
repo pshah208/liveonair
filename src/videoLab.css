@@ -877,92 +877,18 @@
 .video-lab-workbench [data-category="yellow_card"] { --vl-category: #eab308; }
 .video-lab-workbench [data-category="red_card"] { --vl-category: var(--vl-danger); }
 
-/* Workflow stepper and live-desk hand-off */
-.video-lab-workbench .vl-steps {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.video-lab-workbench .vl-step {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--vl-line);
-  border-radius: 8px;
-  background: var(--vl-paper);
-}
-.video-lab-workbench .vl-step > span:last-child { display: grid; gap: 2px; min-width: 0; }
-.video-lab-workbench .vl-step small { color: var(--vl-muted); font-size: 0.74rem; }
-.video-lab-workbench .vl-step.is-done { border-color: var(--vl-coach); background: var(--vl-wash); }
-.video-lab-workbench .vl-step-index {
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: 1px solid var(--vl-control-line);
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-.video-lab-workbench .vl-step.is-done .vl-step-index { border-color: var(--vl-coach); background: var(--vl-coach); color: var(--vl-bg); }
-
-.video-lab-workbench .vl-handoff {
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid var(--vl-line);
-  border-block-start: 3px solid var(--vl-coach);
-  background: var(--vl-paper);
-}
-.video-lab-workbench .vl-handoff-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-.video-lab-workbench .vl-handoff-card {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-  padding: 14px;
-  border: 1px solid var(--vl-line);
-  border-radius: 8px;
-  background: var(--vl-bg);
-}
-.video-lab-workbench .vl-handoff-card h4 { margin: 0; }
-.video-lab-workbench .vl-ok { color: var(--vl-coach); font-weight: 600; font-size: 0.85rem; }
-.video-lab-workbench .vl-live-pill { color: var(--vl-danger); font-weight: 700; font-size: 0.8rem; }
-.video-lab-workbench .vl-desk-list {
-  display: grid;
-  gap: 6px;
-  max-height: 220px;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-.video-lab-workbench .vl-desk-list > li {
-  display: grid;
-  gap: 2px;
-  padding: 6px 8px;
-  border-inline-start: 3px solid var(--vl-category, var(--vl-line));
-  background: var(--vl-paper);
-  font-size: 0.82rem;
-}
-.video-lab-workbench .vl-desk-list--sent > li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border-inline-start-color: var(--vl-coach);
-}
-
-@media (max-width: 960px) {
-  .video-lab-workbench .vl-steps,
-  .video-lab-workbench .vl-handoff-grid { grid-template-columns: minmax(0, 1fr); }
-}
+/* Hudl-style tag panel and highlight controls */
+.video-lab-workbench .vl-tag-panel { display: grid; gap: 8px; }
+.video-lab-workbench .vl-tag-groups { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--vl-line); }
+.video-lab-workbench .vl-tag-groups button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 10px; color: var(--vl-muted); font-weight: 600; }
+.video-lab-workbench .vl-tag-groups button.is-active { color: var(--vl-ink); border-bottom-color: var(--vl-coach); }
+.video-lab-workbench .vl-teams { margin-top: 4px; }
+.video-lab-workbench .vl-highlight-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--vl-coach); border-radius: 8px; background: var(--vl-wash); }
+.video-lab-workbench .vl-highlight-bar .vl-help { margin: 0; max-width: 60ch; }
+.video-lab-workbench .vl-clip-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.video-lab-workbench .vl-include { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--vl-muted); }
+.video-lab-workbench [data-category="clearance"], .video-lab-workbench [data-category="interception"], .video-lab-workbench [data-category="block"], .video-lab-workbench [data-category="ball_recovery"], .video-lab-workbench [data-category="aerial_duel"] { --vl-category: var(--vl-danger); }
+.video-lab-workbench [data-category="header"], .video-lab-workbench [data-category="key_pass"], .video-lab-workbench [data-category="assist"], .video-lab-workbench [data-category="cross"], .video-lab-workbench [data-category="through_ball"] { --vl-category: var(--vl-coach); }
+.video-lab-workbench [data-category="dribble"], .video-lab-workbench [data-category="carry"], .video-lab-workbench [data-category="run_in_behind"], .video-lab-workbench [data-category="overlap_run"], .video-lab-workbench [data-category="counter_attack"] { --vl-category: var(--vl-focus); }
+.video-lab-workbench [data-category="switch_of_play"], .video-lab-workbench [data-category="build_up"], .video-lab-workbench [data-category="turnover"] { --vl-category: var(--vl-home); }
+.video-lab-workbench [data-category="corner"], .video-lab-workbench [data-category="free_kick"], .video-lab-workbench [data-category="throw_in"], .video-lab-workbench [data-category="penalty"], .video-lab-workbench [data-category="offside"] { --vl-category: var(--vl-warning); }

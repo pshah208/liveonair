@@ -6,13 +6,14 @@ import type { MatchEvent } from "../shared/types.js";
 import { MAX_UPLOAD_BYTES, type VideoEventEvidence, type VideoJob } from "../shared/video.js";
 import {
   CATEGORIES,
+  CATEGORY_GROUPS,
   MAX_ANNOTATIONS,
   MAX_LAB_JSON_BYTES,
   annotationsCsv,
   defaultFilters,
   deriveStats,
-  deskTagFor,
-  deskTagSent,
+  labHighlightReel,
+  keyMomentSecond,
   filterAnnotations,
   labStorageKey,
   mergeAnnotations,
@@ -147,7 +148,9 @@ function csvRows(csv: string): string[][] {
 }
 
 test("video lab exposes exact categories, limits and independent default filters", () => {
-  assert.deepEqual(CATEGORIES, ["goal", "shot", "pass", "tackle", "pressing", "set_piece", "defensive_shape", "custom", "save", "foul", "yellow_card", "red_card"]);
+  assert.deepEqual(CATEGORIES.slice(0, 12), ["goal", "shot", "pass", "tackle", "pressing", "set_piece", "defensive_shape", "custom", "save", "foul", "yellow_card", "red_card"], "existing categories keep their order so saved reviews stay valid");
+  assert.ok(["clearance", "interception", "header", "run_in_behind", "offside"].every((category) => (CATEGORIES as readonly string[]).includes(category)));
+  assert.deepEqual(CATEGORY_GROUPS.flatMap((group) => group.categories).sort(), [...CATEGORIES].sort(), "every tag sits in exactly one panel");
   assert.equal(MAX_ANNOTATIONS, 200);
   assert.equal(MAX_LAB_JSON_BYTES, 1048576);
   const filters = defaultFilters(duration);
@@ -256,7 +259,7 @@ test("annotation strings, players, enums and ranges reject coercion and overflow
     invalidAnnotations([{ ...annotation(), players }]);
   }
   for (const [field, values] of Object.entries({
-    category: ["corner", "PASS", "", null, 1],
+    category: ["kickoff", "PASS", "", null, 1],
     team: ["all", "unknown", "HOME", null, 1],
     outcome: ["complete", "none", "", null, 1],
   })) {
@@ -319,7 +322,7 @@ test("filters enforce exact shape, enum values, string limits and half-open inte
     invalid.push(value);
   }
   for (const patch of [
-    { team: "unknown" }, { category: "corner" }, { source: "vision" },
+    { team: "unknown" }, { category: "kickoff" }, { source: "vision" },
     { player: "p".repeat(61) }, { query: "q".repeat(2001) }, { player: null }, { query: 1 },
     { from: -1 }, { to: duration + 0.1 }, { from: 10, to: 10 }, { from: 11, to: 10 },
     { from: NaN }, { to: Infinity }, { from: "0" }, { to: null },
@@ -833,17 +836,30 @@ test("suggestions stay bounded and fail closed on invalid evidence rather than m
   assert.throws(() => parseLab(null as unknown as string, source));
 });
 
-test("reviewed moments map to live-desk producer tags at the marked time", () => {
-  const preset = annotation({ category: "red_card", team: "away", title: "Late lunge — straight red!", players: ["#4", "Alex"], ...paddedRange(40, duration) });
-  const mapped = deskTagFor(preset, duration);
-  assert.ok("tag" in mapped);
-  assert.deepEqual(mapped.tag, { type: "red_card", team: "away", second: 40, shirtNumber: 4, note: "Late lunge straight red!" });
-  assert.equal(deskTagFor(annotation({ category: "set_piece" }), duration).hasOwnProperty("tag"), true);
-  assert.equal((deskTagFor(annotation({ category: "set_piece" }), duration) as { tag: { type: string } }).tag.type, "corner");
-  assert.ok("reason" in deskTagFor(annotation({ category: "pressing" }), duration));
-  assert.ok("reason" in deskTagFor(annotation({ category: "goal", team: "neutral" }), duration));
-  const clamped = deskTagFor(annotation({ category: "goal", inSeconds: 124, outSeconds: 125 }), 120);
-  assert.ok("tag" in clamped && clamped.tag.second === 120);
-  assert.equal(deskTagSent({ manualTags: [{ id: "a1b2c3d4", ...mapped.tag }] }, mapped.tag), true);
-  assert.equal(deskTagSent({ manualTags: [] }, mapped.tag), false);
+test("tagged moments become a footage highlight reel on the clip's own clock", () => {
+  const moments = [
+    annotation({ id: "late", category: "red_card", team: "away", title: "Straight red", players: ["#4 Dubois"], notes: "Lunge on the edge of the box", ...paddedRange(90, duration) }),
+    annotation({ id: "goal", category: "goal", team: "home", title: "Opener", players: ["#9 Ruiz"], notes: "", ...paddedRange(20, duration) }),
+    annotation({ id: "clear", category: "clearance", team: "neutral", title: "Header away", players: [], notes: "", ...paddedRange(50, duration) }),
+  ];
+  const { fixture, reel } = labHighlightReel(source, moments, { home: "Rivergate FC", away: "Northbridge" });
+  assert.deepEqual(reel.clips.map((clip) => clip.label), ["Goal", "Clearance", "Red card"], "clips follow the footage order");
+  assert.deepEqual(reel.clips.map((clip) => clip.kind), ["goal", "big_chance", "red_card"]);
+  const [goal, clearance, red] = reel.clips;
+  assert.equal(goal!.startSecond, 17);
+  assert.equal(goal!.keySecond, keyMomentSecond(moments[1]!));
+  assert.deepEqual(goal!.scoreAfter, { home: 1, away: 0 });
+  assert.equal(goal!.caption, "Opener", "title is the caption when there are no notes");
+  assert.equal(red!.caption, "Lunge on the edge of the box");
+  assert.match(red!.title, /Red card · #4 Dubois/u);
+  assert.equal(clearance!.teamId, "home");
+  assert.equal(fixture.home.shortName, "RF");
+  assert.equal(fixture.events.filter((event) => event.type === "goal").length, 1);
+  assert.equal(fixture.durationSeconds, Math.ceil(duration));
+  assert.equal(reel.totalMatchSeconds, 24);
+});
+
+test("an untagged-team goal does not change the reel score", () => {
+  const { reel } = labHighlightReel(source, [annotation({ category: "goal", team: "neutral", ...paddedRange(30, duration) })], { home: "", away: "" });
+  assert.deepEqual(reel.clips[0]!.scoreAfter, { home: 0, away: 0 });
 });

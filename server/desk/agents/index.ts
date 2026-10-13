@@ -22,3 +22,9 @@ export const DESK_AGENT_SPECS = [
   factCheckerAgentSpec,
   localizerAgentSpec,
 ];
+
+export { PLAYER_ANALYST_AGENT_NAME, playerAnalystAgentSpec } from "./player-analyst.js";
+import { playerAnalystAgentSpec } from "./player-analyst.js";
+
+/** Every Foundry agent the app uses, for provisioning: the storyline desk plus the player analyst. */
+export const ALL_AGENT_SPECS = [...DESK_AGENT_SPECS, playerAnalystAgentSpec];

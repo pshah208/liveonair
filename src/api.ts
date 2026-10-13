@@ -24,6 +24,17 @@ import type { HighlightCommentary, HighlightCommentaryRequest } from "../shared/
 import type { PlayerCamJob, PlayerCamJobSummary, PlayerCamRequest } from "../shared/playercam.js";
 import type { ProgressiveVideoBatch, ProgressiveVideoSession, StartProgressiveVideo } from "../shared/progressiveVideo.js";
 
+export type PlayerNote = {
+  playerId: string;
+  headline: string;
+  summary: string;
+  strengths: string[];
+  concerns: string[];
+  source: "foundry" | "rules";
+  agent?: string;
+  problem?: string;
+};
+
 type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
   allowNotFound?: boolean;
@@ -70,6 +81,7 @@ export const api = {
   narrate(body: NarrativeRequest, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/narrate", { method: "POST", body, signal }); },
   narrateLive(body: { persona: "analyst" | "casual"; language: Language }, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/live/narrate", { method: "POST", body, signal }); },
   highlightCommentary(body: HighlightCommentaryRequest, signal?: AbortSignal) { return requestJson<HighlightCommentary>("/api/live/highlights/commentary", { method: "POST", body, signal }); },
+  analysePlayer(playerId: string, language: Language, signal?: AbortSignal) { return requestJson<PlayerNote>(`/api/live/players/${encodeURIComponent(playerId)}/analysis`, { method: "POST", body: { language }, signal }); },
   getArchiveSummary(signal?: AbortSignal) { return requestJson<ArchiveSummary>("/api/archive/summary", { signal }); },
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },

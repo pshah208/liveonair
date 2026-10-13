@@ -98,6 +98,8 @@ export interface ReelModel {
   players: Map<string, string>;
   keySeconds: Map<string, number>;
   palette: Palette;
+  /** Replaces the footage-reel strapline, e.g. for Video Lab reels tagged by a pundit. */
+  subtitle?: string;
 }
 
 export function createReelModel(fixture: MatchFixture, reel: HighlightReel, palette: Palette, voiceSeconds?: Map<string, number>): ReelModel {
@@ -330,7 +332,7 @@ function drawBurst(ctx: CanvasRenderingContext2D, model: ReelModel, clip: Highli
 }
 
 function kindLabel(clip: HighlightClip, model: ReelModel): string {
-  return highlightKindLabel(clip.kind, model.reel.language).toUpperCase();
+  return (clip.label ?? highlightKindLabel(clip.kind, model.reel.language)).toUpperCase();
 }
 
 function text(model: ReelModel) {
@@ -467,11 +469,12 @@ export function renderFootageFrame(ctx: CanvasRenderingContext2D, model: ReelMod
   ctx.fillRect(0, 0, REEL_WIDTH, REEL_HEIGHT);
   if (video) drawVideoCover(ctx, video);
   ctx.font = `700 12px "IBM Plex Sans", "Segoe UI", sans-serif`;
-  const plateWidth = Math.max(180, ctx.measureText(text(model).footageReel).width + 32);
+  const subtitle = model.subtitle ?? text(model).footageReel;
+  const plateWidth = Math.max(180, ctx.measureText(subtitle).width + 32);
   roundRect(ctx, REEL_WIDTH - 12 - plateWidth, 20, plateWidth, 58, 10);
   ctx.fillStyle = palette.surface;
   ctx.fill();
-  drawBrand(ctx, model, text(model).footageReel);
+  drawBrand(ctx, model, subtitle);
   if (!frame) return;
   drawScorebug(ctx, model, frame.matchSecond);
   drawMomentChip(ctx, model, frame);

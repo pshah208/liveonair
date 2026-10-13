@@ -6,7 +6,7 @@ import { SearchClient, SearchIndexClient, type SearchIndex } from "@azure/search
 
 import type { ArchiveSnapshot } from "../shared/platform.js";
 import { getAzureCredential } from "../server/azure/credential.js";
-import { DESK_AGENT_SPECS } from "../server/desk/agents/index.js";
+import { ALL_AGENT_SPECS } from "../server/desk/agents/index.js";
 
 const SEARCH_API_VERSION = "2026-04-01";
 const SEARCH_INDEX_NAME = "matchlens-archive";
@@ -75,7 +75,7 @@ function createIndexDefinition(): SearchIndex {
 
 async function upsertAgents(project: AIProjectClient) {
   const results: Array<{ name: string; version: string }> = [];
-  for (const spec of DESK_AGENT_SPECS) {
+  for (const spec of ALL_AGENT_SPECS) {
     try {
       const agent = await project.agents.update(spec.name, spec.definition);
       results.push({ name: agent.name, version: agent.versions.latest.version });

@@ -18,6 +18,8 @@ import type {
 } from "../shared/types.js";
 import { createNarrator, createCompletionClientFromEnv, hashInlineScript, type Narrator } from "./narrator.js";
 import { commentaryRequestSchema, createCommentator, type Commentator } from "./commentary.js";
+import { createPlayerAnalyst, type PlayerAnalyst } from "./players/analyst.js";
+import { z } from "zod";
 import { createSpeechService, type SpeechService } from "./speech.js";
 import { analyzeFixture, analyzeMatch } from "./engine.js";
 import { getFixture, listFixtures, registerFixture, unregisterFixture } from "./fixtures.js";
@@ -56,6 +58,7 @@ type CreateAppOptions = {
   narrator?: Narrator;
   speech?: SpeechService;
   commentator?: Commentator;
+  playerAnalyst?: PlayerAnalyst;
   engine?: EngineAdapter;
   platform?: Platform;
   video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand; playerVision?: PlayerVisionAnalyzer; playerWorker?: PlayerCamWorker };
@@ -164,6 +167,8 @@ export function createApp(options: CreateAppOptions = {}) {
     if (audioUrl) speech.warm?.(audioUrl);
     return audioUrl;
   };
+  // Tests that inject a narrator get a rules-only analyst unless they inject one, so they never reach Foundry.
+  const playerAnalyst = options.playerAnalyst ?? createPlayerAnalyst({ endpoint: options.narrator ? undefined : process.env.PROJECT_ENDPOINT });
   const commentator = options.commentator ?? createCommentator({
     completion: options.narrator ? undefined : createCompletionClientFromEnv(),
     speech,
@@ -304,6 +309,22 @@ export function createApp(options: CreateAppOptions = {}) {
         storylines: platform.desk.list(view.matchId),
       });
       response.json({ ...narrative, audioUrl: voiceRecap(narrative.script, parsed.language) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Scouting note for one player of the live match, from event-derived statistics.
+  app.post("/api/live/players/:playerId/analysis", narrateLimiter, async (request, response, next) => {
+    try {
+      const view = platform.live.current();
+      if (!view) throw new HttpError(404, "Live match not found");
+      const playerId = parseStrict(z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_.-]+$/u), request.params.playerId);
+      const body = parseStrict(z.object({ language: z.enum(["en", "es", "fr", "pt"]).default("en") }).strict(), request.body ?? {});
+      const fixture = deepClone(view.fixture);
+      const status = platform.live.status();
+      const clock = status.state === "running" ? Math.max(0, Math.round(status.clockSecond)) : fixture.durationSeconds;
+      response.json(await playerAnalyst.write(fixture, playerId, body.language, clock));
     } catch (error) {
       next(error);
     }

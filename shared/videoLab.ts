@@ -1,9 +1,39 @@
-import type { MatchEvent } from "./types.js";
-import { MAX_UPLOAD_BYTES, MAX_VIDEO_SECONDS, type DetectableEventType, type ManualTagInput, type VideoJob } from "./video.js";
+import type { HighlightClip, HighlightKind, HighlightReel } from "./highlights.js";
+import type { EventType, Language, MatchEvent, MatchFixture, Player, TeamId } from "./types.js";
+import { MAX_UPLOAD_BYTES, MAX_VIDEO_SECONDS, type VideoJob } from "./video.js";
 
 // New categories are appended so saved reviews and backups from earlier versions stay valid.
-export const CATEGORIES = ["goal", "shot", "pass", "tackle", "pressing", "set_piece", "defensive_shape", "custom", "save", "foul", "yellow_card", "red_card"] as const;
+export const CATEGORIES = [
+  "goal", "shot", "pass", "tackle", "pressing", "set_piece", "defensive_shape", "custom", "save", "foul", "yellow_card", "red_card",
+  "header", "key_pass", "assist", "cross", "through_ball", "dribble", "carry",
+  "switch_of_play", "build_up", "turnover",
+  "clearance", "interception", "block", "ball_recovery", "aerial_duel",
+  "run_in_behind", "overlap_run", "counter_attack",
+  "corner", "free_kick", "throw_in", "penalty", "offside",
+] as const;
 export type Category = (typeof CATEGORIES)[number];
+
+/** Hudl-style tagging panels: what the pundit reaches for, grouped by phase of play. */
+export const CATEGORY_GROUPS: { id: string; label: string; categories: Category[] }[] = [
+  { id: "attack", label: "Attacking", categories: ["goal", "shot", "header", "key_pass", "assist", "cross", "through_ball", "dribble", "carry"] },
+  { id: "possession", label: "Possession", categories: ["pass", "switch_of_play", "build_up", "turnover"] },
+  { id: "defence", label: "Defending", categories: ["tackle", "interception", "clearance", "block", "ball_recovery", "aerial_duel", "pressing", "defensive_shape", "save"] },
+  { id: "movement", label: "Movement", categories: ["run_in_behind", "overlap_run", "counter_attack"] },
+  { id: "set_piece", label: "Set pieces", categories: ["corner", "free_kick", "throw_in", "penalty", "set_piece"] },
+  { id: "discipline", label: "Discipline", categories: ["foul", "offside", "yellow_card", "red_card", "custom"] },
+];
+
+export const CATEGORY_LABELS: Record<Category, string> = {
+  goal: "Goal", shot: "Shot", pass: "Pass", tackle: "Tackle", pressing: "Pressing", set_piece: "Set piece", defensive_shape: "Defensive shape", custom: "Custom",
+  save: "Save", foul: "Foul", yellow_card: "Yellow card", red_card: "Red card",
+  header: "Header", key_pass: "Key pass", assist: "Assist", cross: "Cross", through_ball: "Through ball", dribble: "Dribble", carry: "Carry",
+  switch_of_play: "Switch of play", build_up: "Build-up", turnover: "Turnover",
+  clearance: "Clearance", interception: "Interception", block: "Block", ball_recovery: "Ball recovery", aerial_duel: "Aerial duel",
+  run_in_behind: "Run in behind", overlap_run: "Overlapping run", counter_attack: "Counter-attack",
+  corner: "Corner", free_kick: "Free kick", throw_in: "Throw-in", penalty: "Penalty", offside: "Offside",
+};
+
+const DEFENSIVE: readonly Category[] = ["tackle", "pressing", "defensive_shape", "clearance", "interception", "block", "ball_recovery", "aerial_duel"];
 export type Team = "home" | "away" | "neutral";
 export type Outcome = "success" | "unsuccessful" | "unknown";
 
@@ -284,7 +314,7 @@ export function deriveStats(filtered: Annotation[], duration: number): LabStats 
       if (item.outcome !== "unknown") stats.passSuccess.known++;
       if (item.outcome === "success") stats.passSuccess.success++;
     }
-    if (["tackle", "pressing", "defensive_shape"].includes(item.category)) stats.defensiveActions++;
+    if (DEFENSIVE.includes(item.category)) stats.defensiveActions++;
     stats.teams[item.team]++;
     stats.outcomes[item.outcome]++;
     stats.activity[Math.floor(item.inSeconds / 60)].count++;
@@ -395,37 +425,6 @@ function eventCategory(type: MatchEvent["type"]): Category | undefined {
   }
 }
 
-/** Video Lab categories that the match-feed builder understands as producer tags. */
-const DESK_EVENT: Partial<Record<Category, DetectableEventType>> = {
-  goal: "goal", shot: "shot", pass: "pass", tackle: "tackle", set_piece: "corner",
-  save: "save", foul: "foul", yellow_card: "yellow_card", red_card: "red_card",
-};
-
-export function deskEventType(category: Category): DetectableEventType | undefined {
-  return DESK_EVENT[category];
-}
-
-/**
- * Turns a reviewed moment into a producer tag for the live desk, or explains why it cannot be sent.
- * The tag time is the marked moment itself: presets pad 3 s before it, so it sits 3 s after the in point.
- */
-export function deskTagFor(item: Annotation, clipSeconds: number): { tag: ManualTagInput } | { reason: string } {
-  const type = DESK_EVENT[item.category];
-  if (!type) return { reason: "This category is analysis-only; it does not become a match event." };
-  if (item.team === "neutral") return { reason: "Choose Home or Away to send this moment to the desk." };
-  const limit = Math.max(0, Math.floor(clipSeconds));
-  const second = Math.min(limit, Math.max(0, Math.round(item.inSeconds + Math.min(3, (item.outSeconds - item.inSeconds) / 2))));
-  const number = item.players.map((player) => /(?:^|#|\b)(\d{1,2})\b/u.exec(player)?.[1]).find(Boolean);
-  const shirtNumber = number && Number(number) >= 1 && Number(number) <= 99 ? Number(number) : null;
-  const note = item.title.replace(/[^\p{L}\p{N} ,.'!?#()&/:-]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 120);
-  return { tag: { type, team: item.team, second, shirtNumber, note } };
-}
-
-/** True when the job already carries a producer tag equivalent to this one. */
-export function deskTagSent(job: Pick<VideoJob, "manualTags">, tag: ManualTagInput): boolean {
-  return job.manualTags.some((existing) => existing.type === tag.type && existing.team === tag.team && existing.second === tag.second);
-}
-
 export function suggestionAnnotations(job: VideoJob, duration: number): Annotation[] {
   durationValue(duration);
   const jobId = text(job.id, 256, "jobId", true);
@@ -490,4 +489,99 @@ export function suggestionAnnotations(job: VideoJob, duration: number): Annotati
     if (annotations.length === MAX_ANNOTATIONS) break;
   }
   return validateAnnotations(annotations, duration);
+}
+
+/** The marked moment inside a clip: presets pad 3 s before it, so it sits 3 s after the in point. */
+export function keyMomentSecond(item: Pick<Annotation, "inSeconds" | "outSeconds">): number {
+  return item.inSeconds + Math.min(3, (item.outSeconds - item.inSeconds) / 2);
+}
+
+const REEL_KIND: Partial<Record<Category, HighlightKind>> = { goal: "goal", red_card: "red_card", yellow_card: "booking", save: "key_save" };
+const EVENT_TYPE: Partial<Record<Category, EventType>> = {
+  goal: "goal", shot: "shot", header: "shot", penalty: "shot", save: "save", tackle: "tackle", foul: "foul",
+  yellow_card: "yellow_card", red_card: "red_card", corner: "corner", pressing: "pressure",
+};
+
+function shortName(name: string): string {
+  const words = name.trim().split(/\s+/u).filter(Boolean);
+  return (words.length > 1 ? words.map((word) => word[0]).join("") : name.trim().slice(0, 3)).toUpperCase().slice(0, 4) || "TM";
+}
+
+function clock(second: number): string {
+  return `${Math.floor(second / 60)}:${String(Math.floor(second % 60)).padStart(2, "0")}`;
+}
+
+/**
+ * Turns the pundit's tagged moments into a highlight reel cut from their own footage. The reel runs on
+ * the clip's clock; only moments tagged as goals for Home or Away change the scorebug.
+ */
+export function labHighlightReel(
+  source: LabSource,
+  annotations: Annotation[],
+  teams: { home: string; away: string },
+  language: Language = "en",
+): { fixture: MatchFixture; reel: HighlightReel } {
+  const duration = durationValue(source.duration);
+  const moments = validateAnnotations(annotations, duration).slice().sort((a, b) => a.inSeconds - b.inSeconds);
+  const names = { home: teams.home.trim() || "Home", away: teams.away.trim() || "Away" };
+  const players: Record<TeamId, Map<string, Player>> = { home: new Map(), away: new Map() };
+  const playerFor = (team: TeamId, name: string | undefined): string => {
+    const label = name?.trim() || `${names[team]} player`;
+    const id = `${team}-${label.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "") || "player"}`;
+    if (!players[team].has(id)) {
+      const shirt = /(?:^|#)(\d{1,2})\b/u.exec(label)?.[1];
+      players[team].set(id, { id, name: label, number: shirt ? Number(shirt) : 0, position: "", teamId: team });
+    }
+    return id;
+  };
+  const events: MatchEvent[] = [];
+  const clips: HighlightClip[] = [];
+  const score = { home: 0, away: 0 };
+  moments.forEach((item, index) => {
+    const key = keyMomentSecond(item);
+    const team: TeamId = item.team === "away" ? "away" : "home";
+    const playerId = playerFor(team, item.players[0]);
+    // A goal with no team cannot be credited, so it is shown as a chance rather than changing the score.
+    const type: EventType = item.category === "goal" && item.team === "neutral" ? "shot" : EVENT_TYPE[item.category] ?? "pass";
+    const eventId = `lab-${String(index + 1).padStart(3, "0")}`;
+    events.push({
+      id: eventId, revision: 1, minute: Math.floor(key / 60), second: Math.floor(key % 60), type, teamId: team, playerId,
+      outcome: item.outcome === "success" ? "success" : item.outcome === "unsuccessful" ? "incomplete" : "none", x: 50, y: 50,
+    });
+    if (type === "goal") score[team] += 1;
+    const label = CATEGORY_LABELS[item.category];
+    const who = item.players.join(", ") || (item.team === "neutral" ? "" : names[item.team]);
+    clips.push({
+      id: `clip-${String(index + 1).padStart(2, "0")}`,
+      kind: REEL_KIND[item.category] ?? "big_chance",
+      label,
+      keyEventId: eventId,
+      startSecond: item.inSeconds,
+      endSecond: item.outSeconds,
+      keySecond: key,
+      eventIds: [eventId],
+      minute: Math.floor(key / 60),
+      teamId: team,
+      playerId,
+      title: `${clock(key)} ${label}${who ? ` · ${who}` : ""}`,
+      caption: item.notes.trim() || item.title.trim() || label,
+      captionLanguage: language,
+      importance: 50,
+      scoreAfter: { ...score },
+    });
+  });
+  const team = (id: TeamId) => ({ id, name: names[id], shortName: shortName(names[id]), players: [...players[id].values()] });
+  const fixture: MatchFixture = {
+    id: `lab-${labStorageKey(source).replace(/[^A-Za-z0-9]+/gu, "-").slice(-48)}`,
+    seed: 0,
+    title: `${names.home} vs ${names.away}`,
+    description: `Video Lab highlights from ${source.name}`,
+    home: team("home"),
+    away: team("away"),
+    events,
+    durationSeconds: Math.ceil(duration),
+    correctionEventId: "",
+    correctionAvailableAt: Number.MAX_SAFE_INTEGER,
+  };
+  return { fixture, reel: { fixtureId: fixture.id, language, clips, totalMatchSeconds: clips.reduce((sum, clip) => sum + clip.endSecond - clip.startSecond, 0) } };
 }

@@ -175,7 +175,7 @@ const NO_DURATIONS = new Map<string, number>();
  * Broadcast commentary for a highlight reel: lines written by the Foundry commentator and voiced with
  * Azure neural voices. Falls back to the browser's speech voice reading captions when unavailable.
  */
-export function useHighlightCommentary(reel: HighlightReel, enabled: boolean) {
+export function useHighlightCommentary(reel: HighlightReel, enabled: boolean, neural = true) {
   const player = useMemo(() => new CommentaryPlayer(), []);
   const request = useMemo(() => commentaryRequest(reel), [reel]);
   const signature = useMemo(() => commentarySignature(request), [request]);
@@ -206,6 +206,11 @@ export function useHighlightCommentary(reel: HighlightReel, enabled: boolean) {
     const known = stateRef.current;
     if (known?.signature === signature && (known.status === "ready" || known.status === "fallback")) return Promise.resolve();
     if (pending.current?.signature === signature) return pending.current.promise;
+    // Reels that are not built from the live feed (Video Lab) are voiced from their captions.
+    if (!neural) {
+      setState({ signature, status: "fallback", commentary: null, durations: NO_DURATIONS });
+      return Promise.resolve();
+    }
     const promise = (async () => {
       setState({ signature, status: "loading", commentary: null, durations: NO_DURATIONS });
       try {

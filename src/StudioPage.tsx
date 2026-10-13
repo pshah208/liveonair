@@ -7,6 +7,8 @@ import { HighlightReelPanel } from "./HighlightReel.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
 import { VideoLab, type VideoFootage } from "./VideoLab.js";
+import { LabHighlightReel, type LabHighlights } from "./LabHighlightReel.js";
+import { PlayerAnalysisPage } from "./PlayerAnalysis.js";
 import { PlayerCam } from "./PlayerCam.js";
 import { LiveVideoPanel } from "./LiveVideoPanel.js";
 import type { ProgressiveVideoSession } from "../shared/progressiveVideo.js";
@@ -26,7 +28,7 @@ import {
   type Theme
 } from "./utils.js";
 
-type Tab = "live" | "recap" | "video" | "player";
+type Tab = "live" | "players" | "recap" | "video" | "player";
 type StartMode = "fixture" | "matchlab";
 
 type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void };
@@ -53,7 +55,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   const [awayClubId, setAwayClubId] = useState("");
   const [speed, setSpeed] = useState(30);
   const [submitting, setSubmitting] = useState(false);
-  const [videoFootage, setVideoFootage] = useState<VideoFootage | null>(null);
+  const [labHighlights, setLabHighlights] = useState<LabHighlights | null>(null);
   const [progressiveFootage, setProgressiveFootage] = useState<VideoFootage | null>(null);
   const [progressiveSession, setProgressiveSession] = useState<ProgressiveVideoSession | null>(null);
 
@@ -254,7 +256,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   const progressiveForMatch = progressiveSession?.fixtureId === status?.fixtureId ? progressiveSession : null;
   const state = progressiveForMatch && progressiveForMatch.stage !== "complete" && status?.state === "finished" ? "idle" : status?.state ?? "idle";
   const analyzedSecond = progressiveForMatch?.analyzedThrough ?? status?.clockSecond ?? 0;
-  const recapFootage = progressiveFootage?.fixtureId === fixture?.id ? progressiveFootage : videoFootage?.fixtureId === fixture?.id ? videoFootage : null;
+  const recapFootage = progressiveFootage?.fixtureId === fixture?.id ? progressiveFootage : null;
   const score = snapshot?.score ?? computeScoreFromEvents(fixture);
   const approved = useMemo(() => storylines.filter((storyline) => storyline.status === "approved"), [storylines]);
   const onAir = approved.find((storyline) => storyline.id === selectedStorylineId) ?? approved[0] ?? null;
@@ -276,8 +278,11 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
         <button type="button" className={`tabs__item${tab === "live" ? " is-active" : ""}`} onClick={() => setTab("live")} aria-current={tab === "live" ? "page" : undefined}>
           Live desk {counts.review > 0 && <span className="count count--accent">{counts.review}</span>}
         </button>
+        <button type="button" className={`tabs__item${tab === "players" ? " is-active" : ""}`} onClick={() => setTab("players")} aria-current={tab === "players" ? "page" : undefined}>
+          Player analysis
+        </button>
         <button type="button" className={`tabs__item${tab === "recap" ? " is-active" : ""}`} onClick={() => setTab("recap")} aria-current={tab === "recap" ? "page" : undefined}>
-          Recap and highlights
+          Recap and highlights {labHighlights && <span className="count">Lab</span>}
         </button>
         <button type="button" className={`tabs__item${tab === "video" ? " is-active" : ""}`} onClick={() => setTab("video")} aria-current={tab === "video" ? "page" : undefined}>
           Video lab
@@ -303,14 +308,16 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
       </div>
       {/* Kept mounted so an uploaded clip and its job survive switching tabs. */}
       <div id="full-upload-video-lab" tabIndex={-1} hidden={tab !== "video"}>
-        <VideoLab active={tab === "video"} onFootage={setVideoFootage} status={status}
-          onStreamed={(next) => { void handleVideoStreamed(next); setTab("live"); }} />
+        <VideoLab active={tab === "video"} onHighlights={(next) => { setLabHighlights(next); if (next) setTab("recap"); }} />
       </div>
       <div hidden={tab !== "player"}>
         <PlayerCam />
       </div>
 
-      {tab === "video" || tab === "player" ? null : tab === "live" ? (
+      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} />}
+      {tab === "recap" && labHighlights && <LabHighlightReel lab={labHighlights} theme={theme} onEdit={() => setTab("video")} onClose={() => setLabHighlights(null)} />}
+
+      {tab === "video" || tab === "player" || tab === "players" ? null : tab === "live" ? (
         <div className="desk-grid">
           <div className="desk-col">
             <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>
@@ -395,7 +402,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
             </Panel>
           </div>
         </div>
-      ) : (
+      ) : labHighlights ? null : (
         <div className="panel empty-hero">
           <h2>No match yet</h2>
           <p className="subtle-text">Start a match on the live desk. The highlight reel, written recap and chapters build themselves from the verified feed.</p>

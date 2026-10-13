@@ -82,25 +82,35 @@ with live health.
   leaves one out is rejected and the grounded fact-by-fact recap (which lists them) is used instead.
 * **Recap chapters** that link each phase of the match to its storylines.
 
+**Player analysis**
+
+* Squad lists for both teams, ranked by an illustrative impact rating or shirt number.
+* Per player: heat map and action map of their logged actions (with average position), goals,
+  assists, shots, shots on target, xG, xA, box touches, passes completed and accuracy, key and
+  progressive passes, possession lost, tackles won, pressures, saves, fouls and cards.
+* **Impact on the game**: a 6.0-based rating built from published weights for scoring, chance
+  creation, passing, defending, goalkeeping and discipline, with the breakdown shown as bars.
+* **Analyst note**: the Foundry ``matchlens-player-analyst`` agent writes a short scouting note in
+  any of the four languages. Every number and name is checked against the computed figures; a note
+  that invents anything (for example a distance run) is rejected for a rules-based note.
+* Distance covered, sprints, top speed and minutes played are shown as needing a tracking feed: an
+  event feed records on-ball actions, not continuous player positions.
+
 **Video lab**
 
-* A dedicated **local-first match review** workbench, not the Live Desk progressive panel.
-  Watch browser-playable footage with slow motion and approximate stepping, without cloud setup
-  or upload permission. Limits: **15 minutes / 500 MB (500 MiB) / 200 annotations per file**.
-* Mark **I/O** ranges or use moment presets; edit categories, team, players, outcome and notes.
-  Preview, edit and delete annotations in the timeline and reviewed clip library.
-* Filter the timeline, library and detailed tagged-observation analysis together. Counts describe
-  saved tags, not inferred possession, xG, tracking or authoritative match statistics.
-* Save reviews per local file fingerprint; export/import a matching-source JSON backup or export
-  the filtered annotations as CSV. Backups contain metadata, not video.
-* Optionally authorize a full upload for AI suggestions, inspect their evidence and explicitly
-  add selected suggestions to the review timeline.
-* **Send to the live desk**: once AI detection has built the match feed, send up to five marked
-  moments (goal, red card, save, foul, card, set piece...) as producer tags, then **Go live on the
-  desk**. The clip's events stream in real time, agents draft storylines, and approved moments and
-  red cards land in the highlights and recap cut from this footage. Nothing changes the live score
-  until you go live.
-
+* The pundit's **manual tagging** desk, Hudl style. Watch browser-playable footage with slow motion
+  and approximate stepping. Nothing is uploaded. Limits: **15 minutes / 500 MB (500 MiB) / 200
+  tagged moments per file**.
+* Tag panels by phase: Attacking (goal, shot, header, key pass, assist, cross, through ball, dribble,
+  carry), Possession (pass, switch of play, build-up, turnover), Defending (tackle, interception,
+  clearance, block, ball recovery, aerial duel, pressing, defensive shape, save), Movement (run in
+  behind, overlapping run, counter-attack), Set pieces (corner, free kick, throw-in, penalty) and
+  Discipline (foul, offside, yellow card, red card).
+* Mark **I/O** ranges, set team (named per clip), players, outcome and notes; filter, review and
+  analyse the tagged moments; back up as JSON or CSV.
+* **Generate highlights** from the tagged moments (untick any to leave them out). The Recap tab
+  plays a reel cut from your own footage with each tag, players and notes on screen, a scorebug
+  driven by tagged goals, optional voice-over and WebM export.
 **Player cam (beta)**
 
 * A fan experience: upload a clip (up to 15 minutes and 500 MB), click the player you want to follow
@@ -193,83 +203,36 @@ the whole video was analyzed. Uploaded/analyzed timestamps, frame counts, pendin
 errors expose progress. After a stopped or failed session, **Retry live analysis** deliberately
 starts the same file from the beginning once no match is running; it is not an automatic restart.
 
-Video Lab: pundit review and hand-off
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Video Lab: pundit tagging and highlights
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Video Lab is a dedicated workbench for manual tagging and detailed local analysis. Its state
-stays mounted across tab switches, separately from the Live Desk progressive panel; leaving
-Video Lab pauses its player. A four-step strip (mark, build the match feed, add key calls, go live)
-shows where the review stands. Nothing starts a live session until **Go live on the desk**.
+Video Lab is a dedicated workbench for manual tagging. Its state stays mounted across tab switches,
+separately from the Live Desk progressive panel; leaving Video Lab pauses its player. It never
+uploads footage and never changes the live match.
 
 1. **Watch.** Select a local MP4, MOV or WebM, up to 900 seconds and 524288000 bytes (500 MiB,
    labelled 500 MB). Use play/pause, ±5-second seeks, 0.25x/0.5x slow motion or faster playback.
-   Step controls seek approximately 0.04 seconds, not exact video frames.
-2. **Annotate.** Mark in/out with buttons or **I/O** while the workbench has focus outside inputs
-   and native controls. Category presets pad the current moment by 3 seconds before and 5 after,
-   bounded by the source. Save a title, category (goal, shot, pass, tackle, pressing, set piece,
-   defensive shape, custom, save, foul, yellow card or red card), home/away/neutral team, player
-   tags, observed outcome and notes.
-   Up to 200 annotations are allowed; a preset does not count until saved.
-3. **Review.** Timeline markers and library clips play to their out point. Edit ranges and details
-   or delete annotations. Search and filter by team, player, category, manual/AI origin and
-   overlapping time window; the timeline, library, statistics and CSV use the same filters.
+   Step controls seek approximately 0.04 seconds, not exact video frames. Name the two teams.
+2. **Tag.** Pick a tag from the phase panels; it marks 3 seconds before and 5 after the current
+   frame, bounded by the source. Adjust in/out with buttons or **I/O**, then save a title, team,
+   player tags, observed outcome and notes. Up to 200 moments are allowed.
+3. **Review.** Timeline markers and library clips play to their out point. Edit or delete moments.
+   Search and filter by team, player, tag and overlapping time window; the timeline, library,
+   statistics and CSV use the same filters.
 4. **Understand.** Analysis shows tagged shots, goals, passes and defensive actions, team and
-   outcome breakdowns, player tag counts and activity by clip start. Tagged pass success excludes
-   unknown outcomes. Goals do not automatically add shots to these counts. Only saved manual
-   tags and intentionally imported AI suggestions count: no possession, xG or tracking is
-   inferred, and review coverage is not a performance ranking or match truth.
-5. **Keep a backup.** Annotations and filters are saved in browser local storage keyed by filename,
-   size and last-modified time, not a content hash. Reselect the same original file after reload.
-   JSON backup/report export includes all annotations, active filters and recomputed filtered
-   statistics. Import validates the matching fingerprint and duration before an explicit
-   replacement; supplied statistics are recomputed. JSON is limited to 1 MiB. CSV exports only
-   filtered annotations, with formula-like cells escaped. Neither export contains video.
+   outcome breakdowns, player tag counts and activity by clip start. Counts describe saved tags only.
+5. **Generate highlights.** The filtered moments (minus any unticked) become a reel on the Recap
+   tab, cut from the same local file on the clip's own clock: tag label, title with players, notes
+   as the caption, and a scorebug that only counts goals tagged for a team.
+6. **Keep a backup.** Moments and filters are saved in browser local storage keyed by filename,
+   size and last-modified time. JSON backup/import and filtered CSV export are available; neither
+   contains video.
 
 Storage failures, corrupt saved data or changes from another tab pause automatic saving and
 preserve existing storage; export the in-memory review before explicitly replacing saved data.
-This is per-browser, per-device storage, not an account or cloud library.
 
-**Browser decoding is required for local tagging and the optional AI action in this UI.**
-If decoding fails, convert the source to a supported codec such as H.264 MP4 or WebM and
-reselect it. Although the full-upload API uses ffmpeg, it is not a browser-codec workaround
-for the current Video Lab workbench. Manual tagging needs neither Azure nor upload permission.
-
-Optional full-upload AI suggestions
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Expand **AI-assisted event detection**, supply team names and kit descriptions, and explicitly
-confirm permission to use the footage and upload the full original for AI analysis. This
-requires configured vision and video processing; manual tagging remains available while it runs.
-The in-process worker follows these steps:
-
-1. **Upload.** ``POST /api/video/jobs`` accepts the full MP4, MOV or WebM within the same limits
-   and returns ``202`` with a job to poll.
-2. **Probe and sample.** ffprobe checks the stream; ffmpeg extracts frames at 768 px. Clips of
-   180 seconds or less keep the original sampling: at most 60 frames, one every 1–3 seconds.
-   Longer clips sample approximately every 3 seconds, up to 300 frames.
-3. **Tag.** Sequential batches of up to 12 frames (at most 25 batches) go to gpt-4.1-mini with a
-   strict JSON schema. The model reports event type, team (by kit), legible shirt number, frame
-   position and confidence, plus the footage classification described below.
-4. **Apply rules.** Deterministic code keeps detections at 50% confidence or more with a known team,
-   merges repeats, adds a shot before every goal, links saves to shots and registers a fixture.
-   Registering a fixture does not start a live stream.
-5. **Review and import.** Inspect suggestions and evidence, select the ones to keep and press
-   **Add to review timeline**. Imports deduplicate by job/event provenance, which remains immutable
-   when annotation details are edited. Rule-inferred shots are labelled as such, with no visual
-   frame evidence or measured confidence; uncertain/defaulted outcomes remain unknown.
-
-Processing is asynchronous; longer clips require more time and vision batches, not instant
-analysis. Jobs are in memory, not durable across server restarts. Uploaded sources are deleted
-after processing; sampled frames remain as session evidence until cleanup/eviction and playback
-uses the local file. Imported annotations persist with the local review, not as a durable AI job.
-**Stop waiting and unlock source** detaches the result from this review; it does not cancel
-server processing. A failed analysis requires a deliberate new upload, not an automatic rerun.
-
-**Send to the live desk** uses ``POST /api/video/jobs/{id}/tags`` (up to five producer tags; the
-tag time is the marked moment, 3 s after a preset's in point) and ``POST /api/video/jobs/{id}/live``
-to stream the ready job in real time. Pressing, defensive shape and custom moments stay as analysis
-only. Saving or importing review annotations never calls these endpoints on its own.
-
+The server's full-upload video API (``POST /api/video/jobs`` and related endpoints) remains for
+programmatic use and tests; the Video Lab UI no longer calls it.
 Footage classification and coverage
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
