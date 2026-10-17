@@ -52,7 +52,7 @@ const DESKS = [
   { icon: "🎬", title: "Recap & highlights", chips: ["Auto-cut reel", "Written recap", "EN · ES · FR · PT"], line: "Every goal, red card and approved story." },
   { icon: "📈", title: "Player analysis", chips: ["Heat maps", "Impact rating", "Analyst note"], line: "Every player's numbers from the feed." },
   { icon: "🔍", title: "Video lab", chips: ["Hudl-style tags", "Notes", "Pundit reel"], line: "Manual tagging cut into highlights." },
-  { icon: "🎯", title: "Player cam", chips: ["One player", "Spotlight", "Vertical cut"], line: "A personal reel for any player." }
+  { icon: "🎯", title: "Player cam", chips: ["One player", "Spotlight", "Vertical cut"], line: "Studio highlights of a specific player." }
 ];
 
 const GUARDRAILS = [

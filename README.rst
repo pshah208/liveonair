@@ -115,8 +115,9 @@ with live health.
   driven by tagged goals, optional voice-over and WebM export.
 **Player cam (beta)**
 
-* A fan experience: upload a clip (up to 15 minutes and 500 MB), click the player you want to follow
-  (or give their shirt number and kit) and get a personal highlight reel with a spotlight on them,
+* A Studio tool for producers to create highlights of a specific player: upload a clip (up to
+  15 minutes and 500 MB), click the player you want to feature (or give their shirt number and kit)
+  and get a player highlight reel with a spotlight on them,
   in landscape or a vertical 9:16 cut that pans with the player. Nothing is sent to Eventstream.
 
 **Fan View** (``#fan``)
@@ -375,14 +376,15 @@ Player cam (beta)
 ~~~~~~~~~~~~~~~~~
 
 Player cam reuses the video worker to follow one player instead of tagging match events. It is a
-fan product, so it never touches Eventstream or the live desk.
+Studio tool for producers creating highlights of a specific player; it never touches Eventstream
+or the live desk.
 
 The same 15-minute / 500 MB limit and asynchronous processing apply. Clips of 180 seconds or less
 still use at most 60 frames at 1–3 second intervals; longer clips sample approximately every
 3 seconds, up to 300 frames in at most 25 sequential batches of 12. Longer clips take longer to
 process. The uploaded source is deleted after processing; the reel plays from the local clip.
 
-1. **Identify.** The fan pauses the clip and clicks the player; the shirt number and kit are
+1. **Identify.** The producer pauses the clip and clicks the player; the shirt number and kit are
    optional extra hints. At least one of the three is required.
 2. **Reference.** ffmpeg draws a box round the clicked spot and crops it. Every vision batch gets
    this crop first, so the model matches build and kit, not just a number that is often unreadable.
@@ -395,7 +397,7 @@ process. The uploaded source is deleted after processing; the reel plays from th
    up to three positioning moments.
 5. **Reel.** The browser cuts the moments from the local clip and draws a ring at the player's feet
    and a name tag, interpolated between sightings. *Vertical 9:16* pans with the player for phones.
-   The fan can untick wrong moments; sound plays the clip audio plus a voice that calls each
+   The producer can untick wrong moments; sound plays the clip audio plus a voice that calls each
    moment; the export includes the clip audio.
 
 Microsoft and Azure services

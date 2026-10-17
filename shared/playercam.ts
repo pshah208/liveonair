@@ -1,4 +1,4 @@
-// Contracts for Player cam: one uploaded clip, one player, a personal highlight reel. Nothing is published to Eventstream.
+// Contracts for Player cam (Studio): one uploaded clip, one player, a player highlight reel. Nothing is published to Eventstream.
 import type { VideoFrame, VideoJobStage } from "./video.js";
 
 export const PLAYER_ACTIONS = ["shot", "header", "save", "dribble", "tackle", "pass", "on_ball", "celebration", "off_ball"] as const;

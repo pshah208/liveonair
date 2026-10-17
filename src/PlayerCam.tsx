@@ -361,12 +361,13 @@ export function PlayerCam() {
   return (
     <div className="recap-grid video-lab player-cam">
       <div className="desk-col">
-        <Panel eyebrow="Player cam" title={ready ? `${label}: personal highlights` : "Follow one player"} aside={<span className="tag tag--accent">Beta</span>}>
+        <Panel eyebrow="Studio · Player cam" title={ready ? `${label}: player highlights` : "Create a player highlight reel"} aside={<span className="tag tag--accent">Beta</span>}>
+          <div className="banner banner--info"><span><strong>For Studio:</strong> a producer tool for creating highlights of a specific player.</span></div>
           {!ready && (
             <p className="lede">
-              Upload a clip (up to {MAX_VIDEO_SECONDS / 60} minutes, {MAX_UPLOAD_BYTES / 1_048_576} MB), then click the player you want to follow, or give their shirt number and kit. The worker
-              finds them in every sampled frame, works out when they are involved and cuts a personal reel with a spotlight on them. Nothing
-              is sent to Eventstream; this is a fan experience, not match data. Longer clips take longer to process.
+              Upload a clip (up to {MAX_VIDEO_SECONDS / 60} minutes, {MAX_UPLOAD_BYTES / 1_048_576} MB), then click the player you want to feature, or give their shirt number and kit. The worker
+              finds them in every sampled frame, works out when they are involved and cuts a highlight reel with a spotlight on them, ready to
+              export. Nothing is sent to Eventstream or the live desk. Longer clips take longer to process.
             </p>
           )}
           {unavailable && <div className="banner banner--warning">Video processing isn't available on this server ({!health?.ffmpeg ? "ffmpeg missing" : "vision model not configured"}).</div>}
@@ -381,7 +382,7 @@ export function PlayerCam() {
                 Choose video file
                 <input type="file" accept={ACCEPT} disabled={!attested || unavailable} onChange={(event) => chooseFile(event.target.files?.[0])} />
               </label>
-              <p className="subtle-text">Good for a kid's Sunday league match, your 5-a-side or an academy game. The clip is deleted from the server after processing; the reel plays from the copy in your browser.</p>
+              <p className="subtle-text">Use footage you own or are licensed to use that features the player you want to highlight. The clip is deleted from the server after processing; the reel plays from the copy in your browser.</p>
             </div>
           )}
 
@@ -421,7 +422,7 @@ export function PlayerCam() {
 
           {ready && fileUrl && (
             <div className="reel__stage">
-              <canvas ref={canvasRef} width={size.width} height={size.height} className={`reel__canvas player-cam__canvas player-cam__canvas--${format}`} aria-label={`Player cam reel for ${label}`} />
+              <canvas ref={canvasRef} width={size.width} height={size.height} className={`reel__canvas player-cam__canvas player-cam__canvas--${format}`} aria-label={`Player highlight reel for ${label}`} />
               <video ref={reelVideoRef} src={fileUrl} className="footage__video" muted={!sound} playsInline preload="auto" onLoadedData={draw} onSeeked={draw} />
               <div className="reel__controls">
                 <button type="button" className="button button--primary" onClick={togglePlay} disabled={!moments.length || exporting !== null}>{playing ? "Pause" : "Play reel"}</button>
@@ -553,7 +554,7 @@ export function PlayerCam() {
         <Panel eyebrow="Honest limits" title="What Player cam can and can't do">
           <ul className="plain-list">
             <li>It checks one frame every 1–{MAX_FRAME_INTERVAL_SECONDS} seconds (up to {MAX_VIDEO_FRAMES} frames), so the spotlight glides between sightings rather than tracking every step.</li>
-            <li>Clicking the player is far more reliable than a number alone: numbers are often unreadable on fan footage.</li>
+            <li>Clicking the player is far more reliable than a number alone: numbers are often unreadable on wide or handheld footage.</li>
             <li>Team-mates in the same kit can be confused when the player is far away or turned around; untick any wrong moment.</li>
             <li>Only sightings at 50% confidence or more count. Moments are grouped and ranked by code, not by the model.</li>
             <li>Feature only players who have agreed, and get a parent's consent for children.</li>
