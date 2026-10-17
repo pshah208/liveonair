@@ -1,5 +1,7 @@
 import type { Language, MatchEvent, MatchFixture, TeamId } from "./types.js";
 import type { Storyline } from "./platform.js";
+import { metricOptions, passDifficulty } from "./metrics.js";
+import { eventPeriod, periodBoundary, sameHalf, type MatchPeriod } from "./periods.js";
 
 /**
  * Deterministic highlight selection.
@@ -9,7 +11,16 @@ import type { Storyline } from "./platform.js";
  * cut list (timecodes + ffmpeg commands) that trims a licensed broadcast recording when one exists.
  */
 
-export type HighlightKind = "goal" | "disallowed_goal" | "red_card" | "big_chance" | "key_save" | "booking";
+export type HighlightKind =
+  | "goal" | "disallowed_goal" | "red_card" | "big_chance" | "key_save" | "booking"
+  // Player-focused reels also cut a player's everyday contributions.
+  | "shot" | "chance_created" | "tackle" | "hard_pass";
+
+/** Narrows a reel to one player's own actions, or to one club's moments (with both sides' goals and red cards kept for context). */
+export interface HighlightFocus {
+  playerId?: string;
+  teamId?: TeamId;
+}
 
 export interface HighlightClip {
   id: string;
@@ -135,12 +146,20 @@ const WINDOWS: Record<HighlightKind, { pre: number; post: number; base: number }
   red_card: { pre: 10, post: 6, base: 80 },
   big_chance: { pre: 12, post: 5, base: 45 },
   key_save: { pre: 10, post: 5, base: 40 },
-  booking: { pre: 6, post: 4, base: 12 }
+  booking: { pre: 6, post: 4, base: 12 },
+  shot: { pre: 8, post: 4, base: 30 },
+  chance_created: { pre: 8, post: 6, base: 35 },
+  tackle: { pre: 6, post: 4, base: 22 },
+  hard_pass: { pre: 6, post: 5, base: 20 }
 };
 
 const BIG_CHANCE_XG = 0.25;
 const STORYLINE_BONUS = 20;
 const DEFAULT_MAX_CLIPS = 8;
+/** A player reel can hold more moments; the commentary request accepts at most 10 clips. */
+const PLAYER_MAX_CLIPS = 10;
+const ASSIST_WINDOW_SECONDS = 15;
+const HARD_PASS_MIN = 60;
 const MUST_INCLUDE = new Set<HighlightKind>(["goal", "disallowed_goal", "red_card"]);
 
 export function eventSecondOf(event: Pick<MatchEvent, "minute" | "second">): number {
@@ -193,11 +212,15 @@ type Phrases = {
   attempt: (name: string) => string;
   stops: (name: string) => string;
   booked: (name: string) => string;
+  shoots: (name: string, outcome: string) => string;
+  created: (name: string, shooter: string, scored: boolean) => string;
+  tackles: (name: string) => string;
+  hardPass: (name: string, difficulty: number) => string;
 };
 
 const PHRASES: Record<Language, Phrases> = {
   en: {
-    title: { goal: "GOAL", disallowed_goal: "Goal ruled out", red_card: "Red card", big_chance: "Big chance", key_save: "Key save", booking: "Booking" },
+    title: { goal: "GOAL", disallowed_goal: "Goal ruled out", red_card: "Red card", big_chance: "Big chance", key_save: "Key save", booking: "Booking", shot: "Shot", chance_created: "Chance created", tackle: "Tackle won", hard_pass: "Hard pass" },
     scores: (name, xg) => `${name} scores${xg !== undefined ? ` from a ${xg.toFixed(2)} xG chance` : ""}.`,
     ruledOut: (name) => `${name}'s goal is ruled out after review; the score is corrected.`,
     sentOff: (name) => `${name} is sent off.`,
@@ -205,10 +228,14 @@ const PHRASES: Record<Language, Phrases> = {
     denies: (name, xg) => `${name} denies a ${xg.toFixed(2)} xG chance.`,
     attempt: (name) => `${name} goes for goal.`,
     stops: (name) => `${name} keeps it out.`,
-    booked: (name) => `${name} is booked.`
+    booked: (name) => `${name} is booked.`,
+    shoots: (name, outcome) => `${name} shoots: ${outcome}.`,
+    created: (name, shooter, scored) => scored ? `${name} sets up ${shooter} to score.` : `${name} creates a chance for ${shooter}.`,
+    tackles: (name) => `${name} wins the ball back.`,
+    hardPass: (name, difficulty) => `${name} completes a difficult pass (${difficulty}/100).`
   },
   es: {
-    title: { goal: "GOL", disallowed_goal: "Gol anulado", red_card: "Tarjeta roja", big_chance: "Ocasión clara", key_save: "Parada clave", booking: "Amonestación" },
+    title: { goal: "GOL", disallowed_goal: "Gol anulado", red_card: "Tarjeta roja", big_chance: "Ocasión clara", key_save: "Parada clave", booking: "Amonestación", shot: "Disparo", chance_created: "Ocasión creada", tackle: "Entrada ganada", hard_pass: "Pase difícil" },
     scores: (name, xg) => `Gol de ${name}${xg !== undefined ? ` en una ocasión de ${xg.toFixed(2)} xG` : ""}.`,
     ruledOut: (name) => `El gol de ${name} se anula tras la revisión; el marcador se corrige.`,
     sentOff: (name) => `${name} es expulsado.`,
@@ -216,10 +243,14 @@ const PHRASES: Record<Language, Phrases> = {
     denies: (name, xg) => `${name} detiene una ocasión de ${xg.toFixed(2)} xG.`,
     attempt: (name) => `${name} busca la portería.`,
     stops: (name) => `${name} evita el gol.`,
-    booked: (name) => `${name} ve la tarjeta amarilla.`
+    booked: (name) => `${name} ve la tarjeta amarilla.`,
+    shoots: (name) => `Disparo de ${name}.`,
+    created: (name, shooter, scored) => scored ? `${name} asiste a ${shooter}, que marca.` : `${name} le crea una ocasión a ${shooter}.`,
+    tackles: (name) => `${name} recupera el balón.`,
+    hardPass: (name, difficulty) => `${name} completa un pase difícil (${difficulty}/100).`
   },
   fr: {
-    title: { goal: "BUT", disallowed_goal: "But refusé", red_card: "Carton rouge", big_chance: "Grosse occasion", key_save: "Arrêt décisif", booking: "Avertissement" },
+    title: { goal: "BUT", disallowed_goal: "But refusé", red_card: "Carton rouge", big_chance: "Grosse occasion", key_save: "Arrêt décisif", booking: "Avertissement", shot: "Frappe", chance_created: "Occasion créée", tackle: "Tacle gagné", hard_pass: "Passe difficile" },
     scores: (name, xg) => `But de ${name}${xg !== undefined ? ` sur une occasion à ${xg.toFixed(2)} xG` : ""}.`,
     ruledOut: (name) => `Le but de ${name} est refusé après vérification ; le score est corrigé.`,
     sentOff: (name) => `${name} est expulsé.`,
@@ -227,10 +258,14 @@ const PHRASES: Record<Language, Phrases> = {
     denies: (name, xg) => `${name} repousse une occasion à ${xg.toFixed(2)} xG.`,
     attempt: (name) => `${name} tente sa chance.`,
     stops: (name) => `${name} s'interpose.`,
-    booked: (name) => `${name} reçoit un carton jaune.`
+    booked: (name) => `${name} reçoit un carton jaune.`,
+    shoots: (name) => `Frappe de ${name}.`,
+    created: (name, shooter, scored) => scored ? `${name} offre le but à ${shooter}.` : `${name} crée une occasion pour ${shooter}.`,
+    tackles: (name) => `${name} récupère le ballon.`,
+    hardPass: (name, difficulty) => `${name} réussit une passe difficile (${difficulty}/100).`
   },
   pt: {
-    title: { goal: "GOL", disallowed_goal: "Gol anulado", red_card: "Cartão vermelho", big_chance: "Chance clara", key_save: "Grande defesa", booking: "Cartão amarelo" },
+    title: { goal: "GOL", disallowed_goal: "Gol anulado", red_card: "Cartão vermelho", big_chance: "Chance clara", key_save: "Grande defesa", booking: "Cartão amarelo", shot: "Finalização", chance_created: "Chance criada", tackle: "Desarme", hard_pass: "Passe difícil" },
     scores: (name, xg) => `Gol de ${name}${xg !== undefined ? ` numa chance de ${xg.toFixed(2)} xG` : ""}.`,
     ruledOut: (name) => `O gol de ${name} é anulado após revisão; o placar é corrigido.`,
     sentOff: (name) => `${name} é expulso.`,
@@ -238,7 +273,11 @@ const PHRASES: Record<Language, Phrases> = {
     denies: (name, xg) => `${name} impede uma chance de ${xg.toFixed(2)} xG.`,
     attempt: (name) => `${name} arrisca a finalização.`,
     stops: (name) => `${name} faz a defesa.`,
-    booked: (name) => `${name} recebe cartão amarelo.`
+    booked: (name) => `${name} recebe cartão amarelo.`,
+    shoots: (name) => `Finalização de ${name}.`,
+    created: (name, shooter, scored) => scored ? `${name} dá a assistência para o gol de ${shooter}.` : `${name} cria uma chance para ${shooter}.`,
+    tackles: (name) => `${name} recupera a bola.`,
+    hardPass: (name, difficulty) => `${name} acerta um passe difícil (${difficulty}/100).`
   }
 };
 
@@ -258,7 +297,13 @@ function defaultTitle(kind: HighlightKind, minute: number, name: string, team: s
   return `${minute}' ${PHRASES[language].title[kind]} · ${name} (${team})`;
 }
 
-export function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, byId: Map<string, MatchEvent>, language: Language): string {
+export interface CaptionDetail {
+  shooterName?: string;
+  scored?: boolean;
+  difficulty?: number;
+}
+
+export function defaultCaption(kind: HighlightKind, event: MatchEvent, name: string, byId: Map<string, MatchEvent>, language: Language, detail: CaptionDetail = {}): string {
   const phrases = PHRASES[language];
   switch (kind) {
     case "goal": return phrases.scores(name, event.xg);
@@ -270,6 +315,10 @@ export function defaultCaption(kind: HighlightKind, event: MatchEvent, name: str
       return shot?.xg === undefined ? phrases.stops(name) : phrases.denies(name, shot.xg);
     }
     case "booking": return phrases.booked(name);
+    case "shot": return phrases.shoots(name, event.outcome);
+    case "chance_created": return phrases.created(name, detail.shooterName ?? "a teammate", Boolean(detail.scored));
+    case "tackle": return phrases.tackles(name);
+    case "hard_pass": return phrases.hardPass(name, detail.difficulty ?? 0);
   }
 }
 
@@ -298,13 +347,18 @@ function onAirStorylines(storylines: Storyline[]): Storyline[] {
 export function buildHighlightReel(
   fixture: MatchFixture,
   storylines: Storyline[] = [],
-  options: { maxClips?: number; uptoSecond?: number; language?: Language } = {}
+  options: { maxClips?: number; uptoSecond?: number; language?: Language; focus?: HighlightFocus; period?: MatchPeriod } = {}
 ): HighlightReel {
   const language = options.language ?? "en";
-  const maxClips= Math.max(1, options.maxClips ?? DEFAULT_MAX_CLIPS);
+  const focus = options.focus ?? {};
+  const maxClips = Math.max(1, options.maxClips ?? (focus.playerId ? PLAYER_MAX_CLIPS : DEFAULT_MAX_CLIPS));
   const upto = options.uptoSecond ?? fixture.durationSeconds;
   const events = latestRevisions(fixture.events).filter((event) => eventSecondOf(event) <= upto);
   const byId = new Map(events.map((event) => [event.id, event]));
+  const boundary = periodBoundary(fixture);
+  const period = options.period ?? "full";
+  // A half that cannot be established yields an empty reel rather than silently showing the whole match.
+  const inScope = (event: MatchEvent) => period === "full" || (boundary.available && eventPeriod(event, boundary) === (period === "first" ? 1 : 2));
   const storylineByEvent = new Map<string, Storyline>();
   for (const storyline of onAirStorylines(storylines)) {
     for (const eventId of storyline.triggerEventIds) {
@@ -313,19 +367,64 @@ export function buildHighlightReel(
     }
   }
 
-  type Candidate = { event: MatchEvent; kind: HighlightKind; importance: number; start: number; end: number; mustInclude: boolean };
+  type Candidate = { event: MatchEvent; kind: HighlightKind; importance: number; start: number; end: number; mustInclude: boolean; detail?: CaptionDetail };
   const candidates: Candidate[] = [];
   const hasXg = events.some((event) => event.type === "shot" && event.xg !== undefined);
-  for (const event of events) {
-    const classified = classify(event, byId, hasXg);
-    if (!classified) continue;
-    const window = WINDOWS[classified.kind];
+  const push = (event: MatchEvent, kind: HighlightKind, bonus: number, extra: { start?: number; mustInclude?: boolean; detail?: CaptionDetail } = {}) => {
+    const window = WINDOWS[kind];
     const at = eventSecondOf(event);
     const storyline = storylineByEvent.get(event.id);
-    const importance = window.base + classified.bonus + (storyline ? STORYLINE_BONUS : 0);
+    const importance = window.base + bonus + (storyline ? STORYLINE_BONUS : 0);
     // Goals, red cards, ruled-out goals and producer-approved storylines are never dropped by the clip cap.
-    const mustInclude = MUST_INCLUDE.has(classified.kind) || storyline?.status === "approved";
-    candidates.push({ event, kind: classified.kind, importance, start: Math.max(0, at - window.pre), end: Math.min(fixture.durationSeconds, at + window.post), mustInclude });
+    const mustInclude = MUST_INCLUDE.has(kind) || storyline?.status === "approved" || Boolean(extra.mustInclude);
+    candidates.push({ event, kind, importance, start: Math.max(0, extra.start ?? at - window.pre), end: Math.min(fixture.durationSeconds, at + window.post), mustInclude, detail: extra.detail });
+  };
+
+  if (focus.playerId) {
+    const playerId = focus.playerId;
+    const metricOpts = metricOptions(fixture);
+    for (const event of events) {
+      if (event.playerId !== playerId || (event.rescinded && event.type !== "goal") || !inScope(event)) continue;
+      const classified = classify(event, byId, hasXg);
+      if (classified) { push(event, classified.kind, classified.bonus); continue; }
+      if (event.type === "shot") push(event, "shot", Math.round((event.xg ?? 0) * 40));
+      else if (event.type === "save") push(event, "key_save", 0);
+      else if (event.type === "tackle" && (event.outcome === "success" || event.outcome === "complete")) push(event, "tackle", 0);
+      else if (event.type === "pass" && event.outcome === "complete") {
+        const difficulty = passDifficulty(event, events, metricOpts);
+        if (difficulty && difficulty.score >= HARD_PASS_MIN) push(event, "hard_pass", difficulty.score - HARD_PASS_MIN, { detail: { difficulty: difficulty.score } });
+      }
+    }
+    // Chances the player created for a teammate: the shot's linked pass, else the team's last completed pass in the 15 s before it.
+    for (const shot of events) {
+      if (shot.rescinded || shot.playerId === playerId || !(shot.type === "shot" || (shot.type === "goal" && !shot.relatedEventId))) continue;
+      const linked = shot.relatedEventId ? byId.get(shot.relatedEventId) : undefined;
+      const at = eventSecondOf(shot);
+      const creator = linked && (linked.type === "pass" || linked.type === "corner") && linked.playerId !== shot.playerId
+        ? linked
+        : events.filter((event) => event.type === "pass" && event.outcome === "complete" && !event.rescinded && event.teamId === shot.teamId && event.playerId !== shot.playerId
+            && eventSecondOf(event) <= at && at - eventSecondOf(event) <= ASSIST_WINDOW_SECONDS && sameHalf(event, shot, boundary)).at(-1);
+      if (!creator || creator.playerId !== playerId || !inScope(creator)) continue;
+      const scored = shot.type === "goal" || shot.outcome === "success" || events.some((event) => event.type === "goal" && !event.rescinded && event.relatedEventId === shot.id);
+      const windowStart = eventSecondOf(creator) - WINDOWS.chance_created.pre;
+      push(creator, "chance_created", (scored ? 40 : 0) + Math.round((shot.xg ?? 0) * 40), {
+        start: windowStart,
+        mustInclude: scored,
+        detail: { shooterName: playerName(fixture, shot.playerId), scored },
+      });
+      // Keep the shot itself inside the clip.
+      const last = candidates[candidates.length - 1];
+      last.end = Math.min(fixture.durationSeconds, Math.max(last.end, at + WINDOWS.chance_created.post));
+    }
+  } else {
+    for (const event of events) {
+      if (!inScope(event)) continue;
+      const classified = classify(event, byId, hasXg);
+      if (!classified) continue;
+      // A club reel keeps the club's own moments plus both sides' goals and red cards for context.
+      if (focus.teamId && event.teamId !== focus.teamId && !MUST_INCLUDE.has(classified.kind)) continue;
+      push(event, classified.kind, classified.bonus);
+    }
   }
 
   // Must-include moments first, then highest importance; ties go to the earlier moment so selection is stable.
@@ -367,8 +466,8 @@ export function buildHighlightReel(
         .filter((other) => other.event.id !== event.id && eventSecondOf(other.event) >= candidate.start && eventSecondOf(other.event) <= candidate.end)
         .sort((a, b) => eventSecondOf(a.event) - eventSecondOf(b.event))
         .map((other) => storylineCaption(storylineByEvent.get(other.event.id), language)?.text
-          ?? defaultCaption(other.kind, other.event, playerName(fixture, other.event.playerId), byId, language));
-      const caption = [fromStoryline?.text ?? defaultCaption(kind, event, name, byId, language), ...alsoInClip].join(" ");
+          ?? defaultCaption(other.kind, other.event, playerName(fixture, other.event.playerId), byId, language, other.detail));
+      const caption = [fromStoryline?.text ?? defaultCaption(kind, event, name, byId, language, candidate.detail), ...alsoInClip].join(" ");
       const captionLanguage = fromStoryline?.language ?? language;
       return {
         id: `clip-${String(index + 1).padStart(2, "0")}`,

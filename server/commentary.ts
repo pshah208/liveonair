@@ -32,7 +32,7 @@ import { HttpError } from "./validation.js";
  * event sequence inside the clip window, then voices them with Azure AI Speech neural voices.
  */
 
-const kinds = ["goal", "disallowed_goal", "red_card", "big_chance", "key_save", "booking"] as const satisfies readonly HighlightKind[];
+const kinds = ["goal", "disallowed_goal", "red_card", "big_chance", "key_save", "booking", "shot", "chance_created", "tackle", "hard_pass"] as const satisfies readonly HighlightKind[];
 const moods = ["calm", "build", "tense", "excited"] as const satisfies readonly CommentaryMood[];
 const boundedId = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9:_.-]+$/u);
 
@@ -62,6 +62,10 @@ const DEFAULT_MOOD: Record<HighlightKind, CommentaryMood> = {
   big_chance: "build",
   key_save: "tense",
   booking: "calm",
+  shot: "build",
+  chance_created: "build",
+  tackle: "calm",
+  hard_pass: "calm",
 };
 const SEQUENCE_SKIP = new Set(["kickoff", "halftime", "fulltime"]);
 const CACHE_TTL_MS = 15 * 60_000;

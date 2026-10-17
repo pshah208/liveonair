@@ -141,8 +141,11 @@ with live health.
   looked** (new goals, cards, corrections and approved stories since you left the view), in-app
   favourite-player alerts (deduplicated; no push notifications), **My match summary** (an *AI
   summary* written on demand for your persona, language, club and player, with audio when Azure AI
-  Speech is available; always full match) and **My moments** (the studio's data-rendered highlight
-  selection filtered to your club or player).
+  Speech is available; always full match) and **My moments**, a data-rendered reel built for you
+  in the selected half. With a favourite player it is that player's own reel (up to 10 moments):
+  their goals, shots (saved, blocked or missed), chances created and assists, saves, tackles won
+  and hardest completed passes (difficulty ≥ 60). With only a favourite club it is the club's
+  moments plus every goal and red card in the match; with neither, the studio's match reel.
 * The fan stream (``/api/live/stream?role=fan``) only carries producer-approved storylines, without
   agent traces, handoffs, review notes or rejected claims, and only the verified facts of approved
   storylines. ``role=fan`` is presentation filtering, **not access control**: the demo's producer

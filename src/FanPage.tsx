@@ -3,7 +3,7 @@ import type { Language, MatchEvent, MatchFixture, MatchSnapshot, NarrativeRespon
 import type { LiveMessage, Storyline, VerifiedFact } from "../shared/platform.js";
 import { analysePlayers } from "../shared/playerStats.js";
 import { filterByPeriod, PERIOD_LABEL, periodBoundary } from "../shared/periods.js";
-import { latestRevisions, type HighlightClip } from "../shared/highlights.js";
+import { latestRevisions, type HighlightFocus } from "../shared/highlights.js";
 import {
   alertKey,
   changesSince,
@@ -11,7 +11,6 @@ import {
   createFanCursor,
   FAN_CURSOR_KEY,
   favoritePlayerOf,
-  isFanMoment,
   loadFanPrefs,
   newPlayerAlerts,
   parseFanCursor,
@@ -231,7 +230,8 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
   const retractedCount = storylines.filter((item) => item.status === "retracted").length;
   const changes = useMemo(() => (matchId && fixture ? changesSince(cursor, matchId, fixture.events, storylines) : []), [cursor, matchId, fixture, storylines]);
   const players = useMemo(() => new Map(fixture ? [...fixture.home.players, ...fixture.away.players].map((player) => [player.id, player]) : []), [fixture]);
-  const clipFilter = useCallback((clip: HighlightClip) => isFanMoment(clip, focus), [focus]);
+  // A favourite player gets their own reel; otherwise a favourite club's; otherwise the match reel.
+  const reelFocus = useMemo<HighlightFocus>(() => (focus.playerId ? { playerId: focus.playerId } : focus.teamId ? { teamId: focus.teamId } : {}), [focus.playerId, focus.teamId]);
 
   if (!hasMatch || !fixture || !status) {
     return (
@@ -370,10 +370,12 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
       </div>
 
       <HighlightReelPanel key={`${fixture.id}-${prefs.language}`} fixture={fixture} storylines={approved} uptoSecond={uptoSecond} theme={theme} footage={context.footage}
-        onOpenVideoLab={onOpenStudio} clipFilter={clipFilter} title="My moments" initialLanguage={prefs.language}
-        intro={<p>{focus.playerId || focus.teamId
-          ? `Highlights involving ${[favoritePlayer.player?.name, focus.teamId ? teamName(focus.teamId) : undefined].filter(Boolean).join(" and ")}, chosen by the same rules as the studio reel.`
-          : "Every goal, red card, ruled-out goal and big moment, chosen by the same rules as the studio reel."}{" "}
+        onOpenVideoLab={onOpenStudio} focus={reelFocus} period={period} title="My moments" initialLanguage={prefs.language}
+        intro={<p>{reelFocus.playerId
+          ? `${favoritePlayer.player?.name ?? "Your player"}'s own reel: their goals, shots, chances created, saves, tackles won and hardest passes${period === "full" ? "" : ` in the ${PERIOD_LABEL[period].toLowerCase()}`}.`
+          : reelFocus.teamId
+            ? `${teamName(reelFocus.teamId)}'s biggest moments, plus every goal and red card in the match${period === "full" ? "" : ` in the ${PERIOD_LABEL[period].toLowerCase()}`}.`
+            : `Every goal, red card, ruled-out goal and big moment${period === "full" ? "" : ` in the ${PERIOD_LABEL[period].toLowerCase()}`}, chosen by the same rules as the studio reel.`}{" "}
           {context.footage ? "Cut from footage that is on this device only." : "Rendered from the event data; no footage is shared with Fan View."}</p>} />
 
       <p className="subtle-text fan-footnote">Fan View is a read-only view of the match on the Studio Desk. It only shows producer-approved stories; the agents' drafts and traces stay in the studio.</p>

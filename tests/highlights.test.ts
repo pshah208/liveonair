@@ -216,3 +216,60 @@ test("match-clock mode drops clips past the end of a known recording", () => {
   assert.ok(entries.every((entry) => entry.outSeconds <= 45 * 60));
   assert.ok(entries.length < reel.clips.length);
 });
+
+test("player focus builds that player's own reel: goals, saved shots, tackles; nobody else's moments", () => {
+  const match = fixture();
+  const nico = [...match.home.players, ...match.away.players].find((player) => player.name === "Nico Hale")!;
+  const reel = buildHighlightReel(match, [], { focus: { playerId: nico.id } });
+  assert.ok(reel.clips.length > 1);
+  assert.ok(reel.clips.length <= 10);
+  assert.ok(reel.clips.every((clip) => clip.playerId === nico.id));
+  const own = latestRevisions(match.events).filter((event) => event.playerId === nico.id);
+  for (const goal of own.filter((event) => event.type === "goal" && !event.rescinded)) {
+    assert.ok(reel.clips.some((clip) => clip.eventIds.includes(goal.id)), "player's goal missing");
+  }
+  const savedShot = own.find((event) => event.type === "shot" && event.outcome === "saved");
+  if (savedShot) assert.ok(reel.clips.some((clip) => clip.eventIds.includes(savedShot.id)), "saved shot missing");
+  // The match-wide reel only had the goal for this player.
+  const filtered = buildHighlightReel(match).clips.filter((clip) => clip.playerId === nico.id);
+  assert.ok(reel.clips.length > filtered.length);
+});
+
+test("player focus credits a chance created and an assist to the passer", () => {
+  const match = fixture();
+  const passer = match.home.players.find((player) => player.position !== "GK")!;
+  const shooter = match.home.players.find((player) => player.id !== passer.id && player.position !== "GK")!;
+  const base = { revision: 1, teamId: "home" as const, minute: 60 };
+  match.events.push(
+    { ...base, id: "t-pass", second: 0, type: "pass", playerId: passer.id, outcome: "complete", x: 60, y: 50, endX: 85, endY: 50 },
+    { ...base, id: "t-shot", second: 6, type: "shot", playerId: shooter.id, outcome: "success", x: 88, y: 50, xg: 0.3 },
+    { ...base, id: "t-goal", second: 6, type: "goal", playerId: shooter.id, outcome: "success", x: 88, y: 50, relatedEventId: "t-shot" },
+  );
+  const reel = buildHighlightReel(match, [], { focus: { playerId: passer.id } });
+  const created = reel.clips.find((clip) => clip.keyEventId === "t-pass");
+  assert.ok(created, "assist clip missing");
+  assert.equal(created.kind, "chance_created");
+  assert.ok(created.eventIds.includes("t-goal"), "clip must show the goal it set up");
+  assert.match(created.caption, new RegExp(`${shooter.name}`));
+  const es = buildHighlightReel(match, [], { focus: { playerId: passer.id }, language: "es" });
+  assert.match(es.clips.find((clip) => clip.keyEventId === "t-pass")!.caption, /asiste/);
+});
+
+test("player and club reels respect the selected half", () => {
+  const match = fixture();
+  const nico = [...match.home.players, ...match.away.players].find((player) => player.name === "Nico Hale")!;
+  const second = buildHighlightReel(match, [], { focus: { playerId: nico.id }, period: "second" });
+  assert.ok(second.clips.every((clip) => clip.keySecond > 45 * 60));
+  const first = buildHighlightReel(match, [], { focus: { playerId: nico.id }, period: "first" });
+  assert.ok(first.clips.every((clip) => clip.keySecond <= 45 * 60));
+  const firstMatch = buildHighlightReel(match, [], { period: "first" });
+  assert.ok(firstMatch.clips.every((clip) => clip.keySecond <= 45 * 60));
+});
+
+test("club focus keeps the club's moments plus both sides' goals and red cards", () => {
+  const match = fixture();
+  const reel = buildHighlightReel(match, [], { focus: { teamId: "away" } });
+  const goals = latestRevisions(match.events).filter((event) => event.type === "goal" && !event.rescinded);
+  for (const goal of goals) assert.ok(reel.clips.some((clip) => clip.eventIds.includes(goal.id)));
+  assert.ok(reel.clips.every((clip) => clip.teamId === "away" || ["goal", "disallowed_goal", "red_card"].includes(clip.kind)));
+});

@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightClip, type HighlightKind } from "../shared/highlights.js";
+import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightClip, type HighlightFocus, type HighlightKind } from "../shared/highlights.js";
+import type { MatchPeriod } from "../shared/periods.js";
 import type { Storyline } from "../shared/platform.js";
 import type { Language, MatchFixture } from "../shared/types.js";
 import { createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
@@ -16,8 +17,11 @@ type HighlightReelPanelProps = {
   /** The Video lab clip behind this fixture, when there is one. */
   footage: { url: string; name: string } | null;
   onOpenVideoLab: () => void;
-  /** Keeps only matching moments (e.g. Fan View's favourite club or player); selection itself is unchanged. */
+  /** Keeps only matching moments; selection itself is unchanged. */
   clipFilter?: (clip: HighlightClip) => boolean;
+  /** Builds the reel for one player or club (e.g. Fan View favourites) instead of the match-wide top moments. */
+  focus?: HighlightFocus;
+  period?: MatchPeriod;
   title?: string;
   /** Replaces the default explanation under the title. */
   intro?: React.ReactNode;
@@ -32,7 +36,11 @@ const KIND_LABEL: Record<HighlightKind, string> = {
   red_card: "Red card",
   big_chance: "Big chance",
   key_save: "Key save",
-  booking: "Booking"
+  booking: "Booking",
+  shot: "Shot",
+  chance_created: "Chance created",
+  tackle: "Tackle won",
+  hard_pass: "Hard pass"
 };
 
 function pickMimeType(): string | undefined {
@@ -40,7 +48,7 @@ function pickMimeType(): string | undefined {
   return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
 }
 
-export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, footage, onOpenVideoLab, clipFilter, title, intro, initialLanguage = "en" }: HighlightReelPanelProps) {
+export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, footage, onOpenVideoLab, clipFilter, focus, period, title, intro, initialLanguage = "en" }: HighlightReelPanelProps) {
   const titleId = useId();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelRef = useRef<ReelModel | null>(null);
@@ -59,12 +67,14 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
   const voiceSupported = useMemo(() => speechSupported(), []);
   const source: "data" | "footage" = footage ? "footage" : "data";
 
+  const focusPlayerId = focus?.playerId;
+  const focusTeamId = focus?.teamId;
   const reel = useMemo(() => {
-    const built = buildHighlightReel(fixture, storylines, { uptoSecond, language });
+    const built = buildHighlightReel(fixture, storylines, { uptoSecond, language, period, focus: { playerId: focusPlayerId, teamId: focusTeamId } });
     if (!clipFilter) return built;
     const clips = built.clips.filter(clipFilter);
     return { ...built, clips, totalMatchSeconds: clips.reduce((sum, clip) => sum + (clip.endSecond - clip.startSecond), 0) };
-  }, [fixture, storylines, uptoSecond, language, clipFilter]);
+  }, [fixture, storylines, uptoSecond, language, clipFilter, period, focusPlayerId, focusTeamId]);
   const commentary = useHighlightCommentary(reel, sound);
   const model = useMemo(() => (reel.clips.length > 0 ? createReelModel(fixture, reel, readPalette(), commentary.durations) : null), [fixture, reel, theme, commentary.durations]);
   modelRef.current = model;
