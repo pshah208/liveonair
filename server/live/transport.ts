@@ -74,6 +74,9 @@ const matchEventSchema: z.ZodType<MatchEvent> = z.object({
   xg: z.number().optional(),
   relatedEventId: z.string().trim().min(1).optional(),
   rescinded: z.boolean().optional(),
+  period: z.union([z.literal(1), z.literal(2)]).optional(),
+  flightMs: z.number().positive().max(60_000).optional(),
+  speedKmh: z.number().positive().max(250).optional(),
 }).strict();
 
 const liveEnvelopeBaseSchema = z.object({

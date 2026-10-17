@@ -1,10 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { analysePlayers, heatGrid, IMPACT_WEIGHTS, TRACKING_METRICS, type PlayerAnalysis } from "../shared/playerStats.js";
-import type { Language, MatchFixture, TeamId } from "../shared/types.js";
+import { PASS_DIFFICULTY_FORMULA, SPRINT_THRESHOLD_KMH } from "../shared/metrics.js";
+import { PERIOD_LABEL, periodBoundary, periodScope } from "../shared/periods.js";
+import type { Language, MatchFixture, MatchPeriod, TeamId } from "../shared/types.js";
 import { api, type PlayerNote } from "./api.js";
+import { PeriodSelector, periodScopeMessage } from "./PeriodSelector.js";
 import { getErrorMessage, LANGUAGE_LABEL, LANGUAGES, teamTint } from "./utils.js";
 
-type Props = { fixture: MatchFixture | null; clockSecond: number; aiReady: boolean; onOpenLiveDesk: () => void };
+type Props = {
+  fixture: MatchFixture | null;
+  clockSecond: number;
+  aiReady: boolean;
+  onOpenLiveDesk: () => void;
+  period?: MatchPeriod;
+  onPeriodChange?: (period: MatchPeriod) => void;
+};
 type MapMode = "heat" | "actions";
 type SortMode = "impact" | "number";
 
@@ -73,7 +83,15 @@ function Stat({ label, value, hint }: { label: string; value: string | number; h
   return <div className="pa-stat" title={hint}><span>{label}</span><strong>{value}</strong></div>;
 }
 
-export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDesk }: Props) {
+/** A tracked physical figure for a TRACKING_METRICS tile, or null when this player has no tracking value. */
+function physicalValue(analysis: PlayerAnalysis, key: string): string | null {
+  if (key === "distance") return analysis.distanceCoveredM === null ? null : `${(analysis.distanceCoveredM / 1000).toFixed(2)} km`;
+  if (key === "top_speed") return analysis.topSpeedKmh === null ? null : `${analysis.topSpeedKmh.toFixed(1)} km/h`;
+  if (key === "sprints") return analysis.sprints === null ? null : String(analysis.sprints);
+  return null;
+}
+
+export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDesk, period = "full", onPeriodChange }: Props) {
   const [team, setTeam] = useState<TeamId>("home");
   const [sort, setSort] = useState<SortMode>("impact");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -82,8 +100,12 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
   const [note, setNote] = useState<PlayerNote | null>(null);
   const [noteLoading, setNoteLoading] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
+  const noteRequest = useRef(0);
 
-  const analyses = useMemo(() => (fixture ? analysePlayers(fixture, clockSecond) : []), [fixture, clockSecond]);
+  const analyses = useMemo(() => (fixture ? analysePlayers(fixture, clockSecond, period) : []), [fixture, clockSecond, period]);
+  const halvesAvailable = useMemo(() => (fixture ? periodBoundary(fixture).available : true), [fixture]);
+  const scope = fixture ? periodScope(fixture, period, clockSecond) : undefined;
+  const scopeMessage = periodScopeMessage(scope);
   const squad = useMemo(() => analyses.filter((entry) => entry.teamId === team).sort((a, b) => sort === "impact"
     ? b.impact.rating - a.impact.rating || b.involvements - a.involvements
     : (a.player.number || 99) - (b.player.number || 99)), [analyses, team, sort]);
@@ -96,15 +118,23 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
       if (best) setTeam(best.teamId);
     }
   }, [analyses, selectedId]);
-  useEffect(() => { setNote(null); setNoteError(null); }, [selectedId, language]);
+  // A note describes one player, language, period and match; any change makes it stale.
+  useEffect(() => { noteRequest.current += 1; setNote(null); setNoteError(null); setNoteLoading(false); }, [selectedId, language, period, fixture?.id]);
 
   async function writeNote() {
     if (!selected) return;
+    const token = ++noteRequest.current;
     setNoteLoading(true);
     setNoteError(null);
-    try { setNote(await api.analysePlayer(selected.player.id, language)); }
-    catch (error) { setNoteError(getErrorMessage(error)); }
-    finally { setNoteLoading(false); }
+    try {
+      const next = await api.analysePlayer(selected.player.id, language, period);
+      if (token !== noteRequest.current || (next?.period ?? "full") !== period) return;
+      setNote(next);
+    } catch (error) {
+      if (token === noteRequest.current) setNoteError(getErrorMessage(error));
+    } finally {
+      if (token === noteRequest.current) setNoteLoading(false);
+    }
   }
 
   if (!fixture) {
@@ -124,11 +154,13 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
     <div className="pa-grid">
       <section className="panel pa-squads" aria-labelledby="pa-squads-title">
         <header className="panel__header">
-          <div><span className="eyebrow">Squads</span><h2 id="pa-squads-title">Players</h2></div>
+          <div><span className="eyebrow">Squads · {PERIOD_LABEL[period]}</span><h2 id="pa-squads-title">Players</h2></div>
           <label className="inline-select"><span className="sr-only">Sort players</span>
             <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)}><option value="impact">By impact</option><option value="number">By shirt number</option></select>
           </label>
         </header>
+        {onPeriodChange && <PeriodSelector value={period} onChange={onPeriodChange} halvesUnavailable={!halvesAvailable} className="pa-period-toggle" />}
+        {!halvesAvailable && <p className="subtle-text">Halves are unavailable: this match has no reliable half-time marker (clip-derived footage uses a clip clock).</p>}
         <div className="segmented segmented--compact pa-team-toggle" role="tablist" aria-label="Team">
           {(["home", "away"] as TeamId[]).map((id) => (
             <button key={id} type="button" role="tab" aria-selected={team === id} className={`segmented__item${team === id ? " is-active" : ""}`} onClick={() => setTeam(id)}>
@@ -141,22 +173,28 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
             <li key={entry.player.id}>
               <button type="button" className={`pa-row${entry.player.id === selectedId ? " is-active" : ""}`} onClick={() => setSelectedId(entry.player.id)} aria-pressed={entry.player.id === selectedId}>
                 <span className="pa-row__number mono" style={{ borderColor: teamTint(entry.teamId) }}>{entry.player.number || "–"}</span>
-                <span className="pa-row__name">{entry.player.name}<small>{entry.player.position || "Player"} · {entry.involvements} actions</small></span>
-                <span className={`pa-rating pa-rating--${ratingTone(entry.impact.rating)}`}>{entry.impact.rating.toFixed(1)}</span>
+                <span className="pa-row__name">{entry.player.name}<small>{entry.player.position || "Player"} · {scopeMessage ? "—" : `${entry.involvements} actions`}</small></span>
+                <span className={`pa-rating pa-rating--${scopeMessage ? "neutral" : ratingTone(entry.impact.rating)}`}>{scopeMessage ? "—" : entry.impact.rating.toFixed(1)}</span>
               </button>
             </li>
           ))}
         </ul>
       </section>
 
-      {selected ? (
+      {scopeMessage ? (
+        <section className="panel empty-hero" aria-live="polite">
+          <h2>{scope?.reason === "not_started" ? "Not started" : "Period unavailable"}</h2>
+          <p className="subtle-text">{scopeMessage}</p>
+          {onPeriodChange && <button type="button" className="button" onClick={() => onPeriodChange("full")}>Show the full match</button>}
+        </section>
+      ) : selected ? (
         <section className="panel pa-detail" aria-labelledby="pa-player-title">
           <header className="pa-hero" style={{ borderColor: teamTint(selected.teamId) }}>
             <span className="pa-hero__number mono" style={{ background: teamTint(selected.teamId) }}>{selected.player.number || "–"}</span>
             <div className="pa-hero__name">
               <span className="eyebrow">{teams[selected.teamId].name} · {selected.player.position || "Player"}</span>
               <h2 id="pa-player-title">{selected.player.name}</h2>
-              <p className="subtle-text">{selected.involvements} logged actions · {selected.involvementShare}% of the team's · {Math.floor(clockSecond / 60)}' played in the match</p>
+              <p className="subtle-text">{selected.involvements} logged actions{period === "full" ? "" : ` in the ${PERIOD_LABEL[period]}`} · {selected.involvementShare}% of the team's · match clock {Math.floor(clockSecond / 60)}'</p>
             </div>
             <div className={`pa-hero__rating pa-rating--${ratingTone(selected.impact.rating)}`} title="Illustrative impact rating: 6.0 plus weighted contributions, kept within 3–10">
               <strong>{selected.impact.rating.toFixed(1)}</strong><span>Impact</span>
@@ -183,11 +221,16 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                 <Stat label="Shots" value={selected.shots} /><Stat label="On target" value={selected.shotsOnTarget} />
                 <Stat label="xG" value={selected.xg.toFixed(2)} hint="Illustrative expected goals from shot quality" /><Stat label="xA" value={selected.xa.toFixed(2)} hint="xG of the shots this player set up" />
                 <Stat label="Box touches" value={selected.touchesInBox ?? "—"} hint="Actions in the opposition penalty area" />
+                <Stat label="Top shot speed" value={selected.topShotSpeedKmh === null ? "—" : `${Math.round(selected.topShotSpeedKmh)} km/h`} hint="Fastest shot from the shot's own synthetic ball-flight measurement" />
               </div></div>
               <div className="pa-group"><h3>Passing</h3><div className="pa-stats">
                 <Stat label="Completed" value={`${selected.passesCompleted}/${selected.passes}`} /><Stat label="Accuracy" value={selected.passAccuracy === null ? "—" : `${selected.passAccuracy}%`} />
                 <Stat label="Key passes" value={selected.keyPasses} hint="Passes or corners followed by a shot within 15 s" /><Stat label="Progressive" value={selected.progressivePasses} hint="Completed passes that moved the ball 15+ units towards goal" />
                 <Stat label="Possession lost" value={selected.possessionLost} hint="Unsuccessful passes" />
+                <Stat label="Avg length" value={selected.avgPassDistanceM === null ? "—" : `${selected.avgPassDistanceM.toFixed(1)} m`} hint="Mean pass length on a 105 × 68 m pitch" />
+                <Stat label="Avg difficulty" value={selected.avgPassDifficulty === null ? "—" : selected.avgPassDifficulty.toFixed(0)} hint={PASS_DIFFICULTY_FORMULA.join("; ")} />
+                <Stat label="vs expected" value={selected.passCompletionOverExpected === null ? "—" : `${selected.passCompletionOverExpected > 0 ? "+" : ""}${selected.passCompletionOverExpected.toFixed(1)} pp`} hint="Completed minus expected completions, percentage points of attempts" />
+                <Stat label="Hardest completed" value={selected.hardestCompletedPass ? `${selected.hardestCompletedPass.difficulty}/100 · ${Math.round(selected.hardestCompletedPass.distanceM)} m` : "—"} hint={selected.hardestCompletedPass ? `Event ${selected.hardestCompletedPass.eventId}` : undefined} />
               </div></div>
               <div className="pa-group"><h3>Defending</h3><div className="pa-stats">
                 <Stat label="Tackles won" value={`${selected.tacklesWon}/${selected.tackles}`} /><Stat label="Pressures" value={selected.pressures} />
@@ -234,6 +277,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                   {note.strengths.length > 0 && <><h4>Strengths</h4><ul>{note.strengths.map((item) => <li key={item}>{item}</li>)}</ul></>}
                   {note.concerns.length > 0 && <><h4>Watch</h4><ul>{note.concerns.map((item) => <li key={item}>{item}</li>)}</ul></>}
                   <span className={`tag${note.source === "foundry" ? " tag--accent" : ""}`} title={note.problem}>{note.source === "foundry" ? "Foundry player analyst · numbers checked" : "Rules-based note"}</span>
+                  <span className="tag">{PERIOD_LABEL[note.period ?? "full"]}{note.asOfSecond !== undefined ? ` · as of ${Math.floor(note.asOfSecond / 60)}'` : ""}</span>
                 </div>
               ) : (
                 <p className="subtle-text">{aiReady ? "The Foundry player-analyst agent writes a short scouting note from these numbers; every figure is checked before it is shown." : "A rules-based note is written from these numbers."}</p>
@@ -242,15 +286,21 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
           </div>
 
           <div className="pa-tracking">
-            <h3>Physical metrics</h3>
+            <h3>Physical metrics{fixture.tracking ? <span className="tag tag--muted pa-tracking__source">synthetic tracking</span> : null}</h3>
             <div className="pa-tracking__grid">
-              {TRACKING_METRICS.map((metric) => (
-                <div key={metric.key} className="pa-tracking__tile" title={metric.reason}>
-                  <span>{metric.label}</span><strong>—</strong><small>Needs a tracking feed</small>
-                </div>
-              ))}
+              {TRACKING_METRICS.map((metric) => {
+                const tracked = fixture.tracking ? physicalValue(selected, metric.key) : null;
+                return (
+                  <div key={metric.key} className="pa-tracking__tile" title={tracked ? "Seeded synthetic tracking samples, one per minute" : metric.reason}>
+                    <span>{metric.label}</span><strong>{tracked ?? "—"}</strong>
+                    <small>{tracked ? "Synthetic tracking" : fixture.tracking && metric.key !== "minutes" ? "Not tracked for this player" : metric.key === "minutes" ? "Needs line-up data" : "Needs a tracking feed"}</small>
+                  </div>
+                );
+              })}
             </div>
-            <p className="subtle-text">Event feeds record what happened on the ball, not how far players ran. Distance, sprints and speed need player tracking: positions for every player many times a second, from optical tracking or GPS vests.</p>
+            <p className="subtle-text">{fixture.tracking
+              ? `Distance, top speed and sprints (≥ ${SPRINT_THRESHOLD_KMH} km/h) come from seeded synthetic tracking samples (one per outfield player per minute), labelled as synthetic. A real broadcast would use optical tracking or GPS vests.`
+              : "Event feeds record what happened on the ball, not how far players ran. Distance, sprints and speed need player tracking: positions for every player many times a second, from optical tracking or GPS vests."}</p>
           </div>
         </section>
       ) : (

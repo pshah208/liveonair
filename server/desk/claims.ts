@@ -17,6 +17,7 @@ import type {
   VerifiedFact,
 } from "../../shared/platform.js";
 import type { Language, MatchEvent, MatchFixture } from "../../shared/types.js";
+import { LIVE_METRICS, liveMetricFact } from "../metricClaims.js";
 
 const boundedIdSchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_-]+$/u);
 const claimSourceSchema = z.object({
@@ -70,6 +71,11 @@ const matchStateParamsSchema = z.object({
   eventIds: z.array(boundedIdSchema).min(1).max(12),
 }).strict();
 
+const liveMetricParamsSchema = z.object({
+  eventId: boundedIdSchema,
+  metric: z.enum(LIVE_METRICS),
+}).strict();
+
 export const claimProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("family_link"), params: familyLinkParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
   z.object({ kind: z.literal("former_club"), params: formerClubParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
@@ -79,6 +85,7 @@ export const claimProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("club_honour"), params: clubHonourParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
   z.object({ kind: z.literal("live_event"), params: liveEventParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
   z.object({ kind: z.literal("match_state"), params: matchStateParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
+  z.object({ kind: z.literal("live_metric"), params: liveMetricParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
 ]);
 
 export const claimProposalArraySchema = z.array(claimProposalSchema).max(5);
@@ -483,6 +490,23 @@ export function verifyClaimProposal(
         ok: true,
         claim,
         fact: buildLocalizedFact(storylineId, context.matchId, minute, claim.id, text, proposal.sources, createdAt),
+      };
+    }
+    case "live_metric": {
+      const event = eventsById.get(proposal.params.eventId);
+      const reason = verifyEventReference(event, context);
+      if (!event || reason) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, reason ?? "Unknown event") };
+      }
+      const computed = liveMetricFact(fixture, events, event, proposal.params.metric);
+      if ("reason" in computed) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, computed.reason) };
+      }
+      const claim = verifiedClaim(proposal.kind, proposal.sources, computed.text);
+      return {
+        ok: true,
+        claim,
+        fact: buildLocalizedFact(storylineId, context.matchId, event.minute, claim.id, computed.text, proposal.sources, createdAt),
       };
     }
     case "former_club": {

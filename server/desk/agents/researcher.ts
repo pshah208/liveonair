@@ -115,6 +115,9 @@ export const researcherResponseSchema: Record<string, unknown> = {
           }, ["clubAId", "clubBId", "clubAWins", "clubBWins", "draws"]),
           proposal("historic_final", { matchId: idString }, ["matchId"]),
           proposal("club_honour", { clubId: idString, honourId: idString }, ["clubId", "honourId"]),
+          proposal("live_metric", {
+            eventId: idString, metric: { type: "string", enum: ["pass_distance", "pass_difficulty", "shot_speed"] },
+          }, ["eventId", "metric"]),
         ],
       },
     },
@@ -142,6 +145,8 @@ export const researcherAgentSpec: DeskAgentSpec = {
       "matchId, opponentClubId = that goal's opponentClubId when it is one of today's clubs, else null.",
       "Use former_club only when the trigger player previously played for one of today's two clubs (copy fromYear, toYear, goals).",
       "If you propose career_goals, total = the profile careerGoals plus the player's live goals in this match.",
+      "Use live_metric (metric = shot_speed for a shot, pass_distance or pass_difficulty for a pass) when a computed ball metric",
+      "is broadcast-worthy; the verifier computes the number, so never invent speeds or distances.",
     ].join("\n"),
     researcherTools,
     researcherResponseSchema,

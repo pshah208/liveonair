@@ -219,3 +219,91 @@ test("recent events exclude rescinded goals while evidence retains corrected rev
   assert.equal(snap.evidence[correctedId]?.rescinded, true);
   assert.ok(!snap.recentEvents.some((event) => event.id === correctedId));
 });
+
+test("full-match scope is the default and leaves the snapshot unchanged", () => {
+  const implicit = analyzeMatch(baseRequest);
+  const explicit = analyzeMatch({ ...baseRequest, period: "full" });
+  assert.deepEqual(explicit, implicit);
+  assert.deepEqual(implicit.scope, { period: "full", available: true });
+  assert.deepEqual(implicit.periodScore, implicit.score);
+});
+
+test("first-half scope during the second half keeps the canonical score and scopes stats, stories and evidence", () => {
+  const request = { ...baseRequest, correction: true };
+  const full = analyzeMatch(request);
+  const first = analyzeMatch({ ...request, period: "first" });
+  const second = analyzeMatch({ ...request, period: "second" });
+  assert.deepEqual(first.score, full.score, "the scorebug stays whole-match");
+  assert.deepEqual(full.score, { home: 1, away: 1 });
+  assert.deepEqual(first.periodScore, { home: 0, away: 1 }, "the first-half goal rescinded at 57' leaves the first half");
+  assert.deepEqual(second.periodScore, { home: 1, away: 0 });
+  assert.equal(first.stats.away.goals, 1);
+  assert.equal(first.evidence[getFixture(baseRequest.fixtureId).correctionEventId]?.rescinded, true);
+  for (const team of ["home", "away"] as const) {
+    assert.equal(first.stats[team].passes + second.stats[team].passes, full.stats[team].passes);
+    assert.equal(first.stats[team].shots + second.stats[team].shots, full.stats[team].shots);
+    const { passes, completedPasses, passAccuracy } = first.stats[team];
+    assert.equal(passAccuracy, passes ? Number(((completedPasses / passes) * 100).toFixed(2)) : 0);
+  }
+  assert.ok(Object.values(first.evidence).every((event) => secondOf(event) <= 45 * 60));
+  assert.ok(first.recentEvents.every((event) => secondOf(event) <= 45 * 60));
+  assert.ok(Object.values(second.evidence).every((event) => secondOf(event) > 45 * 60));
+  assert.ok(first.stories.length > 0, "a finished half still yields its own insights");
+  assert.ok(first.stories.every((story) => story.windowEnd <= 45 * 60 && story.evidenceIds.every((id) => first.evidence[id])));
+  assert.ok(second.stories.every((story) => story.windowStart > 45 * 60));
+  assert.equal(new Set([full.stateVersion, first.stateVersion, second.stateVersion]).size, 3);
+});
+
+test("second half before kick-off is not started rather than empty, and video fixtures report halves unavailable", () => {
+  const early = analyzeMatch({ ...baseRequest, atSecond: 30 * 60, period: "second" });
+  assert.deepEqual(early.scope, { period: "second", available: false, reason: "not_started" });
+  assert.deepEqual(early.stories, []);
+  assert.equal(early.eventCount, 0);
+  assert.deepEqual(early.score, analyzeMatch({ ...baseRequest, atSecond: 30 * 60 }).score);
+
+  const source = getFixture(baseRequest.fixtureId);
+  const clip: MatchFixture = { ...source, id: "video-clip", periods: undefined, events: source.events.map(({ period: _period, ...rest }) => rest) };
+  const unavailable = analyzeFixture(clip, { ...baseRequest, fixtureId: clip.id, period: "first" });
+  assert.deepEqual(unavailable.scope, { period: "first", available: false, reason: "unavailable" });
+  assert.equal(unavailable.stats.home.passes, 0);
+  const whole = analyzeFixture(clip, { ...baseRequest, fixtureId: clip.id });
+  assert.ok(whole.stats.home.passes > 0, "full/clip analysis keeps working");
+});
+
+test("favourite club only reorders and marks stories; stats, score and story text are unchanged", () => {
+  const neutral = analyzeMatch(baseRequest);
+  const fixture = getFixture(baseRequest.fixtureId);
+  let marked = 0;
+  for (const side of ["home", "away"] as const) {
+    const favored = analyzeMatch({ ...baseRequest, favoriteClubId: side });
+    marked += favored.stories.filter((story) => story.favorite).length;
+    assert.deepEqual(favored.stats, neutral.stats);
+    assert.deepEqual(favored.score, neutral.score);
+    assert.notEqual(favored.stateVersion, neutral.stateVersion);
+    assert.deepEqual(favored.focus, { favoriteClubId: side, favoriteClubInMatch: true, favoriteTeamId: side });
+    for (const story of favored.stories) {
+      assert.equal(story.favorite === true, story.teamId === side);
+      const original = neutral.stories.find((item) => item.id === story.id);
+      if (original) {
+        assert.equal(story.summary, original.summary);
+        assert.deepEqual(story.metrics, original.metrics);
+      }
+    }
+    for (let index = 1; index < favored.stories.length; index += 1) {
+      assert.ok(favored.stories[index - 1]!.importance >= favored.stories[index]!.importance);
+    }
+    for (const story of favored.stories.filter((item) => item.favorite)) {
+      const original = neutral.stories.find((item) => item.id === story.id);
+      if (original) assert.ok(story.importance > original.importance);
+    }
+  }
+  assert.ok(marked > 0, "fixture should have team-attributed stories");
+  if (fixture.home.archiveClubId) {
+    const byArchive = analyzeMatch({ ...baseRequest, favoriteClubId: fixture.home.archiveClubId });
+    assert.equal(byArchive.focus?.favoriteTeamId, "home");
+  }
+  const absent = analyzeMatch({ ...baseRequest, favoriteClubId: "club-not-in-this-match" });
+  assert.equal(absent.focus?.favoriteClubInMatch, false);
+  assert.deepEqual(absent.stories.map((story) => story.id), neutral.stories.map((story) => story.id));
+  assert.ok(absent.stories.every((story) => !story.favorite));
+});

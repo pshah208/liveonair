@@ -41,6 +41,41 @@ export interface MatchEvent {
   xg?: number;
   relatedEventId?: string;
   rescinded?: boolean;
+  /** Explicit half from the source feed. Wins over any clock-based inference. */
+  period?: 1 | 2;
+  /** Ball travel time for this event's own delivery (pass, corner, shot), in milliseconds. Synthetic in built-in fixtures. */
+  flightMs?: number;
+  /** Measured ball speed for a shot, in km/h. Synthetic in built-in fixtures. */
+  speedKmh?: number;
+}
+
+/** One coarse tracking sample: the interval (second - cadence, second] for one player. */
+export interface TrackingSample {
+  playerId: string;
+  /** End of the interval on the match clock. */
+  second: number;
+  /** Distance covered within the interval, in metres. */
+  distanceM: number;
+  /** Peak speed reached within the interval, in km/h. */
+  speedKmh: number;
+}
+
+/** Optional player tracking attached to a fixture. Built-in fixtures carry seeded synthetic samples only. */
+export interface SyntheticTracking {
+  source: "synthetic";
+  cadenceSeconds: number;
+  samples: TrackingSample[];
+}
+
+export type MatchPeriod = "full" | "first" | "second";
+
+/**
+ * How a fixture's halves are known. "synthetic"/"feed": halves split at halftimeSecond on the match clock
+ * (or from explicit event periods). "video_unknown": clip-local clock, halves cannot be established.
+ */
+export interface FixturePeriods {
+  source: "synthetic" | "feed" | "video_unknown";
+  halftimeSecond?: number;
 }
 
 export interface MatchFixture {
@@ -54,6 +89,9 @@ export interface MatchFixture {
   durationSeconds: number;
   correctionEventId: string;
   correctionAvailableAt: number;
+  periods?: FixturePeriods;
+  /** Synthetic player tracking (distance / top speed / sprints); absent for real feeds and clips. */
+  tracking?: SyntheticTracking;
 }
 
 export interface FixtureSummary {
@@ -74,6 +112,16 @@ export interface AnalysisRequest {
   persona: Persona;
   language: Language;
   favoritePlayerId?: string;
+  /** "home" | "away" or a synthetic archive club ID. Only reorders and marks stories; never changes stats or facts. */
+  favoriteClubId?: string;
+  /** Stats scope; defaults to the full match. The canonical score is never scoped. */
+  period?: MatchPeriod;
+}
+
+export interface PeriodScope {
+  period: MatchPeriod;
+  available: boolean;
+  reason?: "not_started" | "unavailable";
 }
 
 export interface TeamStats {
@@ -89,6 +137,16 @@ export interface TeamStats {
   yellowCards: number;
   redCards: number;
   illustrativeXg: number;
+  /** Mean pass length in metres; null when unavailable (no passes or camera-frame coordinates). */
+  avgPassDistanceM?: number | null;
+  /** Completion % of long passes (> 30 m); null when none were attempted. */
+  longPassAccuracy?: number | null;
+  /** Mean pass difficulty, 0–100 (see shared/metrics.ts). */
+  avgPassDifficulty?: number | null;
+  /** Completed passes minus expected completions, as percentage points of attempts. */
+  completionOverExpected?: number | null;
+  /** Fastest shot in scope, km/h. */
+  fastestShotKmh?: number | null;
 }
 
 export interface StoryMetric {
@@ -110,6 +168,18 @@ export interface StoryCard {
   windowStart: number;
   windowEnd: number;
   teamId?: TeamId;
+  /** Set when the story concerns the requested favourite club (ranking emphasis only). */
+  favorite?: boolean;
+}
+
+/** How the requested favourites resolved against this fixture. */
+export interface SnapshotFocus {
+  favoriteClubId?: string;
+  favoriteTeamId?: TeamId;
+  favoriteClubInMatch?: boolean;
+  favoritePlayerId?: string;
+  /** False when the requested favourite player is not in this match (fan streams only; never substituted). */
+  favoritePlayerInMatch?: boolean;
 }
 
 export interface CorrectionNotice {
@@ -125,8 +195,13 @@ export interface MatchSnapshot {
   stateVersion: string;
   persona: Persona;
   language: Language;
+  /** Canonical whole-match score so far, regardless of the selected period. */
   score: { home: number; away: number };
-  stats: { home: TeamStats; away: TeamStats };
+  /** Goals within the selected period (equals score for the full match). */
+  periodScore?: { home: number; away: number };
+  scope?: PeriodScope;
+  focus?: SnapshotFocus;
+  stats:{ home: TeamStats; away: TeamStats };
   stories: StoryCard[];
   recentEvents: MatchEvent[];
   evidence: Record<string, MatchEvent>;

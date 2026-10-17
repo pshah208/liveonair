@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Language, Persona } from "../../shared/types.js";
+import type { Language, MatchPeriod, Persona } from "../../shared/types.js";
 import type { LiveMessage } from "../../shared/platform.js";
 import { isLiveMessage } from "../liveMessage.js";
 
@@ -16,10 +16,14 @@ type LiveStreamOptions = {
   persona: Persona;
   language: Language;
   favoritePlayerId?: string;
+  /** "home" | "away" or a synthetic archive club ID. */
+  favoriteClubId?: string;
+  /** Scope of snapshot stats and stories; omitted or "full" keeps the whole match. */
+  period?: MatchPeriod;
   onMessage: (message: LiveMessage) => void;
 };
 
-export function useLiveStream({ enabled, role, persona, language, favoritePlayerId, onMessage }: LiveStreamOptions): LiveStreamState {
+export function useLiveStream({ enabled, role, persona, language, favoritePlayerId, favoriteClubId, period, onMessage }: LiveStreamOptions): LiveStreamState {
   const [state, setState] = useState<LiveStreamState>({ phase: enabled ? "connecting" : "idle", reconnectAttempt: 0 });
   const handlerRef = useRef(onMessage);
   const sourceRef = useRef<EventSource | null>(null);
@@ -46,6 +50,8 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
       if (cancelled) return;
       const params = new URLSearchParams({ role, persona, language });
       if (favoritePlayerId) params.set("favoritePlayerId", favoritePlayerId);
+      if (favoriteClubId) params.set("favoriteClubId", favoriteClubId);
+      if (period && period !== "full") params.set("period", period);
       setState((current) => ({
         phase: attempt === 0 ? "connecting" : "reconnecting",
         reconnectAttempt: attempt,
@@ -104,7 +110,7 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
       sourceRef.current = null;
       setState((current) => ({ ...current, phase: "closed" }));
     };
-  }, [enabled, favoritePlayerId, language, persona, role]);
+  }, [enabled, favoriteClubId, favoritePlayerId, language, period, persona, role]);
 
   return state;
 }

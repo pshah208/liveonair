@@ -5,6 +5,7 @@ import type {
   FixtureSummary,
   Language,
   MatchEvent,
+  MatchPeriod,
   MatchSnapshot,
   Persona,
 } from "./types.js";
@@ -177,6 +178,7 @@ export interface StartLiveRequest {
 export type ClaimKind =
   | "live_event"
   | "match_state"
+  | "live_metric"
   | "former_club"
   | "family_link"
   | "career_goals"
@@ -223,9 +225,26 @@ export interface Storyline {
   claims: StorylineClaim[];
   trace: AgentStep[];
   review?: { decision: "approved" | "rejected" | "edited"; at: string; note?: string };
+  /** Set when a producer first approved the copy (approve or edit); survives retraction. */
+  approvedAt?: string;
   retractionReason?: string;
   failureReason?: string;
   version: number;
+  /** Coordinator handoff log (agent -> agent), including recoveries and director fallbacks. */
+  handoffs?: StorylineHandoff[];
+}
+
+export interface StorylineHandoff {
+  from: string;
+  to: string;
+  reason: string;
+  at: string;
+  outcome: "ok" | "retry" | "fallback" | "skipped" | "escalated" | "failed";
+  /** Who chose the transition: the Foundry director agent or the deterministic policy. */
+  decidedBy?: "director" | "policy";
+  /** Set when the handoff is a recovery from an agent failure. */
+  recovery?: string;
+  errorClass?: string;
 }
 
 export interface ReviewStorylineRequest {
@@ -276,4 +295,8 @@ export interface LiveStreamQuery {
   persona: Persona;
   language: Language;
   favoritePlayerId?: string;
+  /** "home" | "away" or a synthetic archive club ID; reorders/marks stories only. */
+  favoriteClubId?: string;
+  /** Scope of snapshot stats and stories; defaults to the full match. Score stays whole-match. */
+  period?: MatchPeriod;
 }

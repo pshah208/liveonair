@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AppHealth, FixtureSummary, Language, MatchFixture, MatchSnapshot, NarrativeResponse } from "../shared/types.js";
+import type { AppHealth, FixtureSummary, Language, MatchFixture, MatchPeriod, MatchSnapshot, NarrativeResponse } from "../shared/types.js";
 import type { ArchiveSummary, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline, VerifiedFact } from "../shared/platform.js";
+import { PERIOD_LABEL, periodBoundary } from "../shared/periods.js";
 import { api } from "./api.js";
 import { BroadcastBar, EventFeed, FactTicker, LiveStats, MatchIntelligence, OverlayPreview, Panel, Pitch, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
 import { HighlightReelPanel } from "./HighlightReel.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
+import { PeriodSelector, periodScopeMessage, scopedTitle } from "./PeriodSelector.js";
 import { VideoLab, type VideoFootage } from "./VideoLab.js";
+import type { ActiveMatchContext } from "./liveContext.js";
 import { LabHighlightReel, type LabHighlights } from "./LabHighlightReel.js";
 import { PlayerAnalysisPage } from "./PlayerAnalysis.js";
+import { computePlayerTags, PlayerIdTags } from "./PlayerIdTags.js";
 import { PlayerCam } from "./PlayerCam.js";
 import { LiveVideoPanel } from "./LiveVideoPanel.js";
 import type { ProgressiveVideoSession } from "../shared/progressiveVideo.js";
@@ -31,9 +35,9 @@ import {
 type Tab = "live" | "players" | "recap" | "video" | "player";
 type StartMode = "fixture" | "matchlab";
 
-type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void };
+type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void; onLiveContext?: (context: ActiveMatchContext) => void };
 
-export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps) {
+export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: StudioPageProps) {
   const [tab, setTab] = useState<Tab>("live");
   const [health, setHealth] = useState<AppHealth | null>(null);
   const [desk, setDesk] = useState<DeskHealth | null>(null);
@@ -60,6 +64,8 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   const [progressiveSession, setProgressiveSession] = useState<ProgressiveVideoSession | null>(null);
 
   const [deskLanguage, setDeskLanguage] = useState<Language>("en");
+  // One stats scope shared by the Live Desk and Player Analysis; playback, score and producer controls stay whole-match.
+  const [period, setPeriod] = useState<MatchPeriod>("full");
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(null);
   const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
   const [correctingId, setCorrectingId] = useState<string | null>(null);
@@ -133,6 +139,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
     role: "studio",
     persona: "analyst",
     language: "en",
+    period,
     onMessage: (message) => {
       if (message.type === "status") {
         adoptStatus(message.status);
@@ -159,6 +166,9 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
   });
 
   useEffect(() => () => { if (fixtureTimer.current !== null) window.clearTimeout(fixtureTimer.current); }, []);
+
+  useEffect(() => { setPeriod("full"); }, [status?.matchId]);
+  useEffect(() => { setSelectedInsightId(null); }, [period]);
 
   useEffect(() => {
     if (tab === "recap") void refreshStoryboard();
@@ -264,8 +274,26 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
     review: storylines.filter((storyline) => storyline.status === "needs_review").length,
     onAir: approved.length
   };
-  const selectedInsight = snapshot?.stories.find((story) => story.id === selectedInsightId) ?? null;
   const transport = status ? liveTransportLabel(status) : "Connecting";
+  // Until the stream delivers a snapshot for the newly selected period, scoped panels wait rather than show the old scope.
+  const scopedSnapshot = snapshot && (snapshot.scope?.period ?? "full") === period ? snapshot : null;
+  const selectedInsight = scopedSnapshot?.stories.find((story) => story.id === selectedInsightId) ?? null;
+  const scopeMessage = periodScopeMessage(scopedSnapshot?.scope);
+  const halvesUnavailable = fixture ? !periodBoundary(fixture).available : false;
+  const analysisStoppedEarly = progressiveForMatch?.stage === "stopped" || progressiveForMatch?.stage === "failed";
+  const aiConfigured = Boolean(health?.ai.configured);
+
+  // Share the active match read-only with Fan View; Studio keeps owning the stream, producer controls and video.
+  useEffect(() => {
+    onLiveContext?.({
+      fixture,
+      status,
+      footage: recapFootage,
+      ...(progressiveForMatch ? { analyzedThrough: analyzedSecond } : {}),
+      analysisStoppedEarly,
+      aiReady: aiConfigured
+    });
+  }, [onLiveContext, fixture, status, recapFootage, progressiveForMatch ? analyzedSecond : undefined, analysisStoppedEarly, aiConfigured]);
 
   return (
     <main className="page">
@@ -314,7 +342,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
         <PlayerCam />
       </div>
 
-      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} />}
+      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} period={period} onPeriodChange={setPeriod} />}
       {tab === "recap" && labHighlights && <LabHighlightReel lab={labHighlights} theme={theme} onEdit={() => setTab("video")} onClose={() => setLabHighlights(null)} />}
 
       {tab === "video" || tab === "player" || tab === "players" ? null : tab === "live" ? (
@@ -356,22 +384,38 @@ export function StudioPage({ theme, infraOpen, onToggleInfra }: StudioPageProps)
           </div>
 
           <div className="desk-col">
-            <Panel eyebrow="Live board" title={fixture?.title ?? "No match running"} aside={selectedInsight && <button type="button" className="link-button" onClick={() => setSelectedInsightId(null)}>Clear evidence</button>}>
+            <Panel eyebrow={scopedTitle("Live board", period)} title={fixture?.title ?? "No match running"} aside={selectedInsight && <button type="button" className="link-button" onClick={() => setSelectedInsightId(null)}>Clear evidence</button>}>
               {fixture ? (
                 <>
-                  <Pitch fixture={fixture} events={snapshot?.recentEvents ?? fixture.events} highlightIds={selectedInsight?.evidenceIds} />
-                  <LiveStats snapshot={snapshot} fixture={fixture} />
+                  <PeriodSelector value={period} onChange={setPeriod} halvesUnavailable={halvesUnavailable} className="period-toggle" />
+                  {halvesUnavailable && <p className="subtle-text">Halves are unavailable for this match: clip-derived footage has no reliable half-time marker.</p>}
+                  {scopeMessage ? (
+                    <div className="empty-state" role="status"><strong>{scopedSnapshot?.scope?.reason === "not_started" ? "Not started" : "Period unavailable"}</strong> · {scopeMessage}</div>
+                  ) : (
+                    <>
+                      <Pitch fixture={fixture} events={scopedSnapshot?.recentEvents ?? (period === "full" ? fixture.events : [])} highlightIds={selectedInsight?.evidenceIds} />
+                      {period !== "full" && scopedSnapshot?.periodScore && <p className="subtle-text">Goals in the {PERIOD_LABEL[period]}: {fixture.home.shortName} {scopedSnapshot.periodScore.home}–{scopedSnapshot.periodScore.away} {fixture.away.shortName} · match score {score.home}–{score.away}</p>}
+                      <span className="eyebrow">{scopedTitle("Live stats", period)}</span>
+                      <LiveStats snapshot={scopedSnapshot} fixture={fixture} />
+                    </>
+                  )}
                 </>
               ) : <div className="empty-state">The pitch, live stats and story cards appear once a match starts.</div>}
             </Panel>
-            <Panel eyebrow="Deterministic engine" title="Match intelligence" aside={snapshot && <span className="tag">{Math.round(snapshot.evidenceCoverage)}% evidence coverage</span>}>
-              <MatchIntelligence stories={snapshot?.stories ?? []} selectedId={selectedInsightId} onSelect={setSelectedInsightId} />
+            <Panel eyebrow={scopedTitle("Deterministic engine", period)} title={scopedTitle("Match intelligence", period)} aside={scopedSnapshot?.scope?.available !== false && scopedSnapshot && <span className="tag">{Math.round(scopedSnapshot.evidenceCoverage)}% evidence coverage</span>}>
+              {scopeMessage ? <div className="empty-state">{scopeMessage}</div> : <MatchIntelligence stories={scopedSnapshot?.stories ?? []} selectedId={selectedInsightId} onSelect={setSelectedInsightId} />}
             </Panel>
           </div>
 
           <div className="desk-col">
             <Panel eyebrow="On air" title="Lower-third" aside={<label className="inline-select"><span className="sr-only">Desk language</span><select value={deskLanguage} onChange={(event) => setDeskLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}</select></label>}>
-              <OverlayPreview storyline={onAir} language={deskLanguage} onExport={() => onAir && downloadJson(`${onAir.matchId}-${onAir.id}-overlay.json`, { storylineId: onAir.id, matchId: onAir.matchId, minute: onAir.triggerMinute, headline: onAir.headline, overlay: onAir.overlay, onAirLine: onAir.onAirLine, claimSources: onAir.claims.flatMap((claim) => claim.sources), version: onAir.version })} />
+              <OverlayPreview storyline={onAir} language={deskLanguage} onExport={() => onAir && downloadJson(`${onAir.matchId}-${onAir.id}-overlay.json`, { storylineId: onAir.id, matchId: onAir.matchId, minute: onAir.triggerMinute, headline: onAir.headline, overlay: onAir.overlay, onAirLine: onAir.onAirLine, claimSources: onAir.claims.flatMap((claim) => claim.sources), version: onAir.version, playerTags: fixture ? computePlayerTags(fixture, analyzedSecond) : [] })} />
+              {fixture && (
+                <div className="player-id-panel">
+                  <span className="eyebrow">Player ID · {PERIOD_LABEL[period]}</span>
+                  <PlayerIdTags fixture={fixture} clockSecond={analyzedSecond} period={period} />
+                </div>
+              )}
             </Panel>
             <Panel eyebrow="Foundry agents" title="Storyline queue" aside={<>{counts.review > 0 && <span className="tag tag--accent">{counts.review} to review</span>}<span className="tag">{counts.onAir} on air</span></>}>
               {desk?.mode === "unconfigured" && <div className="banner banner--warning">Storyline agents aren't configured on this server.</div>}

@@ -6,11 +6,35 @@ import type {
   RecapStoryboard,
   ReviewStorylineRequest,
   Storyline,
+  StorylineHandoff,
   VerifiedFact,
 } from "../../shared/platform.js";
 import type { AgentStep, MatchEvent, MatchFixture } from "../../shared/types.js";
-import type { LiveMatchView, StorylineDesk } from "../contracts.js";
+import type { AnalyzeFixture, LiveMatchView, StorylineDesk } from "../contracts.js";
+import { analyzeFixture } from "../engine.js";
+import { recordHandoffSpan, withSpan } from "../telemetry.js";
 import { HttpError } from "../validation.js";
+import { cardsForTrigger, type TacticsCard } from "./agents/tactics-analyst.js";
+import { decideNext, type DirectorInput, type DirectorProposal } from "./coordinator.js";
+import {
+  CircuitBreaker,
+  CircuitOpenError,
+  classifyError,
+  errorMessage,
+  isRetryable,
+  withTimeout,
+  type ErrorClass,
+  type RecoveryAction,
+} from "./recovery.js";
+import {
+  STEP_OWNER,
+  createWorkspace,
+  lastReview,
+  verifiedClaimTexts,
+  type DeskAgentKey,
+  type DeskStep,
+  type StorylineWorkspace,
+} from "./state.js";
 import {
   activeEvents,
   buildArchiveIndexes,
@@ -28,7 +52,7 @@ import {
   type TriggerContext,
 } from "./claims.js";
 import { createArchiveRetrievalFromEnv } from "./retrieval.js";
-import { createFoundryAgentRunner, type AgentRunner, type LocalizationDraft, type ProducerDraft } from "./runner.js";
+import { createFoundryAgentRunner, type AgentRunner, type FactCheckResult, type LocalizationDraft, type ProducerDraft } from "./runner.js";
 
 type DeskOptions = {
   archive: ArchiveSnapshot;
@@ -37,7 +61,20 @@ type DeskOptions = {
   now?: () => number;
   maxPerMatch?: number;
   maxConcurrent?: number;
+  /** Shared per-agent circuit breaker (inject one with a fake clock in tests). */
+  breaker?: CircuitBreaker;
+  /** Per-call agent timeout before the call is classified as `timeout`. */
+  agentTimeoutMs?: number;
+  /** Coordinator budget per storyline. */
+  maxSteps?: number;
+  deadlineMs?: number;
+  /** Engine analysis used by the tactics analyst for story cards. */
+  analyze?: AnalyzeFixture;
 };
+
+function labelEvent(event: MatchEvent): string {
+  return event.type === "red_card" ? "Red card" : event.type === "goal" ? "Goal" : event.type;
+}
 
 type PendingJob = {
   storylineId: string;
@@ -51,6 +88,7 @@ type MatchState = {
   storylines: Storyline[];
   facts: VerifiedFact[];
   triggeredEventIds: Set<string>;
+  rescindedEventIds: Set<string>;
 };
 
 const EMPTY_LOCALIZED = { en: "", es: "", fr: "", pt: "" } as const;
@@ -165,6 +203,11 @@ export class DefaultStorylineDesk implements StorylineDesk {
   private readonly storylineFixtures = new Map<string, MatchFixture>();
   private readonly queue: PendingJob[] = [];
   private activeJobs = 0;
+  private readonly breaker: CircuitBreaker;
+  private readonly agentTimeoutMs: number;
+  private readonly maxSteps: number;
+  private readonly deadlineMs: number;
+  private readonly analyze: AnalyzeFixture;
 
   constructor(private readonly archive: ArchiveSnapshot, options: Omit<Required<DeskOptions>, "archive"> & { archive?: ArchiveSnapshot }) {
     this.archiveIndexes = buildArchiveIndexes(archive);
@@ -173,6 +216,11 @@ export class DefaultStorylineDesk implements StorylineDesk {
     this.now = options.now;
     this.maxPerMatch = options.maxPerMatch;
     this.maxConcurrent = options.maxConcurrent;
+    this.breaker = options.breaker;
+    this.agentTimeoutMs = options.agentTimeoutMs;
+    this.maxSteps = options.maxSteps;
+    this.deadlineMs = options.deadlineMs;
+    this.analyze = options.analyze;
   }
 
   private matchState(matchId: string): MatchState {
@@ -180,7 +228,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
     if (current) {
       return current;
     }
-    const created: MatchState = { storylines: [], facts: [], triggeredEventIds: new Set() };
+    const created: MatchState = { storylines: [], facts: [], triggeredEventIds: new Set(), rescindedEventIds: new Set() };
     this.byMatchId.set(matchId, created);
     return created;
   }
@@ -212,7 +260,12 @@ export class DefaultStorylineDesk implements StorylineDesk {
     if (!storyline) {
       throw new HttpError(404, "Storyline not found");
     }
+    const wasRetracted = storyline.status === "retracted";
     mutate(storyline);
+    // Retraction is terminal: in-flight pipeline steps may still log trace, but never revive the status.
+    if (wasRetracted) {
+      storyline.status = "retracted";
+    }
     storyline.updatedAt = iso(this.now);
     storyline.version += 1;
     this.saveStoryline(storyline);
@@ -272,7 +325,6 @@ export class DefaultStorylineDesk implements StorylineDesk {
     if (!storyline) {
       return;
     }
-    const createdAt = storyline.createdAt;
     const triggerContext: TriggerContext = {
       event: job.event,
       fixture: job.view.fixture,
@@ -291,154 +343,492 @@ export class DefaultStorylineDesk implements StorylineDesk {
       return;
     }
 
-    let proposals: ClaimProposal[];
-    {
+    const workspace = createWorkspace({
+      storylineId: storyline.id,
+      matchId: storyline.matchId,
+      trigger: triggerContext,
+      knownNames: knownNamesForGuard(this.archive, job.view.fixture),
+      now: this.now(),
+      maxSteps: this.maxSteps,
+      deadlineMs: this.deadlineMs,
+    });
+
+    await withSpan("desk.storyline", { storylineId: storyline.id, matchId: storyline.matchId, trigger: job.event.id }, async (span) => {
+      this.handoff(workspace, {
+        from: "desk",
+        to: STEP_OWNER.research,
+        reason: `${labelEvent(job.event)} at ${job.event.minute}' triggered a storyline`,
+        outcome: "ok",
+        decidedBy: "policy",
+      });
+      let step: DeskStep = "research";
+      let reason = "";
+      while (true) {
+        if (this.isRetracted(workspace.storylineId)) {
+          break;
+        }
+        workspace.budget.stepsTaken += 1;
+        const terminal = await this.executeStep(workspace, step, job, reason);
+        workspace.step = step;
+        if (this.isRetracted(workspace.storylineId)) {
+          break;
+        }
+        if (terminal) {
+          this.recordTerminalHandoff(workspace, step);
+          break;
+        }
+        const decision = await decideNext(workspace, {
+          now: this.now,
+          caps: { tactics: this.tacticsAvailable() },
+          direct: this.directorFor(workspace),
+        });
+        const fallbackTrace = decision.outcome === "fallback"
+          ? makeTrace("director", "rejected", `Recovery (${decision.recovery ?? "policy_fallback"}): ${decision.reason}`, this.now(), this.now)
+          : undefined;
+        this.handoff(workspace, {
+          from: STEP_OWNER[step],
+          to: STEP_OWNER[decision.step],
+          reason: decision.reason,
+          outcome: decision.outcome,
+          decidedBy: decision.decidedBy,
+          recovery: decision.recovery,
+          errorClass: decision.errorClass,
+        }, fallbackTrace);
+        if (decision.step === "done") {
+          break;
+        }
+        step = decision.step;
+        reason = decision.reason;
+      }
+      const final = this.byStorylineId.get(workspace.storylineId);
+      span.setAttribute("outcome", final?.status ?? "unknown");
+      span.setAttribute("handoffs", workspace.handoffs.length);
+      span.setAttribute("recoveries", workspace.handoffs.filter((entry) => entry.recovery).length);
+    });
+  }
+
+  private isRetracted(storylineId: string): boolean {
+    return this.byStorylineId.get(storylineId)?.status === "retracted";
+  }
+
+  /** Closes the handoff log: either to human review (approval is always manual) or to the desk on failure. */
+  private recordTerminalHandoff(workspace: StorylineWorkspace, step: DeskStep): void {
+    const status = this.byStorylineId.get(workspace.storylineId)?.status;
+    const last = workspace.handoffs.at(-1);
+    if (status === "needs_review") {
+      if (last?.to === "human-review") {
+        return;
+      }
+      this.handoff(workspace, {
+        from: STEP_OWNER[step] === "human-review" ? "director" : STEP_OWNER[step],
+        to: "human-review",
+        reason: workspace.englishOnly ? "English-only copy awaiting human approval" : "Copy awaiting human approval",
+        outcome: "ok",
+        decidedBy: "policy",
+      });
+    } else if (status === "failed" && last?.to !== "desk") {
+      this.handoff(workspace, {
+        from: STEP_OWNER[step],
+        to: "desk",
+        reason: this.byStorylineId.get(workspace.storylineId)?.failureReason ?? "Storyline failed",
+        outcome: "failed",
+        decidedBy: "policy",
+      });
+    }
+  }
+
+  private tacticsAvailable(): boolean {
+    return typeof this.runner.tactics === "function" && this.breaker.canCall("tactics-analyst");
+  }
+
+  private directorFor(workspace: StorylineWorkspace): ((input: DirectorInput) => Promise<DirectorProposal>) | undefined {
+    const direct = this.runner.direct?.bind(this.runner);
+    if (!direct) {
+      return undefined;
+    }
+    return (input) => this.callAgent(workspace, "director", () => direct(input), { timeoutMs: Math.min(this.agentTimeoutMs, 20_000) });
+  }
+
+  /** Appends a handoff to the workspace log (and optionally a trace step) and persists both on the storyline. */
+  private handoff(workspace: StorylineWorkspace, entry: Omit<StorylineHandoff, "at">, traceStep?: AgentStep): void {
+    const full: StorylineHandoff = Object.fromEntries(
+      Object.entries({ ...entry, at: iso(this.now) }).filter(([, value]) => value !== undefined),
+    ) as unknown as StorylineHandoff;
+    workspace.handoffs.push(full);
+    recordHandoffSpan({
+      storylineId: workspace.storylineId,
+      from: full.from,
+      to: full.to,
+      outcome: full.outcome,
+      decidedBy: full.decidedBy,
+      recovery: full.recovery,
+      errorClass: full.errorClass,
+    });
+    this.updateStoryline(workspace.storylineId, (current) => {
+      if (traceStep) {
+        current.trace.push(traceStep);
+      }
+      current.handoffs = deepClone(workspace.handoffs);
+    });
+  }
+
+  /** Every recovery is a rejected trace step for the failing agent plus a handoff describing the re-route. */
+  private recover(
+    workspace: StorylineWorkspace,
+    input: { agent: string; to: string; reason: string; outcome: StorylineHandoff["outcome"]; recovery: RecoveryAction; errorClass: ErrorClass; started?: number },
+  ): void {
+    this.handoff(workspace, {
+      from: input.agent,
+      to: input.to,
+      reason: input.reason,
+      outcome: input.outcome,
+      decidedBy: "policy",
+      recovery: input.recovery,
+      errorClass: input.errorClass,
+    }, makeTrace(input.agent, "rejected", `Recovery (${input.recovery}): ${input.reason}`, input.started ?? this.now(), this.now));
+  }
+
+  /** Calls one agent behind its circuit breaker and a timeout, retrying transient failures. */
+  private async callAgent<T>(
+    workspace: StorylineWorkspace,
+    agent: DeskAgentKey,
+    run: () => Promise<T>,
+    options: { retries?: number; timeoutMs?: number } = {},
+  ): Promise<T> {
+    const retries = options.retries ?? 0;
+    for (let attempt = 0; ; attempt += 1) {
+      workspace.attempts[agent] += 1;
       const started = this.now();
       try {
-        proposals = await this.runner.research({
-          archive: this.archive,
-          retrieval: this.retrieval,
-          fixture: deepClone(job.view.fixture),
-          clockSecond: job.view.clockSecond,
-          triggerEvent: deepClone(job.event),
+        const result = await withSpan(`desk.agent.${agent}`, { agent, storylineId: workspace.storylineId, attempt: attempt + 1 }, async (span) => {
+          try {
+            this.breaker.assertCanCall(agent);
+            const value = await withTimeout(agent, options.timeoutMs ?? this.agentTimeoutMs, run);
+            span.setAttribute("outcome", "ok");
+            return value;
+          } catch (error) {
+            span.setAttribute("outcome", classifyError(error));
+            throw error;
+          }
         });
-        // The live analyst always contributes the scoreline context, so copy about leads or equalisers
-        // can be checked against a verified claim instead of the producer's assumptions.
-        if (!proposals.some((proposal) => proposal.kind === "match_state")) {
-          proposals = [...proposals, {
-            kind: "match_state",
-            params: { eventIds: [job.event.id] },
-            sources: [{ type: "event", id: job.event.id }],
-          }];
-        }
-        this.updateStoryline(job.storylineId, (current) => {
-          current.trace.push(makeTrace("researcher", "complete", `Produced ${proposals.length} claim proposal(s) via ${this.retrieval.describe()}`, started, this.now));
-          current.status = "checking";
-        });
+        this.breaker.recordSuccess(agent);
+        return result;
       } catch (error) {
-        this.updateStoryline(job.storylineId, (current) => {
-          current.status = "failed";
-          current.failureReason = error instanceof Error ? error.message : "Research failed";
-          current.trace.push(makeTrace("researcher", "rejected", current.failureReason, started, this.now));
-        });
-        return;
-      }
-    }
-
-    let verifiedFacts: VerifiedFact[] = [];
-    {
-      const started = this.now();
-      this.updateStoryline(job.storylineId, (current) => {
-        current.claims = [];
-      });
-      const verifiedClaims: Storyline["claims"] = [];
-      const rejectedClaims: Storyline["claims"] = [];
-      for (const proposal of proposals) {
-        const result = verifyClaimProposal(this.archive, this.archiveIndexes, job.view.fixture, triggerContext, storyline.id, createdAt, proposal);
-        if (result.ok) {
-          verifiedClaims.push(result.claim);
-          verifiedFacts.push(result.fact);
-          const match = this.matchState(storyline.matchId);
-          match.facts.push(result.fact);
-          this.emit({ fact: result.fact });
-        } else {
-          rejectedClaims.push(result.claim);
+        const errorClass = classifyError(error);
+        if (!(error instanceof CircuitOpenError)) {
+          this.breaker.recordFailure(agent);
         }
-      }
-      this.updateStoryline(job.storylineId, (current) => {
-        current.claims = [...verifiedClaims, ...rejectedClaims];
-        current.trace.push(makeTrace("verifier", verifiedClaims.length > 0 ? "complete" : "rejected", `Verified ${verifiedClaims.length}; rejected ${rejectedClaims.length}`, started, this.now));
-        current.status = verifiedClaims.length > 0 ? "drafting" : "failed";
-        if (verifiedClaims.length === 0) {
-          current.failureReason = "No verified claims available";
-        }
-      });
-      if (verifiedClaims.length === 0) {
-        return;
-      }
-    }
-
-    const claimTexts = verifiedFacts.map((fact) => fact.text.en);
-    const knownNames = knownNamesForGuard(this.archive, job.view.fixture);
-
-    let draft: ProducerDraft;
-    {
-      const started = this.now();
-      const { draft: producerDraft, guardErrors } = await this.runProducerWithGuard(claimTexts, knownNames);
-      if (!producerDraft) {
-        this.updateStoryline(job.storylineId, (current) => {
-          current.status = "failed";
-          current.failureReason = `Producer output failed deterministic guard: ${guardErrors.join("; ")}`;
-          current.trace.push(makeTrace("producer", "rejected", current.failureReason, started, this.now));
-        });
-        return;
-      }
-      draft = producerDraft;
-      this.updateStoryline(job.storylineId, (current) => {
-        current.priority = draft.priority;
-        current.headline.en = draft.headline;
-        current.onAirLine.en = draft.onAirLine;
-        current.overlay.en = draft.overlay;
-        current.trace.push(makeTrace("producer", "complete", "Drafted storyline copy", started, this.now));
-      });
-    }
-
-    {
-      const started = this.now();
-      const initialReview = await this.runner.factCheck({
-        claims: claimTexts,
-        headline: draft.headline,
-        onAirLine: draft.onAirLine,
-        overlay: draft.overlay,
-      });
-      if (initialReview.verdict === "revise") {
-        const { draft: revisedDraft, guardErrors: retryGuardErrors } = await this.runProducerWithGuard(claimTexts, knownNames, initialReview.issues);
-        if (!revisedDraft) {
-          this.updateStoryline(job.storylineId, (current) => {
-            current.status = "failed";
-            current.failureReason = `Producer retry failed deterministic guard: ${retryGuardErrors.join("; ")}`;
-            current.trace.push(makeTrace("fact-checker", "rejected", `${initialReview.issues.join("; ") || "Revision requested"}; producer retry failed`, started, this.now));
+        if (attempt < retries && isRetryable(errorClass) && this.breaker.canCall(agent) && this.now() < workspace.budget.deadlineAt) {
+          this.recover(workspace, {
+            agent,
+            to: agent,
+            reason: `${errorClass}: ${errorMessage(error)}; retrying`,
+            outcome: "retry",
+            recovery: "retry",
+            errorClass,
+            started,
           });
-          return;
+          continue;
         }
-        const secondReview = await this.runner.factCheck({
-          claims: claimTexts,
-          headline: revisedDraft.headline,
-          onAirLine: revisedDraft.onAirLine,
-          overlay: revisedDraft.overlay,
+        throw error;
+      }
+    }
+  }
+
+  /** Runs one step against the workspace. Returns true when the storyline reached a terminal status. */
+  private async executeStep(workspace: StorylineWorkspace, step: DeskStep, job: PendingJob, reason: string): Promise<boolean> {
+    switch (step) {
+      case "research":
+        return this.stepResearch(workspace, job);
+      case "verify":
+        return this.stepVerify(workspace, job);
+      case "tactics":
+        return this.stepTactics(workspace, job);
+      case "produce":
+        return this.stepProduce(workspace);
+      case "fact_check":
+        return this.stepFactCheck(workspace);
+      case "revise":
+        return this.stepRevise(workspace);
+      case "localize":
+        return this.stepLocalize(workspace);
+      case "needs_review":
+        return this.stepNeedsReview(workspace, reason);
+      case "failed": {
+        const started = this.now();
+        this.updateStoryline(workspace.storylineId, (current) => {
+          current.status = "failed";
+          current.failureReason = reason || "Coordinator stopped the run";
+          current.trace.push(makeTrace("director", "rejected", current.failureReason, started, this.now));
         });
-        this.updateStoryline(job.storylineId, (current) => {
-          current.priority = revisedDraft.priority;
-          current.headline.en = revisedDraft.headline;
-          current.onAirLine.en = revisedDraft.onAirLine;
-          current.overlay.en = revisedDraft.overlay;
-        });
-        draft = revisedDraft;
-        if (secondReview.verdict === "revise") {
-          this.updateStoryline(job.storylineId, (current) => {
-            current.status = "needs_review";
-            current.trace.push(makeTrace("fact-checker", "rejected", secondReview.issues.join("; "), started, this.now));
-          });
-          return;
-        }
-        this.updateStoryline(job.storylineId, (current) => {
-          current.trace.push(makeTrace("fact-checker", "complete", initialReview.issues.join("; ") || "Draft revised once", started, this.now));
-        });
+        return true;
+      }
+      case "done":
+        return true;
+    }
+  }
+
+  private async stepResearch(workspace: StorylineWorkspace, job: PendingJob): Promise<boolean> {
+    const started = this.now();
+    try {
+      let proposals = await this.callAgent(workspace, "researcher", () => this.runner.research({
+        archive: this.archive,
+        retrieval: this.retrieval,
+        fixture: deepClone(job.view.fixture),
+        clockSecond: job.view.clockSecond,
+        triggerEvent: deepClone(job.event),
+      }), { retries: 1 });
+      // The live analyst always contributes the scoreline context, so copy about leads or equalisers
+      // can be checked against a verified claim instead of the producer's assumptions.
+      if (!proposals.some((proposal) => proposal.kind === "match_state")) {
+        proposals = [...proposals, {
+          kind: "match_state",
+          params: { eventIds: [job.event.id] },
+          sources: [{ type: "event", id: job.event.id }],
+        }];
+      }
+      workspace.proposals = proposals;
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.trace.push(makeTrace("researcher", "complete", `Produced ${proposals.length} claim proposal(s) via ${this.retrieval.describe()}`, started, this.now));
+        current.status = "checking";
+      });
+      return false;
+    } catch (error) {
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.status = "failed";
+        current.failureReason = error instanceof Error ? error.message : "Research failed";
+        current.trace.push(makeTrace("researcher", "rejected", current.failureReason, started, this.now));
+      });
+      return true;
+    }
+  }
+
+  /** Runs the deterministic verifier over proposals and records verified facts on the workspace. */
+  private verifyInto(workspace: StorylineWorkspace, job: PendingJob, proposals: ClaimProposal[]): { verified: number; rejected: number } {
+    let verified = 0;
+    let rejected = 0;
+    // A storyline retracted mid-run verifies against a stale fixture: publish no new facts for it.
+    if (this.isRetracted(workspace.storylineId)) {
+      return { verified, rejected };
+    }
+    const createdAt= this.byStorylineId.get(workspace.storylineId)?.createdAt ?? iso(this.now);
+    for (const proposal of proposals) {
+      const result = verifyClaimProposal(this.archive, this.archiveIndexes, job.view.fixture, workspace.trigger, workspace.storylineId, createdAt, proposal);
+      if (result.ok) {
+        verified += 1;
+        workspace.claims.verified.push(result.claim);
+        workspace.claims.facts.push(result.fact);
+        this.matchState(workspace.matchId).facts.push(result.fact);
+        this.emit({ fact: result.fact });
       } else {
-        this.updateStoryline(job.storylineId, (current) => {
-          current.trace.push(makeTrace("fact-checker", "complete", "Draft supported by verified claims", started, this.now));
-        });
+        rejected += 1;
+        workspace.claims.rejected.push(result.claim);
       }
     }
+    return { verified, rejected };
+  }
 
-    {
-      const started = this.now();
-      const localized = await this.localizeWithGuard(knownNames, {
+  private async stepVerify(workspace: StorylineWorkspace, job: PendingJob): Promise<boolean> {
+    const started = this.now();
+    this.updateStoryline(workspace.storylineId, (current) => {
+      current.claims = [];
+    });
+    const { verified, rejected } = this.verifyInto(workspace, job, workspace.proposals);
+    this.updateStoryline(workspace.storylineId, (current) => {
+      current.claims = [...workspace.claims.verified, ...workspace.claims.rejected];
+      current.trace.push(makeTrace("verifier", verified > 0 ? "complete" : "rejected", `Verified ${verified}; rejected ${rejected}`, started, this.now));
+      current.status = verified > 0 ? "drafting" : "failed";
+      if (verified === 0) {
+        current.failureReason = "No verified claims available";
+      }
+    });
+    return verified === 0;
+  }
+
+  private async stepTactics(workspace: StorylineWorkspace, job: PendingJob): Promise<boolean> {
+    const started = this.now();
+    workspace.tactics.done = true;
+    const tactics = this.runner.tactics?.bind(this.runner);
+    if (!tactics) {
+      return false;
+    }
+    let cards: TacticsCard[] = [];
+    try {
+      const atSecond = Math.min(job.view.fixture.durationSeconds, Math.max(0, Math.round(job.view.clockSecond)));
+      const snapshot = this.analyze(deepClone(job.view.fixture), {
+        fixtureId: job.view.fixture.id,
+        atSecond,
+        persona: "analyst",
+        language: "en",
+      });
+      cards = cardsForTrigger(snapshot.stories, job.event);
+    } catch {
+      cards = [];
+    }
+    workspace.tactics.cards = cards.map(({ id, kind, title, importance, windowStart, windowEnd }) => ({ id, kind, title, importance, windowStart, windowEnd }));
+    if (cards.length === 0) {
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.trace.push(makeTrace("tactics-analyst", "complete", "No tactical story cards in the trigger window", started, this.now));
+      });
+      return false;
+    }
+    try {
+      const proposals = await this.callAgent(workspace, "tactics-analyst", () => tactics({
+        trigger: deepClone(job.event),
+        cards: deepClone(cards),
+        events: activeEvents(job.view.fixture, job.view.clockSecond),
+        existing: deepClone(workspace.proposals),
+      }));
+      workspace.tactics.proposals = proposals;
+      workspace.proposals = [...workspace.proposals, ...proposals];
+      const { verified, rejected } = this.verifyInto(workspace, job, proposals);
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.claims = [...workspace.claims.verified, ...workspace.claims.rejected];
+        current.trace.push(makeTrace(
+          "tactics-analyst",
+          "complete",
+          `Read ${cards.length} card(s) (${cards.map((card) => card.kind).join(", ")}); proposed ${proposals.length} claim(s); verified ${verified}; rejected ${rejected}`,
+          started,
+          this.now,
+        ));
+      });
+    } catch (error) {
+      const errorClass = classifyError(error);
+      this.recover(workspace, {
+        agent: "tactics-analyst",
+        to: "producer",
+        reason: `Skipped optional tactics analyst (${errorClass}: ${errorMessage(error)})`,
+        outcome: "skipped",
+        recovery: "skip_optional",
+        errorClass,
+        started,
+      });
+    }
+    return false;
+  }
+
+  private applyDraft(workspace: StorylineWorkspace, draft: ProducerDraft): void {
+    workspace.currentDraft = draft;
+    this.updateStoryline(workspace.storylineId, (current) => {
+      current.priority = draft.priority;
+      current.headline.en = draft.headline;
+      current.onAirLine.en = draft.onAirLine;
+      current.overlay.en = draft.overlay;
+    });
+  }
+
+  private async stepProduce(workspace: StorylineWorkspace): Promise<boolean> {
+    const started = this.now();
+    const { draft, guardErrors, agentError } = await this.runProducerWithGuard(workspace);
+    if (!draft) {
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.status = "failed";
+        current.failureReason = agentError
+          ? `Producer unavailable (${agentError.errorClass}): ${agentError.message}`
+          : `Producer output failed deterministic guard: ${guardErrors.join("; ")}`;
+        current.trace.push(makeTrace("producer", "rejected", current.failureReason, started, this.now));
+      });
+      return true;
+    }
+    this.applyDraft(workspace, draft);
+    this.updateStoryline(workspace.storylineId, (current) => {
+      current.trace.push(makeTrace("producer", "complete", "Drafted storyline copy", started, this.now));
+    });
+    return false;
+  }
+
+  private async stepFactCheck(workspace: StorylineWorkspace): Promise<boolean> {
+    workspace.factCheckStartedAt ??= this.now();
+    const started = workspace.factCheckStartedAt;
+    const draft = workspace.currentDraft;
+    if (!draft) {
+      return false;
+    }
+    let review: FactCheckResult;
+    try {
+      review = await this.callAgent(workspace, "fact-checker", () => this.runner.factCheck({
+        claims: verifiedClaimTexts(workspace),
         headline: draft.headline,
         onAirLine: draft.onAirLine,
         overlay: draft.overlay,
+      }), { retries: 1 });
+    } catch (error) {
+      const errorClass = classifyError(error);
+      this.recover(workspace, {
+        agent: "fact-checker",
+        to: "human-review",
+        reason: `Fact-checker unavailable (${errorClass}: ${errorMessage(error)}); escalated guard-checked English copy to human review`,
+        outcome: "escalated",
+        recovery: "escalate_review",
+        errorClass,
+        started,
       });
-      this.updateStoryline(job.storylineId, (current) => {
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.status = "needs_review";
+      });
+      return true;
+    }
+    workspace.reviews.push(review);
+    if (review.verdict === "pass") {
+      const detail = workspace.revisions > 0
+        ? workspace.reviews[0].issues.join("; ") || "Draft revised once"
+        : "Draft supported by verified claims";
+      workspace.pendingIssues = undefined;
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.trace.push(makeTrace("fact-checker", "complete", detail, started, this.now));
+      });
+    } else {
+      workspace.pendingIssues = review.issues;
+    }
+    return false;
+  }
+
+  private async stepRevise(workspace: StorylineWorkspace): Promise<boolean> {
+    const issues = workspace.pendingIssues ?? [];
+    const { draft, guardErrors, agentError } = await this.runProducerWithGuard(workspace, issues);
+    if (!draft) {
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.status = "failed";
+        current.failureReason = agentError
+          ? `Producer retry unavailable (${agentError.errorClass}): ${agentError.message}`
+          : `Producer retry failed deterministic guard: ${guardErrors.join("; ")}`;
+        current.trace.push(makeTrace("fact-checker", "rejected", `${issues.join("; ") || "Revision requested"}; producer retry failed`, workspace.factCheckStartedAt ?? this.now(), this.now));
+      });
+      return true;
+    }
+    workspace.revisions += 1;
+    this.applyDraft(workspace, draft);
+    return false;
+  }
+
+  private async stepNeedsReview(workspace: StorylineWorkspace, reason: string): Promise<boolean> {
+    const review = lastReview(workspace);
+    const started = workspace.factCheckStartedAt ?? this.now();
+    this.updateStoryline(workspace.storylineId, (current) => {
+      current.status = "needs_review";
+      if (review?.verdict === "revise") {
+        current.trace.push(makeTrace("fact-checker", "rejected", review.issues.join("; "), started, this.now));
+      } else {
+        current.trace.push(makeTrace("director", "rejected", `English-only copy sent to human review: ${reason}`, this.now(), this.now));
+      }
+    });
+    return true;
+  }
+
+  private async stepLocalize(workspace: StorylineWorkspace): Promise<boolean> {
+    const started = this.now();
+    const draft = workspace.currentDraft;
+    if (!draft) {
+      return true;
+    }
+    try {
+      const localized = await this.localizeWithGuard(workspace.knownNames, {
+        headline: draft.headline,
+        onAirLine: draft.onAirLine,
+        overlay: draft.overlay,
+      }, (english) => this.callAgent(workspace, "localizer", () => this.runner.localize(english), { retries: 1 }));
+      workspace.localization = localized;
+      this.updateStoryline(workspace.storylineId, (current) => {
         current.headline.es = localized.es.headline;
         current.onAirLine.es = localized.es.onAirLine;
         current.overlay.es = localized.es.overlay;
@@ -451,25 +841,76 @@ export class DefaultStorylineDesk implements StorylineDesk {
         current.status = "needs_review";
         current.trace.push(makeTrace("localizer", "complete", localized.detail, started, this.now));
       });
+    } catch (error) {
+      const errorClass = classifyError(error);
+      workspace.englishOnly = true;
+      this.recover(workspace, {
+        agent: "localizer",
+        to: "human-review",
+        reason: `Localizer unavailable (${errorClass}: ${errorMessage(error)}); English-only copy flagged for review`,
+        outcome: "skipped",
+        recovery: "english_only",
+        errorClass,
+        started,
+      });
+      this.updateStoryline(workspace.storylineId, (current) => {
+        current.status = "needs_review";
+      });
     }
+    return true;
   }
 
   private async runProducerWithGuard(
-    claimTexts: string[],
-    knownNames: Set<string>,
+    workspace: StorylineWorkspace,
     feedback?: string[],
-  ): Promise<{ draft?: ProducerDraft; guardErrors: string[] }> {
+  ): Promise<{ draft?: ProducerDraft; guardErrors: string[]; agentError?: { errorClass: ErrorClass; message: string } }> {
+    const claimTexts = verifiedClaimTexts(workspace);
     const guardErrors: string[] = [];
+    let agentError: { errorClass: ErrorClass; message: string } | undefined;
     for (let attempt = 0; attempt < PRODUCER_ATTEMPTS; attempt += 1) {
-      const draft = await this.runner.produce({ claims: claimTexts, feedback });
-      const guardError = this.guardProducerDraft(draft, claimTexts, knownNames);
+      let draft: ProducerDraft;
+      try {
+        const currentFeedback = feedback;
+        draft = await this.callAgent(workspace, "producer", () => this.runner.produce({ claims: claimTexts, feedback: currentFeedback }));
+      } catch (error) {
+        const errorClass = classifyError(error);
+        agentError = { errorClass, message: errorMessage(error) };
+        if (!isRetryable(errorClass) || !this.breaker.canCall("producer") || attempt + 1 >= PRODUCER_ATTEMPTS) {
+          break;
+        }
+        this.recover(workspace, {
+          agent: "producer",
+          to: "producer",
+          reason: `${errorClass}: ${agentError.message}; retrying with feedback`,
+          outcome: "retry",
+          recovery: "retry_with_feedback",
+          errorClass,
+        });
+        if (errorClass === "schema_invalid") {
+          feedback = [...(feedback ?? []), "Previous output did not match the schema; return exactly headline, onAirLine, overlay and priority."];
+        }
+        continue;
+      }
+      agentError = undefined;
+      workspace.drafts.push(draft);
+      const guardError = this.guardProducerDraft(draft, claimTexts, workspace.knownNames);
       if (!guardError) {
         return { draft, guardErrors };
       }
       guardErrors.push(guardError);
+      if (attempt + 1 < PRODUCER_ATTEMPTS) {
+        this.recover(workspace, {
+          agent: "producer",
+          to: "producer",
+          reason: `Guard rejected draft: ${guardError}; retrying with feedback`,
+          outcome: "retry",
+          recovery: "retry_with_feedback",
+          errorClass: "guard_reject",
+        });
+      }
       feedback = [...(feedback ?? []), guardError];
     }
-    return { guardErrors };
+    return { guardErrors, agentError };
   }
 
   private guardProducerDraft(draft: ProducerDraft, claimTexts: string[], knownNames: Set<string>): string | undefined {
@@ -495,12 +936,15 @@ export class DefaultStorylineDesk implements StorylineDesk {
     }
     return undefined;
   }
-
-  private async localizeWithGuard(knownNames: Set<string>, english: { headline: string; onAirLine: string; overlay: string }): Promise<LocalizationDraft & { detail: string }> {
+  private async localizeWithGuard(
+    knownNames: Set<string>,
+    english: { headline: string; onAirLine: string; overlay: string },
+    localize: (english: { headline: string; onAirLine: string; overlay: string }) => Promise<LocalizationDraft> = (input) => this.runner.localize(input),
+  ): Promise<LocalizationDraft & { detail: string }> {
     const failures: string[] = [];
     const empty = { headline: "", onAirLine: "", overlay: "" };
     const validated: LocalizationDraft = { es: { ...empty }, fr: { ...empty }, pt: { ...empty } };
-    const first = await this.runner.localize(english);
+    const first = await localize(english);
     for (const language of ["es", "fr", "pt"] as const) {
       let selected = first[language];
       let guardError = guardLocalization(english.headline, selected.headline, knownNames)
@@ -510,7 +954,13 @@ export class DefaultStorylineDesk implements StorylineDesk {
         validated[language] = selected;
         continue;
       }
-      const second = await this.runner.localize(english);
+      let second: LocalizationDraft;
+      try {
+        second = await localize(english);
+      } catch (error) {
+        failures.push(`${language}: ${guardError}; retry unavailable (${classifyError(error)})`);
+        continue;
+      }
       selected = second[language];
       guardError = guardLocalization(english.headline, selected.headline, knownNames)
         ?? guardLocalization(english.onAirLine, selected.onAirLine, knownNames)
@@ -530,6 +980,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
   onEvent(view: LiveMatchView, event: MatchEvent): void {
     const match = this.matchState(view.matchId);
     if (event.rescinded) {
+      match.rescindedEventIds.add(event.id);
       this.retractForEvent(view.matchId, event.id, `Event ${event.id} was rescinded`);
       return;
     }
@@ -599,24 +1050,40 @@ export class DefaultStorylineDesk implements StorylineDesk {
     };
   }
 
+  /** Approval is only possible while the storyline awaits review and none of its trigger events were rescinded. */
+  private assertApprovable(storyline: Storyline): void {
+    if (storyline.status === "retracted") {
+      throw new HttpError(409, "Storyline was retracted");
+    }
+    const rescinded = this.byMatchId.get(storyline.matchId)?.rescindedEventIds;
+    if (rescinded && storyline.triggerEventIds.some((eventId) => rescinded.has(eventId))) {
+      throw new HttpError(409, "Storyline trigger event was rescinded");
+    }
+    if (storyline.status !== "needs_review") {
+      throw new HttpError(409, "Storyline is not awaiting review");
+    }
+  }
+
   async review(id: string, request: ReviewStorylineRequest): Promise<Storyline> {
     const storyline = this.byStorylineId.get(id);
     if (!storyline) {
       throw new HttpError(404, "Storyline not found");
     }
-    if (storyline.status !== "needs_review") {
-      throw new HttpError(409, "Storyline is not awaiting review");
-    }
     if (request.decision === "reject") {
+      if (storyline.status !== "needs_review") {
+        throw new HttpError(409, "Storyline is not awaiting review");
+      }
       return deepClone(this.updateStoryline(id, (current) => {
         current.status = "rejected";
         current.review = { decision: "rejected", at: iso(this.now), note: request.note };
       }));
     }
+    this.assertApprovable(storyline);
     if (request.decision === "approve") {
       return deepClone(this.updateStoryline(id, (current) => {
         current.status = "approved";
         current.review = { decision: "approved", at: iso(this.now), note: request.note };
+        current.approvedAt ??= iso(this.now);
       }));
     }
     const editedLine = request.onAirLine?.trim();
@@ -632,6 +1099,8 @@ export class DefaultStorylineDesk implements StorylineDesk {
       onAirLine: editedLine,
       overlay: storyline.overlay.en,
     });
+    // Localization is async: the trigger may have been rescinded (and the storyline retracted) meanwhile.
+    this.assertApprovable(storyline);
     return deepClone(this.updateStoryline(id, (current) => {
       current.onAirLine.en = editedLine;
       current.onAirLine.es = localized.es.onAirLine;
@@ -645,6 +1114,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
       current.overlay.pt = localized.pt.overlay || current.overlay.pt;
       current.status = "approved";
       current.review = { decision: "edited", at: iso(this.now), note: request.note };
+      current.approvedAt ??= iso(this.now);
       current.trace.push({
         role: "review",
         status: "complete",
@@ -720,14 +1190,20 @@ export class DefaultStorylineDesk implements StorylineDesk {
 }
 
 export function createStorylineDesk(deps: DeskOptions): StorylineDesk {
+  const now = deps.now ?? Date.now;
   return new DefaultStorylineDesk(deps.archive, {
     runner: deps.runner ?? createFoundryAgentRunner(),
     retrieval: deps.retrieval ?? createArchiveRetrievalFromEnv(),
-    now: deps.now ?? Date.now,
+    now,
     maxPerMatch: deps.maxPerMatch ?? 12,
     maxConcurrent: deps.maxConcurrent ?? 2,
+    breaker: deps.breaker ?? new CircuitBreaker({ now }),
+    agentTimeoutMs: deps.agentTimeoutMs ?? 90_000,
+    maxSteps: deps.maxSteps ?? 12,
+    deadlineMs: deps.deadlineMs ?? 240_000,
+    analyze: deps.analyze ?? analyzeFixture,
   });
 }
 
-export { createArchiveRetrievalFromEnv, createFoundryAgentRunner };
-export type { AgentRunner, ArchiveRetrieval, ArchiveSearchHit };
+export { createArchiveRetrievalFromEnv, createFoundryAgentRunner, CircuitBreaker };
+export type { AgentRunner, ArchiveRetrieval, ArchiveSearchHit, StorylineWorkspace };

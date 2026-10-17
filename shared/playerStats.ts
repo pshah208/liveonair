@@ -1,9 +1,12 @@
 import { placeEvent, isCameraFixture } from "./ballPath.js";
-import type { MatchEvent, MatchFixture, Player, TeamId } from "./types.js";
+import { aggregatePasses, fastestShot, passQualities, physicalMetrics, scopedTracking } from "./metrics.js";
+import { filterByPeriod, periodBoundary, sameHalf, type PeriodBoundary } from "./periods.js";
+import type { MatchEvent, MatchFixture, MatchPeriod, Player, TeamId } from "./types.js";
 
 /**
  * Per-player match analysis computed from the event feed. Every number here is derived from logged
- * events; physical metrics (distance, sprints, speed) need a tracking feed and are reported as such.
+ * events; physical metrics (distance, sprints, speed) come only from a tracking feed — built-in fixtures carry
+ * seeded synthetic tracking — and are null without one.
  */
 
 export interface PlayerTouch {
@@ -52,6 +55,18 @@ export interface PlayerAnalysis {
   impact: { rating: number; total: number; components: ImpactComponent[] };
   /** Share of the team's logged actions this player was involved in, 0–100. */
   involvementShare: number;
+  /** Mean pass length in metres (null on camera fixtures or without passes). */
+  avgPassDistanceM: number | null;
+  avgPassDifficulty: number | null;
+  /** Completed passes minus expected completions, percentage points of attempts. */
+  passCompletionOverExpected: number | null;
+  hardestCompletedPass: { eventId: string; difficulty: number; distanceM: number } | null;
+  topShotSpeedKmh: number | null;
+  /** From synthetic tracking samples; null when the fixture carries no tracking. */
+  distanceCoveredM: number | null;
+  topSpeedKmh: number | null;
+  sprints: number | null;
+  trackingSource: "synthetic" | null;
 }
 
 export interface TrackingMetric {
@@ -60,7 +75,7 @@ export interface TrackingMetric {
   reason: string;
 }
 
-/** Metrics a pundit expects that an event feed cannot measure. */
+/** Metrics a pundit expects that an event feed cannot measure. Physical ones are filled from tracking when present. */
 export const TRACKING_METRICS: TrackingMetric[] = [
   { key: "distance", label: "Distance covered", reason: "Needs continuous player tracking (positions many times a second)." },
   { key: "sprints", label: "Sprints / high-intensity runs", reason: "Needs tracked speed over time." },
@@ -83,21 +98,24 @@ export function activePlayerEvents(fixture: MatchFixture, uptoSecond = Number.PO
   return [...latest.values()].filter((event) => !event.rescinded).sort((a, b) => second(a) - second(b) || a.id.localeCompare(b.id));
 }
 
-/** Which pass or corner created each shot: the team's last completed pass in the 15 s before it, by another player. */
-function creators(events: MatchEvent[]): Map<string, MatchEvent> {
+/**
+ * Which pass or corner created each shot: the explicit link, else the team's last completed pass in the 15 s
+ * before it by another player. Neither may cross halftime.
+ */
+function creators(events: MatchEvent[], boundary: PeriodBoundary): Map<string, MatchEvent> {
   const byId = new Map(events.map((event) => [event.id, event]));
   const created = new Map<string, MatchEvent>();
   for (const shot of events) {
     if (shot.type !== "shot" && !(shot.type === "goal" && !shot.relatedEventId)) continue;
     const linked = shot.relatedEventId ? byId.get(shot.relatedEventId) : undefined;
-    if (linked && (linked.type === "corner" || linked.type === "pass") && linked.playerId !== shot.playerId) {
+    if (linked && (linked.type === "corner" || linked.type === "pass") && linked.playerId !== shot.playerId && sameHalf(linked, shot, boundary)) {
       created.set(shot.id, linked);
       continue;
     }
     const at = second(shot);
     const pass = events
       .filter((event) => event.type === "pass" && event.outcome === "complete" && event.teamId === shot.teamId && event.playerId !== shot.playerId)
-      .filter((event) => second(event) <= at && at - second(event) <= ASSIST_WINDOW_SECONDS)
+      .filter((event) => second(event) <= at && at - second(event) <= ASSIST_WINDOW_SECONDS && sameHalf(event, shot, boundary))
       .at(-1);
     if (pass) created.set(shot.id, pass);
   }
@@ -140,11 +158,20 @@ export const IMPACT_WEIGHTS = {
   red: -1.0,
 };
 
-export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITIVE_INFINITY): PlayerAnalysis[] {
-  const events = activePlayerEvents(fixture, uptoSecond).filter((event) => !OFF_BALL.has(event.type));
+/**
+ * Per-player figures for a period. Revisions are reconciled over the whole match first, so a correction made
+ * in the second half still changes the first-half figures; then events are scoped. Percentages, shares and
+ * ratings are recomputed from the scoped counts, never averaged across halves.
+ */
+export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITIVE_INFINITY, period: MatchPeriod = "full"): PlayerAnalysis[] {
+  const boundary = periodBoundary(fixture);
+  const events = filterByPeriod(activePlayerEvents(fixture, uptoSecond), period, boundary).filter((event) => !OFF_BALL.has(event.type));
   const byId = new Map(events.map((event) => [event.id, event]));
-  const createdBy = creators(events);
+  const createdBy = creators(events, boundary);
   const camera = isCameraFixture(fixture);
+  const metricOpts = { camera };
+  const qualities = passQualities(events, metricOpts);
+  const tracking = scopedTracking(fixture, uptoSecond, period);
   const teamActions: Record<TeamId, number> = { home: 0, away: 0 };
   for (const event of events) teamActions[event.teamId] += 1;
 
@@ -185,6 +212,9 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       { key: "discipline", label: "Discipline", value: fouls * w.foul + yellowCards * w.yellow + redCards * w.red },
     ].map((component) => ({ ...component, value: round(component.value) })) as ImpactComponent[];
     const total = round(components.reduce((sum, component) => sum + component.value, 0));
+    const passAggregate = aggregatePasses(qualities.filter((quality) => quality.event.playerId === player.id));
+    const topShot = fastestShot(shots, metricOpts);
+    const physical = tracking ? physicalMetrics(tracking, player.id) : null;
     return {
       player,
       teamId: player.teamId,
@@ -214,6 +244,18 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       touches,
       impact: { rating: round(Math.min(10, Math.max(3, 6 + total)), 1), total, components },
       involvementShare: teamActions[player.teamId] ? Math.round((own.length / teamActions[player.teamId]) * 100) : 0,
+      avgPassDistanceM: passAggregate.avgPassDistanceM,
+      avgPassDifficulty: passAggregate.avgPassDifficulty,
+      passCompletionOverExpected: passAggregate.completionOverExpected,
+      hardestCompletedPass: passAggregate.hardestCompleted
+        ? { eventId: passAggregate.hardestCompleted.event.id, difficulty: passAggregate.hardestCompleted.difficulty.score, distanceM: passAggregate.hardestCompleted.distanceM }
+        : null,
+      topShotSpeedKmh: topShot?.speedKmh ?? null,
+      // Outfield players with tracking but no samples in scope (e.g. sent off earlier) covered 0 m.
+      distanceCoveredM: tracking ? physical?.distanceCoveredM ?? (player.position === "GK" ? null : 0) : null,
+      topSpeedKmh: tracking ? physical?.topSpeedKmh ?? null : null,
+      sprints: tracking ? physical?.sprints ?? (player.position === "GK" ? null : 0) : null,
+      trackingSource: tracking && physical ? "synthetic" : null,
     };
   });
 }

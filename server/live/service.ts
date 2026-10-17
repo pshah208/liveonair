@@ -64,9 +64,12 @@ function cloneFixture(fixture: MatchFixture): MatchFixture {
 }
 
 function cloneView(view: LiveMatchView): LiveMatchView {
+  const fixture = cloneFixture(view.fixture);
+  // Synthetic tracking is attached up front; never expose samples beyond the live clock.
+  if (fixture.tracking) fixture.tracking = { ...fixture.tracking, samples: fixture.tracking.samples.filter((sample) => sample.second <= view.clockSecond) };
   return {
     matchId: view.matchId,
-    fixture: cloneFixture(view.fixture),
+    fixture,
     clockSecond: view.clockSecond,
   };
 }

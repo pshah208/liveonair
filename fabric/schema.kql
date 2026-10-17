@@ -25,6 +25,21 @@
   IngestedAt:datetime
 )
 
+// Additive migration for match halves (not applied automatically; run manually against an existing database).
+// The column is nullable: older envelopes without event.period stay null and are resolved from the halftime event.
+// .alter-merge table MatchEvents (Period:int)
+// Mapping/update-policy follow-up: add {"column":"Period","datatype":"int","Properties":{"Path":"$.event.period"}}
+// to MatchEventsMapping and `Period = toint(['event'].period)` to ExpandMatchEventsRaw() once the column exists.
+
+// Additive migration for synthetic ball metrics (not applied automatically). Both columns are nullable; events
+// without timing stay null and speed is never derived from the gap between events.
+// .alter-merge table MatchEvents (FlightMs:real, SpeedKmh:real)
+// Mapping/update-policy follow-up: add {"column":"FlightMs","datatype":"real","Properties":{"Path":"$.event.flightMs"}} and
+// {"column":"SpeedKmh","datatype":"real","Properties":{"Path":"$.event.speedKmh"}} to MatchEventsMapping, and
+// `FlightMs = toreal(['event'].flightMs), SpeedKmh = toreal(['event'].speedKmh)` to ExpandMatchEventsRaw().
+// Synthetic tracking samples ride on the fixture (not the event stream); if landed, use:
+// .create-merge table PlayerTrackingSynthetic (MatchId:string, PlayerId:string, Second:int, DistanceM:real, SpeedKmh:real)
+
 // ---
 .alter table MatchEvents policy ingestiontime true
 

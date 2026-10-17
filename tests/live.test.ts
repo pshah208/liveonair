@@ -467,6 +467,23 @@ test("live stream sends status, snapshots, storyline filtering, facts, and enfor
       version: 1,
     },
     {
+      id: "story-never-approved",
+      matchId,
+      triggerEventIds: ["goal-1"],
+      triggerMinute: 4,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "retracted",
+      priority: 60,
+      headline: { en: "Unapproved draft", es: "Unapproved draft", fr: "Unapproved draft", pt: "Unapproved draft" },
+      onAirLine: { en: "Unapproved draft", es: "Unapproved draft", fr: "Unapproved draft", pt: "Unapproved draft" },
+      overlay: { en: "Unapproved draft", es: "Unapproved draft", fr: "Unapproved draft", pt: "Unapproved draft" },
+      claims: [],
+      trace: [],
+      version: 2,
+      retractionReason: "Correction",
+    },
+    {
       id: "story-researching",
       matchId,
       triggerEventIds: ["goal-1"],
@@ -484,18 +501,39 @@ test("live stream sends status, snapshots, storyline filtering, facts, and enfor
     },
   ], [
     {
+      id: "fact-never-approved",
+      matchId,
+      minute: 4,
+      text: { en: "Draft fact", es: "Draft fact", fr: "Draft fact", pt: "Draft fact" },
+      sources: [{ type: "event", id: "goal-1" }],
+      storylineId: "story-never-approved",
+      createdAt: new Date().toISOString(),
+      retracted: true,
+    },
+    {
+      id: "fact-previously-approved",
+      matchId,
+      minute: 5,
+      text: { en: "Withdrawn fact", es: "Withdrawn fact", fr: "Withdrawn fact", pt: "Withdrawn fact" },
+      sources: [{ type: "event", id: "goal-1" }],
+      storylineId: "story-retracted",
+      createdAt: new Date().toISOString(),
+      retracted: true,
+    },
+    {
       id: "fact-1",
       matchId,
       minute: 4,
       text: { en: "Goal", es: "Goal", fr: "Goal", pt: "Goal" },
       sources: [{ type: "event", id: "goal-1" }],
+      storylineId: "story-approved",
       createdAt: new Date().toISOString(),
       retracted: true,
     },
   ]);
 
   await withHttpServer(app, async (baseUrl) => {
-    const badFavorite = await fetch(`${baseUrl}/api/live/stream?role=fan&persona=analyst&language=en&favoritePlayerId=missing-player`);
+    const badFavorite = await fetch(`${baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&favoritePlayerId=missing-player`);
     assert.equal(badFavorite.status, 400);
 
     const fan = await connectSse(`${baseUrl}/api/live/stream?role=fan&persona=casual&language=en`);
@@ -508,6 +546,7 @@ test("live stream sends status, snapshots, storyline filtering, facts, and enfor
     assert.equal((approvedStory as { storyline: Storyline }).storyline.id, "story-approved");
     const fact = await fan.nextMessage();
     assert.equal(fact.type, "fact");
+    assert.equal((fact as { fact: VerifiedFact }).fact.id, "fact-1");
     assert.equal((fact as { fact: VerifiedFact }).fact.retracted, true);
 
     const studio = await connectSse(`${baseUrl}/api/live/stream?role=studio&persona=analyst&language=en`);
@@ -523,6 +562,11 @@ test("live stream sends status, snapshots, storyline filtering, facts, and enfor
     const updatedSnapshot = await fan.nextMessage();
     assert.equal(updatedSnapshot.type, "snapshot");
 
+    // A storyline retracted before any producer approved it never reaches fans, nor do its facts.
+    desk.emit({
+      storyline: { ...desk.list(matchId).find((item) => item.id === "story-never-approved")!, version: 3 },
+      fact: desk.facts(matchId).find((item) => item.id === "fact-never-approved"),
+    });
     desk.emit({
       storyline: {
         id: "story-retracted",
@@ -539,12 +583,16 @@ test("live stream sends status, snapshots, storyline filtering, facts, and enfor
         claims: [],
         trace: [],
         version: 1,
+        approvedAt: new Date().toISOString(),
         retractionReason: "Correction",
       },
     });
     const retracted = await fan.nextMessage();
     assert.equal(retracted.type, "storyline");
     assert.equal((retracted as { storyline: Storyline }).storyline.id, "story-retracted");
+    const withdrawnFact = await fan.nextMessage();
+    assert.equal(withdrawnFact.type, "fact");
+    assert.equal((withdrawnFact as { fact: VerifiedFact }).fact.id, "fact-previously-approved");
 
     studio.close();
     fan.close();
@@ -623,4 +671,208 @@ test("envelope schema rejects malformed payloads", () => {
     },
   });
   assert.equal(result.success, false);
+});
+
+test("live stream validates the optional period and forwards it to the analysis", async () => {
+  const scheduler = new FakeScheduler();
+  const service = createLiveService({
+    transport: createLocalTransport(),
+    registry: createRegistry(),
+    generateMatch: () => fixtureWithEvents("generated"),
+    buildFeedPlan: () => [],
+    now: () => scheduler.now,
+    scheduler,
+  });
+  const periods: Array<string | undefined> = [];
+  const analyze = createAnalyzeFixture();
+  const app = express();
+  app.use(createLiveRouter({ live: service, desk: new FakeDesk(), analyzeFixture: (fixture, request) => { periods.push(request.period); return analyze(fixture, request); } }));
+  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    response.status(error instanceof Error && "status" in error ? Number((error as { status: number }).status) : 500).json({ error: error instanceof Error ? error.message : "Unexpected error" });
+  });
+
+  await service.start({ fixtureId: "fixture-live", speed: 60 });
+  await flushAsync();
+
+  await withHttpServer(app, async (baseUrl) => {
+    const invalid = await fetch(`${baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&period=third`);
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, /^period/u);
+
+    const scoped = await connectSse(`${baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&period=first`);
+    assert.equal((await scoped.nextMessage()).type, "status");
+    assert.equal((await scoped.nextMessage()).type, "snapshot");
+    scoped.close();
+
+    const whole = await connectSse(`${baseUrl}/api/live/stream?role=fan&persona=analyst&language=en`);
+    await whole.nextMessage();
+    await whole.nextMessage();
+    whole.close();
+  });
+  assert.deepEqual(periods, ["first", undefined]);
+  await service.close();
+});
+
+test("envelope schema accepts an optional event period of 1 or 2 only", () => {
+  const envelope = (period: unknown) => ({
+    kind: "match_event", matchId: "m1", sequence: 1, publishedAt: new Date().toISOString(),
+    event: { id: "e1", revision: 1, minute: 46, second: 0, type: "pass", teamId: "home", playerId: "home-p1", outcome: "complete", x: 1, y: 1, period },
+  });
+  assert.equal(liveEnvelopeSchema.safeParse(envelope(2)).success, true);
+  assert.equal(liveEnvelopeSchema.safeParse(envelope(undefined)).success, true);
+  assert.equal(liveEnvelopeSchema.safeParse(envelope(3)).success, false);
+});
+
+function storyline(input: Partial<Storyline> & Pick<Storyline, "id" | "matchId" | "status">): Storyline {
+  const text = (value: string) => ({ en: value, es: value, fr: value, pt: value });
+  return {
+    triggerEventIds: ["goal-1"],
+    triggerMinute: 4,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    priority: 50,
+    headline: text(`${input.id} headline`),
+    onAirLine: text(`${input.id} line`),
+    overlay: text(`${input.id} overlay`),
+    claims: [],
+    trace: [],
+    version: 1,
+    ...input,
+  };
+}
+
+function fact(id: string, matchId: string, storylineId?: string): VerifiedFact {
+  return {
+    id,
+    matchId,
+    minute: 4,
+    text: { en: id, es: id, fr: id, pt: id },
+    sources: [{ type: "event", id: "goal-1" }],
+    createdAt: new Date().toISOString(),
+    ...(storylineId ? { storylineId } : {}),
+  };
+}
+
+test("fan stream projects approved storylines and withholds unapproved facts on bootstrap and updates", async () => {
+  const scheduler = new FakeScheduler();
+  const service = createLiveService({
+    transport: createLocalTransport(),
+    registry: createRegistry(),
+    generateMatch: () => fixtureWithEvents("generated"),
+    buildFeedPlan: () => [],
+    now: () => scheduler.now,
+    scheduler,
+  });
+  const desk = new FakeDesk();
+  const app = express();
+  app.use(createLiveRouter({ live: service, desk, analyzeFixture: createAnalyzeFixture() }));
+  await service.start({ fixtureId: "fixture-live", speed: 60 });
+  await flushAsync();
+  const matchId = service.status().matchId;
+  assert.ok(matchId);
+
+  const approved = storyline({
+    id: "story-approved",
+    matchId,
+    status: "approved",
+    trace: [{ role: "researcher", status: "complete", detail: "internal prompt detail", durationMs: 12 }],
+    handoffs: [{ from: "researcher", to: "fact-checker", reason: "internal", at: new Date().toISOString(), outcome: "ok" }],
+    claims: [
+      { id: "c-ok", kind: "live_event", text: { en: "ok", es: "ok", fr: "ok", pt: "ok" }, sources: [{ type: "event", id: "goal-1" }], status: "verified" },
+      { id: "c-bad", kind: "family_link", text: { en: "rejected draft", es: "x", fr: "x", pt: "x" }, sources: [], status: "rejected", reason: "unsupported" },
+    ],
+    review: { decision: "approved", at: new Date().toISOString(), note: "internal producer note" },
+  });
+  const draft = storyline({ id: "story-draft", matchId, status: "needs_review", onAirLine: { en: "draft copy", es: "draft", fr: "draft", pt: "draft" } });
+  desk.seed(matchId, [approved, draft], [fact("fact-approved", matchId, "story-approved"), fact("fact-draft", matchId, "story-draft"), fact("fact-orphan", matchId)]);
+
+  await withHttpServer(app, async (baseUrl) => {
+    const fan = await connectSse(`${baseUrl}/api/live/stream?role=fan&persona=casual&language=en`);
+    assert.equal((await fan.nextMessage()).type, "status");
+    assert.equal((await fan.nextMessage()).type, "snapshot");
+    const story = await fan.nextMessage();
+    assert.equal(story.type, "storyline");
+    const projected = (story as { storyline: Storyline }).storyline;
+    assert.equal(projected.id, "story-approved");
+    assert.deepEqual(projected.trace, []);
+    assert.equal(projected.handoffs, undefined);
+    assert.deepEqual(projected.claims.map((claim) => claim.id), ["c-ok"]);
+    assert.equal(projected.review?.note, undefined);
+    assert.doesNotMatch(JSON.stringify(projected), /internal/u);
+    const bootFact = await fan.nextMessage();
+    assert.equal(bootFact.type, "fact");
+    assert.equal((bootFact as { fact: VerifiedFact }).fact.id, "fact-approved");
+
+    // A fact drafted for an unapproved storyline is not streamed to fans...
+    desk.emit({ fact: fact("fact-draft-2", matchId, "story-draft") });
+    // ...until the producer approves the storyline, which releases its facts.
+    desk.emit({ storyline: { ...draft, status: "approved", version: 2, trace: [{ role: "writer", status: "complete", detail: "internal", durationMs: 1 }] } });
+    const approval = await fan.nextMessage();
+    assert.equal(approval.type, "storyline");
+    assert.equal((approval as { storyline: Storyline }).storyline.id, "story-draft");
+    assert.deepEqual((approval as { storyline: Storyline }).storyline.trace, []);
+    const released = await fan.nextMessage();
+    assert.equal(released.type, "fact");
+    assert.equal((released as { fact: VerifiedFact }).fact.id, "fact-draft");
+    fan.close();
+    const studio = await connectSse(`${baseUrl}/api/live/stream?role=studio&persona=analyst&language=en`);
+    const seen: LiveMessage[] = [];
+    for (let index = 0; index < 7; index += 1) seen.push(await studio.nextMessage());
+    const studioFacts = seen.filter((message): message is Extract<LiveMessage, { type: "fact" }> => message.type === "fact").map((message) => message.fact.id);
+    assert.deepEqual(studioFacts, ["fact-approved", "fact-draft", "fact-orphan"]);
+    const studioStory = seen.find((message): message is Extract<LiveMessage, { type: "storyline" }> => message.type === "storyline" && message.storyline.id === "story-approved");
+    assert.equal(studioStory?.storyline.trace.length, 1);
+    studio.close();
+  });
+  await service.close();
+});
+
+test("fan stream forwards favoriteClubId and reports an unknown favourite player instead of failing", async () => {
+  const scheduler = new FakeScheduler();
+  const service = createLiveService({
+    transport: createLocalTransport(),
+    registry: createRegistry(),
+    generateMatch: () => fixtureWithEvents("generated"),
+    buildFeedPlan: () => [],
+    now: () => scheduler.now,
+    scheduler,
+  });
+  const requests: Array<{ favoriteClubId?: string; favoritePlayerId?: string }> = [];
+  const analyze = createAnalyzeFixture();
+  const app = express();
+  app.use(createLiveRouter({ live: service, desk: new FakeDesk(), analyzeFixture: (fixture, request) => { requests.push({ favoriteClubId: request.favoriteClubId, favoritePlayerId: request.favoritePlayerId }); return analyze(fixture, request); } }));
+  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+    response.status(error instanceof Error && "status" in error ? Number((error as { status: number }).status) : 500).json({ error: error instanceof Error ? error.message : "Unexpected error" });
+  });
+  await service.start({ fixtureId: "fixture-live", speed: 60 });
+  await flushAsync();
+
+  await withHttpServer(app, async (baseUrl) => {
+    const invalid = await fetch(`${baseUrl}/api/live/stream?role=fan&persona=casual&language=en&favoriteClubId=${encodeURIComponent("bad club!")}`);
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, /^favoriteClubId/u);
+
+    const studioMissing = await fetch(`${baseUrl}/api/live/stream?role=studio&persona=casual&language=en&favoritePlayerId=missing-player`);
+    assert.equal(studioMissing.status, 400);
+
+    const fan = await connectSse(`${baseUrl}/api/live/stream?role=fan&persona=casual&language=es&favoritePlayerId=missing-player&favoriteClubId=away`);
+    assert.equal((await fan.nextMessage()).type, "status");
+    const snapshot = await fan.nextMessage();
+    assert.equal(snapshot.type, "snapshot");
+    const focus = (snapshot as { snapshot: MatchSnapshot }).snapshot.focus;
+    assert.equal(focus?.favoritePlayerId, "missing-player");
+    assert.equal(focus?.favoritePlayerInMatch, false);
+    fan.close();
+
+    const known = await connectSse(`${baseUrl}/api/live/stream?role=fan&persona=player&language=en&favoritePlayerId=away-p1&favoriteClubId=home`);
+    await known.nextMessage();
+    const knownSnapshot = await known.nextMessage();
+    assert.equal((knownSnapshot as { snapshot: MatchSnapshot }).snapshot.focus, undefined);
+    known.close();
+  });
+  assert.deepEqual(requests, [
+    { favoriteClubId: "away", favoritePlayerId: undefined },
+    { favoriteClubId: "home", favoritePlayerId: "away-p1" },
+  ]);
+  await service.close();
 });

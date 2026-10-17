@@ -26,10 +26,12 @@ to those legacy identifiers in commands and configuration are not the product's 
 What you can do
 ---------------
 
-The app has two desks, switched at the top of the page:
+The app has three desks, switched at the top of the page:
 
 * **Studio Desk**: the producer studio described below, with four tabs (Live desk, Recap and
   highlights, Video lab, Player cam).
+* **Fan View**: a read-only, personalised audience view of the same live match. See **Fan View**
+  below.
 * **VAR Desk** (next phase): a design preview of an assistant for VAR reviews. See `VAR Desk
   (next phase)`_.
 
@@ -117,6 +119,35 @@ with live health.
   (or give their shirt number and kit) and get a personal highlight reel with a spotlight on them,
   in landscape or a vertical 9:16 cut that pans with the player. Nothing is sent to Eventstream.
 
+**Fan View** (``#fan``)
+
+* Follows the match the producer started on the Studio Desk: same score, clock and event
+  revisions. Fan View never starts or stops a match; with nothing live it says so and links to
+  the Studio Desk. Its own fan stream is open only while the view is visible.
+* Preferences, saved in this browser only (versioned, validated; if storage is blocked they apply
+  for the session with a notice): persona (casual, analyst, player focus), language (EN/ES/FR/PT),
+  favourite club, favourite player (grouped by team), **Follow one player** and its own
+  Full match / 1st half / 2nd half selector. Default: casual, English, neutral, full match.
+  A saved favourite who is not in this match is shown as "not in this match"; no one is substituted.
+* **My match**: your club's and player's moments first, while every goal, ruled-out goal and red
+  card for both sides is always shown. A favourite club only reorders and marks insights; it never
+  changes statistics or facts.
+* **Why it matters**: the engine's persona-aware insight cards with observed/inferred labels.
+  Casual shows plain language and key counts; analyst adds full stats, metrics, windows and the
+  evidence events.
+* **Follow one player**: the player's logged actions in the selected period, an action map and key
+  stats. It is logged involvement from the event feed, not continuous tracking.
+* **Approved stories** (localised, with English fallback flagged), **What changed since you last
+  looked** (new goals, cards, corrections and approved stories since you left the view), in-app
+  favourite-player alerts (deduplicated; no push notifications), **My match summary** (an *AI
+  summary* written on demand for your persona, language, club and player, with audio when Azure AI
+  Speech is available; always full match) and **My moments** (the studio's data-rendered highlight
+  selection filtered to your club or player).
+* The fan stream (``/api/live/stream?role=fan``) only carries producer-approved storylines, without
+  agent traces, handoffs, review notes or rejected claims, and only the verified facts of approved
+  storylines. ``role=fan`` is presentation filtering, **not access control**: the demo's producer
+  API is still public (see `Phase 2: path to production`_).
+
 How it works
 ------------
 
@@ -132,18 +163,24 @@ How it works
    Container Apps API ── deterministic match engine (score, stats, xG, story cards, corrections)
              |
              v
-   Storyline desk (Microsoft Foundry agents)
-     researcher  -> Foundry IQ knowledge base over Azure AI Search (archive)
-     producer    -> drafts headline, on-air line and overlay from verified claims only
-     fact-checker-> re-checks every claim against feed events and archive records
-     localizer   -> Spanish, French and Portuguese versions
-     deterministic guard: rejects names or numbers not in verified claims, retries
+   Storyline desk (Microsoft Foundry agents, shared StorylineWorkspace blackboard)
+     director        -> picks the next handoff; a deterministic policy enforces legal transitions,
+                        step budget and deadline, and falls back when the director is unavailable
+     researcher      -> Foundry IQ knowledge base over Azure AI Search (archive)
+     verifier        -> deterministic: only claims matched to feed events / archive records survive
+     tactics analyst -> optional: engine story cards (pressure, rhythm, turning point...) -> claims
+     producer        -> drafts headline, on-air line and overlay from verified claims only
+     fact-checker    -> re-checks the draft; revise loop or escalate to human review
+     localizer       -> Spanish, French and Portuguese versions (English-only fallback, flagged)
+     deterministic guard: rejects names or numbers not in verified claims, retries with feedback
+     recovery: timeouts, rate limits, schema errors, guard rejects; per-agent circuit breakers
              |
              v
-   Producer approval (human in the loop)
+   Producer approval (human in the loop)  <── handoff timeline + trace in the storyline panel
              |
              v
    Outputs: lower-third JSON · narrated recap · highlight reel · cut list   (EN / ES / FR / PT)
+   External agents: MCP server (/mcp) · A2A agent (/.well-known/agent-card.json, /a2a)
 
 1. **Ingest.** The simulator publishes each event to a Fabric Eventstream custom endpoint.
    Eventstream fans it out to Eventhouse and back to the app over a second custom endpoint.
@@ -152,10 +189,82 @@ How it works
    policy, plus the synthetic archive used for historical context.
 3. **Interpret.** A deterministic engine recomputes score, rolling statistics, illustrative xG and
    evidence-linked story cards on every event. Only the latest revision of each event counts.
-4. **Explain.** On key events the storyline desk runs four Foundry agents. Claims are verified
-   deterministically before a producer ever sees them.
+4. **Explain.** On key events the storyline desk runs its Foundry agents under a director.
+   Claims are verified deterministically before a producer ever sees them.
 5. **Render and personalise.** Approved copy becomes lower-thirds, recaps and
    highlight captions in four languages.
+
+Director, handoffs and recovery
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each storyline run owns a typed ``StorylineWorkspace`` (``server/desk/state.ts``): trigger, claims,
+drafts, reviews, localisation, attempt counters, step budget and deadline, and a handoff log.
+Agents read from and write to it; the log is persisted on the storyline as ``handoffs``
+(``{from, to, reason, at, outcome, decidedBy, recovery, errorClass}``) and shown as a timeline
+above the trace in the storyline panel.
+
+* **Coordinator** (``server/desk/coordinator.ts``). The policy allows only
+  research → verify → [tactics] → produce → fact-check → (revise → fact-check | localize |
+  human review). Where it offers a real choice (tactics-led vs archive-led after verification;
+  revise vs escalate after a fact-check), the ``liveonair-director`` Foundry agent proposes the
+  next step from a compact workspace summary. An error, timeout, open circuit or illegal proposal
+  falls back to the deterministic default and is logged as a ``fallback`` handoff. A step budget
+  (12) and deadline (4 minutes) stop the run and send any guard-checked draft to human review.
+* **Tactics analyst** (``liveonair-tactics-analyst``). Reads the engine's story cards for the
+  15 minutes before the trigger and selects the ones that explain it. Only the events they rest on
+  become claims (``live_event``/``match_state``), and only verified claims reach the producer.
+* **Recovery** (``server/desk/recovery.ts``). Failures are classified as ``timeout``,
+  ``rate_limit``, ``schema_invalid``, ``guard_reject`` or ``unavailable``. Transient failures
+  are retried (producer retries carry feedback); the optional tactics analyst is skipped; a
+  localizer failure leaves flagged English-only copy; a fact-checker outage escalates the
+  guard-checked draft to human review. A per-agent circuit breaker opens after three
+  consecutive failures for 60 seconds. Every recovery is a rejected trace step plus a handoff.
+
+Agents for external tools
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**MCP server.** ``POST /mcp`` is a stateless streamable-HTTP MCP endpoint
+(``@modelcontextprotocol/sdk``) with read-only tools: ``get_live_status``,
+``get_live_snapshot`` (persona, language, optional ``period``), ``get_event``,
+``get_player_stats``, ``search_archive`` (Foundry IQ / AI Search, or local keyword search),
+``list_storylines`` (approved only unless the caller is authenticated) and ``verify_claim``
+(the deterministic verifier). It is rate limited; when ``MCP_TOKEN`` is set every call needs
+``Authorization: Bearer <token>`` and may request drafts. VS Code / GitHub Copilot
+(``.vscode/mcp.json``):
+
+.. code-block:: json
+
+   {
+     "servers": {
+       "live-on-air": {
+         "type": "http",
+         "url": "http://localhost:3000/mcp",
+         "headers": { "Authorization": "Bearer ${input:liveOnAirToken}" }
+       },
+       "live-on-air-local": {
+         "type": "stdio",
+         "command": "npx",
+         "args": ["tsx", "scripts/mcp-stdio.ts"],
+         "env": { "MCP_STDIO_FIXTURE": "<fixture-id>" }
+       }
+     },
+     "inputs": [{ "id": "liveOnAirToken", "type": "promptString", "password": true, "description": "MCP_TOKEN" }]
+   }
+
+Omit ``headers`` when ``MCP_TOKEN`` is not set. ``scripts/mcp-stdio.ts`` runs the platform
+in-process; ``MCP_STDIO_FIXTURE`` optionally starts replaying a fixture so the live tools have data.
+
+**A2A agent.** ``GET /.well-known/agent-card.json`` publishes an A2A Agent Card (protocol 0.3.0)
+for the Storyline Desk and ``POST /a2a`` implements JSON-RPC 2.0 ``message/send`` and
+``tasks/get``. Send an event ID as a data part (``{"eventId": "..."}``) or in text; the
+completed task's artifact holds the storylines that cite it. Unauthenticated callers get
+human-approved copy only; ``Authorization: Bearer $A2A_TOKEN`` adds drafts, labelled with their
+review status. The endpoint is read-only and rate limited: it never approves anything.
+
+**Telemetry.** With ``APPLICATIONINSIGHTS_CONNECTION_STRING`` set, ``server/telemetry.ts``
+starts Azure Monitor OpenTelemetry before Express loads and records a span per storyline, per
+agent call and per handoff (attributes ``agent``, ``storylineId``, ``outcome``, ``recovery``).
+Without it, telemetry is a no-op.
 
 Highlight reel
 ~~~~~~~~~~~~~~
@@ -294,14 +403,15 @@ Service                            Use
 =================================  ==========================================================
 Microsoft Fabric Eventstream       Real-time event ingestion and fan-out
 Fabric Eventhouse (KQL)            Event store, update policy, archive, producer KQL functions
-Microsoft Foundry Agent Service    Researcher, producer, fact-checker and localizer agents
+Microsoft Foundry Agent Service    Director, researcher, tactics analyst, producer, fact-checker and localizer agents
 Foundry IQ and Azure AI Search     Knowledge base over the synthetic archive
 Azure OpenAI (gpt-4.1-mini)        Agents, narration, progressive vision and optional Video Lab suggestions
 Azure AI Speech (HD neural TTS)    Spoken highlights commentary and recap audio, on the Foundry account
-Azure Container Apps               API and studio UI, server-sent events for live updates
+Azure Container Apps               API and studio UI, server-sent events, MCP and A2A endpoints
 Azure Container Registry           Image builds (``az acr build``)
 Managed identity and RBAC          Keyless access to Foundry, Search and the registry
 Log Analytics                      Container logs
+Application Insights (optional)    OpenTelemetry spans per agent call and handoff
 Bicep and GitHub Actions           Infrastructure as code; CI runs tests, typecheck and build
 =================================  ==========================================================
 
@@ -376,6 +486,12 @@ sign in with ``az login`` and run ``node --env-file=.env.local --import tsx serv
      - Consume from Fabric Eventstream (optional)
    * - ``AZURE_SUBSCRIPTION_ID`` or ``AZURE_TENANT_ID``
      - Pin Azure CLI credentials locally
+   * - ``MCP_TOKEN``
+     - Optional bearer token required on ``/mcp``; also unlocks draft storylines
+   * - ``A2A_TOKEN``
+     - Optional bearer token that lets A2A callers see drafts (approved copy is always public)
+   * - ``APPLICATIONINSIGHTS_CONNECTION_STRING``
+     - Optional Azure Monitor OpenTelemetry export (``appInsightsConnectionString`` in ``infra/app.bicep``)
 
 Do not run locally with the deployed app's Eventstream credentials; both instances would share
 one stream. Never commit ``.env.local`` or ``fabric/.secrets.local.json``.
@@ -388,7 +504,7 @@ Provisioning
    # Azure: Foundry, model, Search, registry, Container Apps
    .\scripts\deploy.ps1 -SubscriptionId "<subscription-guid>" -ResourceGroup "rg-matchlens-hackathon"
 
-   # Foundry agents and the Foundry IQ knowledge base
+   # Foundry agents (incl. liveonair-director and liveonair-tactics-analyst) and the Foundry IQ knowledge base
    node --env-file=.env.local --import tsx scripts/provision-desk.ts
 
    # Fabric workspace, Eventhouse, Eventstream and archive
@@ -433,7 +549,11 @@ API
    * - ``GET /api/audio/{id}.mp3``
      - Neural-voice audio for server-generated recap and commentary text only
    * - ``GET /api/studio/storylines``
-     - Storyline queue with claims and traces
+     - Storyline queue with claims, traces and handoff logs
+   * - ``POST /mcp``
+     - Read-only MCP tools (streamable HTTP, stateless)
+   * - ``GET /.well-known/agent-card.json``, ``POST /a2a``
+     - A2A Agent Card; JSON-RPC ``message/send`` and ``tasks/get`` for storylines by event
    * - ``POST /api/studio/storylines/{id}/review``
      - ``approve``, ``edit`` or ``reject``
    * - ``GET /api/studio/facts``, ``GET /api/studio/storyboard``
@@ -474,7 +594,9 @@ Testing
 -------
 
 ``npm test`` runs Node's test runner across the engine, fixtures, live pipeline, storyline desk
-(including rate-limit retry and the guard), narrator contracts, archive, API and highlight
+(including rate-limit retry and the guard), the coordinator policy, director fallback, circuit
+breaker and recovery paths, the MCP tool contract and A2A endpoint, narrator contracts, archive,
+API and highlight
 selection, including the cut-list time mappings and localisation. CI runs tests, typecheck and the
 production build on every push.
 
@@ -485,8 +607,10 @@ Two-minute demo
 2. Start the comeback fixture at 60x speed. Point out Fabric transport and lag.
 3. Open a storyline: claims, sources, agent trace. Approve it and show the lower-third in Spanish.
 4. Rule out a goal. The score, storylines and captions update.
-5. Switch to **Recap and highlights**. Play the reel, switch it to French and export it.
-6. Generate a recap in Spanish.
+5. Switch to **Fan View**: pick the away club and a player, switch to Spanish and the analyst
+   persona, turn on **Follow one player** and show the approved story arriving in the fan feed.
+6. Back on the Studio Desk, switch to **Recap and highlights**. Play the reel, switch it to French and export it.
+7. Generate a recap in Spanish.
 
 Phase 2: path to production
 ---------------------------

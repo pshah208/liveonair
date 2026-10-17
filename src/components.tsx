@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Language, MatchEvent, MatchFixture, MatchSnapshot, NarrativeResponse, StoryCard, TeamStats } from "../shared/types.js";
-import type { RecapStoryboard, ReviewStorylineRequest, Storyline, StorylineStatus, VerifiedFact } from "../shared/platform.js";
+import type { RecapStoryboard, ReviewStorylineRequest, Storyline, StorylineHandoff, StorylineStatus, VerifiedFact } from "../shared/platform.js";
 import { latestRevisions } from "../shared/highlights.js";
 import {
   chapterText,
@@ -33,7 +33,12 @@ export function BrandMark() {
   );
 }
 
-type AppHeaderProps = { theme: Theme; onToggleTheme: () => void; infraOpen: boolean; onToggleInfra: () => void; desk: "studio" | "var"; onDesk: (desk: "studio" | "var") => void };
+type AppHeaderProps = { theme: Theme; onToggleTheme: () => void; infraOpen: boolean; onToggleInfra: () => void; desk: "studio" | "fan" | "var"; onDesk: (desk: "studio" | "fan" | "var") => void };
+const DESK_TAGLINE: Record<AppHeaderProps["desk"], string> = {
+  studio: "Live storylines, recaps and highlights from a verified match feed",
+  fan: "Your match: personal insights from the same verified live feed",
+  var: "Cited, Laws-based support for VAR reviews"
+};
 export function AppHeader({ theme, onToggleTheme, infraOpen, onToggleInfra, desk, onDesk }: AppHeaderProps) {
   return (
     <header className="app-header">
@@ -41,11 +46,12 @@ export function AppHeader({ theme, onToggleTheme, infraOpen, onToggleInfra, desk
         <BrandMark />
         <div className="desk-switch" role="group" aria-label="Desk">
           <button type="button" className={`desk-switch__item${desk === "studio" ? " is-active" : ""}`} aria-pressed={desk === "studio"} onClick={() => onDesk("studio")}>Studio Desk</button>
+          <button type="button" className={`desk-switch__item${desk === "fan" ? " is-active" : ""}`} aria-pressed={desk === "fan"} onClick={() => onDesk("fan")}>Fan View</button>
           <button type="button" className={`desk-switch__item${desk === "var" ? " is-active" : ""}`} aria-pressed={desk === "var"} onClick={() => onDesk("var")}>
             VAR Desk <span className="desk-switch__badge">Next</span>
           </button>
         </div>
-        <span className="app-header__tagline">{desk === "studio" ? "Live storylines, recaps and highlights from a verified match feed" : "Cited, Laws-based support for VAR reviews"}</span>
+        <span className="app-header__tagline">{DESK_TAGLINE[desk]}</span>
       </div>
       <div className="app-header__actions">
         <span className="tag tag--accent">Synthetic data</span>
@@ -125,10 +131,15 @@ export { Pitch } from "./LivePitch.js";
 
 // ------------------------------------------------------------------ stats + intelligence
 
-const STAT_ROWS: { label: string; get: (stats: TeamStats) => number; format?: (value: number) => string }[] = [
+const STAT_ROWS: { label: string; hint?: string; get: (stats: TeamStats) => number | null | undefined; format?: (value: number) => string; bar?: boolean }[] = [
   { label: "Shots", get: (stats) => stats.shots },
   { label: "xG (illustrative)", get: (stats) => stats.illustrativeXg, format: (value) => value.toFixed(2) },
   { label: "Pass accuracy", get: (stats) => stats.passAccuracy, format: (value) => `${Math.round(value)}%` },
+  { label: "Avg pass length", hint: "Mean pass length on a 105 × 68 m pitch", get: (stats) => stats.avgPassDistanceM, format: (value) => `${value.toFixed(1)} m` },
+  { label: "Long-pass accuracy", hint: "Completion of passes longer than 30 m", get: (stats) => stats.longPassAccuracy, format: (value) => `${Math.round(value)}%` },
+  { label: "Avg pass difficulty", hint: "0–100: distance, forward progress, destination, pressure, switch, cross", get: (stats) => stats.avgPassDifficulty, format: (value) => value.toFixed(0) },
+  { label: "Completion vs expected", hint: "Completed minus expected completions, percentage points of attempts", get: (stats) => stats.completionOverExpected, format: (value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} pp`, bar: false },
+  { label: "Fastest shot", hint: "Synthetic ball-flight measurement of the shot itself", get: (stats) => stats.fastestShotKmh, format: (value) => `${Math.round(value)} km/h` },
   { label: "Corners", get: (stats) => stats.corners },
   { label: "Cards", get: (stats) => stats.yellowCards + stats.redCards }
 ];
@@ -142,18 +153,23 @@ export function LiveStats({ snapshot, fixture }: { snapshot: MatchSnapshot | nul
       </thead>
       <tbody>
         {STAT_ROWS.map((row) => {
-          const home = row.get(snapshot.stats.home);
-          const away = row.get(snapshot.stats.away);
-          const total = home + away;
-          const format = row.format ?? ((value: number) => String(value));
+          const homeValue = row.get(snapshot.stats.home);
+          const awayValue = row.get(snapshot.stats.away);
+          // Metric rows are absent on older snapshots and null when unavailable (e.g. camera-frame clips).
+          if (homeValue === undefined && awayValue === undefined) return null;
+          const home = homeValue ?? 0;
+          const away = awayValue ?? 0;
+          const total = row.bar === false || homeValue == null || awayValue == null ? 0 : home + away;
+          const base = row.format ?? ((value: number) => String(value));
+          const format = (value: number | null | undefined) => (value == null ? "—" : base(value));
           return (
             <tr key={row.label}>
-              <td className="mono">{format(home)}</td>
-              <td>
+              <td className="mono">{format(homeValue)}</td>
+              <td title={row.hint}>
                 <span className="stat-table__label">{row.label}</span>
-                <span className={`stat-bar${total === 0 ? " stat-bar--empty" : ""}`} aria-hidden="true"><span className="stat-bar__home" style={{ width: `${total === 0 ? 50 : (home / total) * 100}%` }} /></span>
+                <span className={`stat-bar${total <= 0 ? " stat-bar--empty" : ""}`} aria-hidden="true"><span className="stat-bar__home" style={{ width: `${total <= 0 ? 50 : (home / total) * 100}%` }} /></span>
               </td>
-              <td className="mono">{format(away)}</td>
+              <td className="mono">{format(awayValue)}</td>
             </tr>
           );
         })}
@@ -321,9 +337,9 @@ function StorylineCard({ storyline, selected, onSelect, onReview, pending, error
         </div>
       )}
 
-      {storyline.claims.length > 0 && (
+      {(storyline.claims.length > 0 || (storyline.handoffs?.length ?? 0) > 0) && (
         <details className="disclosure disclosure--compact">
-          <summary>Evidence: {verified}/{storyline.claims.length} claims verified · agent trace</summary>
+          <summary>Evidence: {verified}/{storyline.claims.length} claims verified · agent handoffs &amp; trace</summary>
           <ul className="claim-list">
             {storyline.claims.map((claim) => {
               const text = claimText(claim, language);
@@ -336,10 +352,51 @@ function StorylineCard({ storyline, selected, onSelect, onReview, pending, error
               );
             })}
           </ul>
+          <HandoffTimeline handoffs={storyline.handoffs} />
           <TraceTable steps={storyline.trace} />
         </details>
       )}
     </article>
+  );
+}
+
+const HANDOFF_TONE: Record<StorylineHandoff["outcome"], "success" | "info" | "warning" | "danger"> = {
+  ok: "success",
+  retry: "warning",
+  fallback: "warning",
+  skipped: "warning",
+  escalated: "info",
+  failed: "danger",
+};
+
+/** Coordinator handoff log: which agent handed to which, why, and whether it was a recovery. */
+export function HandoffTimeline({ handoffs }: { handoffs?: StorylineHandoff[] }) {
+  if (!handoffs || handoffs.length === 0) return null;
+  const recoveries = handoffs.filter((handoff) => handoff.recovery).length;
+  return (
+    <section className="handoff-timeline" aria-label="Agent handoffs">
+      <h4 className="handoff-timeline__title">
+        Handoffs <span className="count">{handoffs.length}</span>
+        {recoveries > 0 && <span className="tag tag--danger">{recoveries} {recoveries === 1 ? "recovery" : "recoveries"}</span>}
+      </h4>
+      <ol className="handoff-timeline__list">
+        {handoffs.map((handoff, index) => (
+          <li key={`${handoff.at}-${index}`} className={`handoff handoff--${handoff.outcome}${handoff.recovery ? " handoff--recovery" : ""}`}>
+            <span className="handoff__route">
+              <strong>{labelize(handoff.from)}</strong>
+              <span aria-hidden="true"> → </span><span className="sr-only"> hands off to </span>
+              <strong>{labelize(handoff.to)}</strong>
+            </span>
+            <span className={`status-pill status-pill--${HANDOFF_TONE[handoff.outcome] ?? "info"}`}>{handoff.outcome}</span>
+            {handoff.decidedBy === "director" && <span className="tag tag--accent">director</span>}
+            {handoff.recovery && (
+              <span className="tag tag--danger handoff__recovery">recovery: {labelize(handoff.recovery)}{handoff.errorClass ? ` · ${labelize(handoff.errorClass)}` : ""}</span>
+            )}
+            <span className="handoff__reason">{handoff.reason}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

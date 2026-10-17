@@ -20,6 +20,8 @@ param eventstreamSourceConnectionString string = ''
 @secure()
 param eventstreamDestinationConnectionString string = ''
 param eventstreamConsumerGroup string = '$Default'
+@secure()
+param appInsightsConnectionString string = ''
 
 var eventstreamConfigured = !empty(eventstreamSourceConnectionString) && !empty(eventstreamDestinationConnectionString)
 var eventstreamSecrets = eventstreamConfigured ? [
@@ -30,6 +32,13 @@ var eventstreamEnv = eventstreamConfigured ? [
   { name: 'EVENTSTREAM_SOURCE_CONNECTION_STRING', secretRef: 'eventstream-source' }
   { name: 'EVENTSTREAM_DESTINATION_CONNECTION_STRING', secretRef: 'eventstream-destination' }
   { name: 'EVENTSTREAM_CONSUMER_GROUP', value: eventstreamConsumerGroup }
+] : []
+var telemetryConfigured = !empty(appInsightsConnectionString)
+var telemetrySecrets = telemetryConfigured ? [
+  { name: 'appinsights-connection', value: appInsightsConnectionString }
+] : []
+var telemetryEnv = telemetryConfigured ? [
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection' }
 ] : []
 var deskEnv = empty(projectEndpoint) ? [] : [
   { name: 'PROJECT_ENDPOINT', value: projectEndpoint }
@@ -56,7 +65,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: { external: true, targetPort: 3000, transport: 'http', allowInsecure: false }
       registries: [{ server: registryServer, identity: identity.id }]
-      secrets: eventstreamSecrets
+      secrets: concat(eventstreamSecrets, telemetrySecrets)
     }
     template: {
       containers: [{
@@ -72,7 +81,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'AZURE_OPENAI_API_VERSION', value: '2024-10-21' }
           { name: 'AI_MAX_REQUESTS_PER_HOUR', value: string(aiMaxRequestsPerHour) }
           { name: 'AI_MAX_CONCURRENT', value: '2' }
-        ], deskEnv, searchEnv, eventstreamEnv)
+        ], deskEnv, searchEnv, eventstreamEnv, telemetryEnv)
         probes: [
           {
             type: 'Startup'

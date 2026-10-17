@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ballRoute, buildBallPath, placeEvent, type BallPoint, type BallSegment } from "../shared/ballPath.js";
+import { difficultyBand, metricOptions, passDifficulty, shotSpeedKmh } from "../shared/metrics.js";
 import { latestRevisions } from "../shared/highlights.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
 import { labelize, teamTint } from "./utils.js";
@@ -59,12 +60,15 @@ function useBallMotion() {
   return { position, positionRef, playing, animate, stop, setPosition };
 }
 
-function segmentStyle(segment: BallSegment, age: number) {
+function segmentStyle(segment: BallSegment, age: number, difficulty?: number) {
   const opacity = 0.12 + 0.88 * age * age;
   if (segment.inferred) return { stroke: "var(--cp-text-soft)", width: 0.35, dash: "0.6 1", opacity: opacity * 0.8 };
   if (segment.kind === "shot" || segment.kind === "goal") return { stroke: teamTint(segment.teamId), width: segment.kind === "goal" ? 1.1 : 0.85, dash: undefined, opacity };
+  if (segment.kind === "pass" && difficulty !== undefined) return { stroke: DIFFICULTY_COLOUR[difficultyBand(difficulty)], width: 0.6, dash: undefined, opacity };
   return { stroke: teamTint(segment.teamId), width: 0.6, dash: segment.kind === "cross" ? "1.6 1" : undefined, opacity };
 }
+
+const DIFFICULTY_COLOUR = { easy: "var(--cp-success)", medium: "var(--cp-warning)", hard: "var(--cp-danger)" } as const;
 
 export function Pitch({ fixture, events, highlightIds }: PitchProps) {
   const [mode, setMode] = useState<Mode>("ball");
@@ -77,6 +81,22 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
     return events;
   }, [events, fixture.events, highlightIds]);
   const evidenceMode = Boolean(highlightIds?.length) && shown !== events;
+  // Difficulty and speed come from each event's own data; pressure context is whatever the shown feed contains.
+  const metrics = useMemo(() => {
+    const options = metricOptions(fixture);
+    const difficulty = new Map<string, number>();
+    const speed = new Map<string, number>();
+    for (const event of shown) {
+      if (event.type === "pass") {
+        const score = passDifficulty(event, shown, options)?.score;
+        if (score !== undefined) difficulty.set(event.id, score);
+      } else if (event.type === "shot") {
+        const kmh = shotSpeedKmh(event, options);
+        if (kmh !== null) speed.set(event.id, kmh);
+      }
+    }
+    return { difficulty, speed };
+  }, [fixture, shown]);
   const path = useMemo(() => buildBallPath(fixture, shown, { limit: evidenceMode ? 10 : 9 }), [fixture, shown, evidenceMode]);
   const route = useMemo(() => ballRoute(path), [path]);
   const areaEvents = useMemo(() => shown.slice(-8).slice().sort((a, b) => a.minute * 60 + a.second - (b.minute * 60 + b.second)), [shown]);
@@ -127,6 +147,11 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
               <path d="M0 0 6 3 0 6z" fill={teamTint(team)} />
             </marker>
           ))}
+          {(["easy", "medium", "hard"] as const).map((band) => (
+            <marker key={band} id={`ball-arrow-${band}`} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
+              <path d="M0 0 6 3 0 6z" fill={DIFFICULTY_COLOUR[band]} />
+            </marker>
+          ))}
           <radialGradient id="ball-glow">
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.55" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
@@ -146,13 +171,21 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
         {mode === "ball" ? (
           <g>
             {path.segments.map((segment, index) => {
-              const style = segmentStyle(segment, (index + 1) / path.segments.length);
-              const arrow = !segment.inferred ? `url(#ball-arrow-${segment.teamId})` : undefined;
+              const difficulty = segment.kind === "pass" && !segment.inferred ? metrics.difficulty.get(segment.eventId) : undefined;
+              const style = segmentStyle(segment, (index + 1) / path.segments.length, difficulty);
+              const arrow = segment.inferred ? undefined : difficulty !== undefined ? `url(#ball-arrow-${difficultyBand(difficulty)})` : `url(#ball-arrow-${segment.teamId})`;
               return (
                 <line key={`${segment.eventId}-${segment.kind}-${index}`} x1={segment.from.x} y1={toY(segment.from.y)} x2={segment.to.x} y2={toY(segment.to.y)}
-                  stroke={style.stroke} strokeWidth={style.width} strokeDasharray={style.dash} strokeLinecap="round" opacity={style.opacity} markerEnd={arrow} />
+                  stroke={style.stroke} strokeWidth={style.width} strokeDasharray={style.dash} strokeLinecap="round" opacity={style.opacity} markerEnd={arrow}>
+                  {difficulty !== undefined && <title>{`Pass difficulty ${difficulty}/100`}</title>}
+                </line>
               );
             })}
+            {path.segments.filter((segment) => !segment.inferred && (segment.kind === "shot" || segment.kind === "goal") && metrics.speed.has(segment.eventId)).map((segment) => (
+              <text key={`speed-${segment.eventId}-${segment.kind}`} x={Math.min(94, Math.max(6, segment.from.x))} y={Math.min(66, toY(segment.from.y) + 4)} className="pitch-label pitch-speed-badge" textAnchor="middle">
+                {Math.round(metrics.speed.get(segment.eventId)!)} km/h
+              </text>
+            ))}
             {path.touches.map((touch, index) => {
               const last = index === path.touches.length - 1;
               return (
@@ -195,6 +228,11 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
       <figcaption className="pitch-legend">
         <span><i className="swatch swatch--home" />{camera ? fixture.home.shortName : `${fixture.home.shortName} attacks →`}</span>
         {mode === "ball" && <span className="subtle-text">{camera ? "Camera-view positions · route between events inferred" : "Solid: pass / shot · dotted: inferred route between logged events"}</span>}
+        {mode === "ball" && !camera && metrics.difficulty.size > 0 && (
+          <span className="subtle-text pitch-difficulty-legend" title="Pass difficulty 0–100 from distance, forward progress, destination, pressure, switch and cross">
+            Pass difficulty: <i className="swatch" style={{ background: DIFFICULTY_COLOUR.easy }} />easy <i className="swatch" style={{ background: DIFFICULTY_COLOUR.medium }} />medium <i className="swatch" style={{ background: DIFFICULTY_COLOUR.hard }} />hard
+          </span>
+        )}
         <span>{camera ? fixture.away.shortName : `← ${fixture.away.shortName}`} <i className="swatch swatch--away" /></span>
         <span className="subtle-text">{(mode === "ball" ? latestTouch : latestEvent) ? `${(mode === "ball" ? latestTouch : latestEvent)!.minute}' ${labelize((mode === "ball" ? latestTouch : latestEvent)!.type)}` : "Awaiting feed"}</span>
       </figcaption>

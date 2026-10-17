@@ -5,6 +5,8 @@ export const RESEARCHER_AGENT_NAME = "matchlens-researcher";
 export const PRODUCER_AGENT_NAME = "matchlens-producer";
 export const FACT_CHECKER_AGENT_NAME = "matchlens-fact-checker";
 export const LOCALIZER_AGENT_NAME = "matchlens-localizer";
+export const DIRECTOR_AGENT_NAME = "liveonair-director";
+export const TACTICS_ANALYST_AGENT_NAME = "liveonair-tactics-analyst";
 
 export type DeskAgentSpec = {
   name: string;

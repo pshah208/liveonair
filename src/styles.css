@@ -190,6 +190,9 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .segmented__item { flex: 1; white-space: nowrap; border: 0; border-radius: calc(var(--radius-control) - 3px); padding: 6px 10px; background: transparent; color: var(--cp-text-muted); font-weight: 600; font-size: 14px; }
 .segmented__item.is-active { background: var(--cp-surface-solid); color: var(--cp-text); box-shadow: var(--shadow-card); }
 .segmented--compact { width: auto; }
+.segmented__item:disabled { opacity: 0.45; cursor: not-allowed; }
+.period-toggle { margin: 4px 0 10px; }
+.pa-period-toggle { margin: 10px 0 4px; width: 100%; }
 
 .disclosure { border-top: 1px solid var(--cp-border); padding-top: 8px; }
 .disclosure > summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--cp-text-muted); list-style: none; display: flex; align-items: center; gap: 6px; }
@@ -385,6 +388,15 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .trace-table tbody th .status-pill { margin-left: 6px; }
 .trace-table td { color: var(--cp-text-muted); }
 .trace-table .num { text-align: right; white-space: nowrap; }
+.handoff-timeline { margin: 8px 0 12px; }
+.handoff-timeline__title { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cp-text-soft); }
+.handoff-timeline__list { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 2px solid var(--cp-border); display: grid; gap: 6px; }
+.handoff { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.handoff::before { content: ""; position: absolute; left: -17px; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--cp-success); }
+.handoff--retry::before, .handoff--fallback::before, .handoff--skipped::before { background: var(--cp-warning); }
+.handoff--escalated::before { background: var(--cp-accent); }
+.handoff--failed::before { background: var(--cp-danger); }
+.handoff__reason { flex-basis: 100%; color: var(--cp-text-muted); }
 
 .overlay-preview { display: grid; gap: 8px; }
 .lower-third { display: grid; gap: 2px; padding: 12px 14px; border-radius: var(--radius-control); background: var(--cp-surface-soft); border: 1px solid var(--cp-border); border-left: 6px solid var(--cp-accent); }
@@ -627,3 +639,49 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
   .pa-squads { position: static; }
   .pa-tracking__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ------------------------------------------------------------------ fan view */
+
+.fan-page { display: grid; gap: 16px; }
+.fan-prefs { display: grid; gap: 8px; }
+.fan-prefs__row { display: grid; grid-template-columns: minmax(240px, 1.3fr) repeat(3, minmax(150px, 1fr)); gap: 12px; align-items: end; }
+.fan-prefs__follow { align-self: center; }
+.fan-prefs__period { grid-column: span 2; }
+.fan-header .broadcast-bar__team.is-favorite { color: var(--cp-accent-text); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.fan-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.fan-alerts { display: grid; gap: 8px; }
+.fan-alert { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fan-alert .link-button { margin-left: auto; }
+.fan-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.fan-list__item { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; padding: 6px 0; border-bottom: 1px solid var(--cp-border); }
+.fan-list__item:last-child { border-bottom: 0; }
+.fan-story, .fan-insight { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--radius-control); border: 1px solid var(--cp-border); background: var(--cp-surface-soft); font-size: 14px; }
+.fan-insight.is-favorite { border-color: var(--cp-accent); }
+.fan-story__meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--cp-text-soft); }
+.fan-evidence { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--cp-text-muted); }
+.fan-spotlight { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 0 0 12px; }
+.fan-spotlight > div { padding: 8px 10px; border-radius: var(--radius-control); border: 1px solid var(--cp-border); background: var(--cp-surface-soft); }
+.fan-spotlight dt { font-size: 12px; font-weight: 600; color: var(--cp-text-muted); }
+.fan-spotlight dd { margin: 2px 0 0; font-size: 14px; }
+.fan-follow__map { margin-bottom: 12px; }
+.event-row.is-favorite { background: var(--cp-accent-soft); border-radius: var(--radius-small); }
+.fan-footnote { margin: 0; }
+@media (max-width: 1100px) {
+  .fan-prefs__row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .fan-grid { grid-template-columns: 1fr; }
+  .fan-prefs__row { grid-template-columns: 1fr; }
+  .fan-prefs__period { grid-column: auto; }
+}
+
+/* ---- ball & player metrics (pass difficulty, shot speed, player-ID tags) ---- */
+.pitch-speed-badge { font-size: 2.3px; font-weight: 700; }
+.pitch-difficulty-legend { display: inline-flex; align-items: center; gap: 4px; }
+.pitch-difficulty-legend .swatch { display: inline-block; width: 10px; height: 4px; border-radius: 2px; }
+.player-id-panel { display: grid; gap: 6px; margin-top: 12px; }
+.player-id-tags { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.player-id-tag { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; padding: 6px 8px; border-left: 3px solid var(--cp-border-strong); border-radius: var(--radius-small); background: var(--cp-surface-soft); font-size: 13px; }
+.player-id-tag > span:not(.player-id-tag__minute), .player-id-tag > small { grid-column: 2; }
+.player-id-tag__minute { color: var(--cp-text-soft); font-size: 12px; grid-row: span 3; }
+.pa-tracking__source { margin-left: 8px; vertical-align: middle; font-size: 11px; }

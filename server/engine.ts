@@ -13,7 +13,14 @@ import type {
   TeamId,
   TeamStats
 } from "../shared/types.js";
+import { filterByPeriod, periodBoundary, periodScope, periodWindow } from "../shared/periods.js";
+import { resolveFavoriteTeam } from "../shared/fan.js";
 import { getFixture } from "./fixtures.js";
+import { aggregatePasses, fastestShot, metricOptions, passQualities, type MetricOptions } from "../shared/metrics.js";
+import { buildMetricStories } from "./metricStories.js";
+
+/** Ranking boost for stories about the requested favourite club. Ordering/emphasis only; text and metrics are untouched. */
+const FAVORITE_CLUB_BOOST = 15;
 
 type TranslationKey =
   | "correctionNotice"
@@ -193,7 +200,7 @@ function emptyStats(): TeamStats {
   };
 }
 
-function computeStats(activeEvents: MatchEvent[]): { home: TeamStats; away: TeamStats; score: { home: number; away: number } } {
+function computeStats(activeEvents: MatchEvent[], metricOpts: MetricOptions = {}): { home: TeamStats; away: TeamStats; score: { home: number; away: number } } {
   const home = emptyStats();
   const away = emptyStats();
   for (const evt of activeEvents) {
@@ -219,6 +226,15 @@ function computeStats(activeEvents: MatchEvent[]): { home: TeamStats; away: Team
   for (const stats of [home, away]) {
     stats.passAccuracy = stats.passes > 0 ? Number(((stats.completedPasses / stats.passes) * 100).toFixed(2)) : 0;
     stats.illustrativeXg = Number(stats.illustrativeXg.toFixed(3));
+  }
+  const qualities = passQualities(activeEvents, metricOpts);
+  for (const [teamId, stats] of [["home", home], ["away", away]] as const) {
+    const passes = aggregatePasses(qualities.filter((quality) => quality.event.teamId === teamId));
+    stats.avgPassDistanceM = passes.avgPassDistanceM;
+    stats.longPassAccuracy = passes.longPassAccuracy;
+    stats.avgPassDifficulty = passes.avgPassDifficulty;
+    stats.completionOverExpected = passes.completionOverExpected;
+    stats.fastestShotKmh = fastestShot(activeEvents.filter((evt) => evt.teamId === teamId), metricOpts)?.speedKmh ?? null;
   }
   return {
     home,
@@ -280,14 +296,6 @@ function localizedStory(
   };
 }
 
-function rollingWindow(events: MatchEvent[], atSecond: number, duration = 8 * 60): MatchEvent[] {
-  const start = Math.max(0, atSecond - duration);
-  return events.filter((evt) => {
-    const sec = eventSecond(evt);
-    return sec >= start && sec <= atSecond;
-  });
-}
-
 function eventsInRange(events: MatchEvent[], startSecond: number, endSecond: number): MatchEvent[] {
   return events.filter((evt) => {
     const sec = eventSecond(evt);
@@ -309,16 +317,19 @@ function buildStories(
   fixture: MatchFixture,
   activeEvents: MatchEvent[],
   request: AnalysisRequest,
-  stats: { home: TeamStats; away: TeamStats; score: { home: number; away: number } }
+  stats: { home: TeamStats; away: TeamStats; score: { home: number; away: number } },
+  window: { start: number; end: number } = { start: 0, end: request.atSecond }
 ): StoryCard[] {
-  const atSecond = request.atSecond;
-  const currentWindowStart = Math.max(0, atSecond - 8 * 60);
+  // Rolling windows are clamped to the selected period so a finished half still yields its own insights.
+  const atSecond = window.end;
+  const scopeStart = window.start;
+  const currentWindowStart = Math.max(scopeStart, atSecond - 8 * 60);
   const currentWindowEnd = atSecond;
   const currentWindowLabel = formatWindowLabel(currentWindowStart, currentWindowEnd);
   const previousWindowEnd = currentWindowStart - 1;
-  const previousWindowStart = Math.max(0, previousWindowEnd - 8 * 60 + 1);
-  const currentWindowEvents = rollingWindow(activeEvents, atSecond);
-  const previousWindowEvents = previousWindowEnd >= 0 ? eventsInRange(activeEvents, previousWindowStart, previousWindowEnd) : [];
+  const previousWindowStart = Math.max(scopeStart, previousWindowEnd - 8 * 60 + 1);
+  const currentWindowEvents = eventsInRange(activeEvents, currentWindowStart, atSecond);
+  const previousWindowEvents = previousWindowEnd >= scopeStart ? eventsInRange(activeEvents, previousWindowStart, previousWindowEnd) : [];
   const activeById = new Map(activeEvents.map((event) => [event.id, event]));
   const homeName = mapTeamName(fixture.home, request.language);
   const awayName = mapTeamName(fixture.away, request.language);
@@ -595,10 +606,10 @@ function buildStories(
   if (turningPoints.length > 0) {
     const goals = turningPoints.filter((e) => e.type === "goal").length;
     const reds = turningPoints.filter((e) => e.type === "red_card").length;
-    const turningSummaryEn = `By ${formatWindowLabel(0, atSecond)}, active goals: ${goals}, red cards: ${reds}, score ${stats.score.home}-${stats.score.away}.`;
-    const turningSummaryEs = `Hasta ${formatWindowLabel(0, atSecond)}, goles vigentes: ${goals}, rojas: ${reds}, marcador ${stats.score.home}-${stats.score.away}.`;
-    const turningSummaryFr = `À ${formatWindowLabel(0, atSecond)}, buts actifs : ${goals}, rouges : ${reds}, score ${stats.score.home}-${stats.score.away}.`;
-    const turningSummaryPt = `Até ${formatWindowLabel(0, atSecond)}, gols válidos: ${goals}, cartões vermelhos: ${reds}, placar ${stats.score.home}-${stats.score.away}.`;
+    const turningSummaryEn = `By ${formatWindowLabel(scopeStart, atSecond)}, active goals: ${goals}, red cards: ${reds}, score ${stats.score.home}-${stats.score.away}.`;
+    const turningSummaryEs = `Hasta ${formatWindowLabel(scopeStart, atSecond)}, goles vigentes: ${goals}, rojas: ${reds}, marcador ${stats.score.home}-${stats.score.away}.`;
+    const turningSummaryFr = `À ${formatWindowLabel(scopeStart, atSecond)}, buts actifs : ${goals}, rouges : ${reds}, score ${stats.score.home}-${stats.score.away}.`;
+    const turningSummaryPt = `Até ${formatWindowLabel(scopeStart, atSecond)}, gols válidos: ${goals}, cartões vermelhos: ${reds}, placar ${stats.score.home}-${stats.score.away}.`;
     stories.push(
       localizedStory(
         "turning-points",
@@ -612,7 +623,7 @@ function buildStories(
           { label: tr(request.language, "metricCards"), value: reds, unit: "reds" },
           { label: tr(request.language, "metricScoreEvents"), value: turningPoints.length, unit: "events" }
         ],
-        0,
+        scopeStart,
         atSecond,
         undefined,
         {
@@ -664,7 +675,7 @@ function buildStories(
   if (playerId) {
     const player = [...fixture.home.players, ...fixture.away.players].find((entry) => entry.id === playerId);
     if (!player) throw new Error("Fixture event references an unknown player");
-    const playerWindow = formatWindowLabel(0, atSecond);
+    const playerWindow = formatWindowLabel(scopeStart, atSecond);
     const playerEvents = activeEvents.filter((e) =>
       e.playerId === playerId && !["kickoff", "halftime", "fulltime"].includes(e.type));
     const playerTeamId = playerEvents[0]?.teamId;
@@ -677,7 +688,7 @@ function buildStories(
         78,
         playerEvents.map((e) => e.id),
         [{ label: tr(request.language, "metricTouches"), value: playerEvents.length, unit: "events" }],
-        0,
+        scopeStart,
         atSecond,
         playerTeamId,
         {
@@ -725,7 +736,7 @@ function buildStories(
 
   const currentShots = currentWindowEvents.filter((e) => e.type === "shot");
   const previousShots = previousWindowEvents.filter((e) => e.type === "shot");
-  if (previousWindowEnd >= 0 && currentShots.length !== previousShots.length) {
+  if (previousWindowEnd >= scopeStart && currentShots.length !== previousShots.length) {
     const directionKey = currentShots.length > previousShots.length ? "increase" : "decrease";
     const trendSummaryEn = `Shots ${directionKey}: previous window ${previousShots.length}, current window ${currentShots.length}.`;
     const trendSummaryEs = `Tiros en ${directionKey === "increase" ? "aumento" : "descenso"}: ventana previa ${previousShots.length}, ventana actual ${currentShots.length}.`;
@@ -805,7 +816,7 @@ function buildStories(
         70,
         kickoffEvidence,
         [],
-        0,
+        scopeStart,
         atSecond,
         undefined,
         {
@@ -851,7 +862,11 @@ function buildStories(
     );
   }
 
+  stories.push(...buildMetricStories(fixture, activeEvents, request, { start: scopeStart, end: atSecond }));
+
+  const favoriteTeamId = resolveFavoriteTeam(fixture, request.favoriteClubId).teamId;
   return stories
+    .map((story) => (favoriteTeamId && story.teamId === favoriteTeamId ? { ...story, favorite: true, importance: story.importance + FAVORITE_CLUB_BOOST } : story))
     .filter((story) => story.evidenceIds.every((id) => activeById.has(id)))
     .sort((a, b) => b.importance - a.importance)
     .slice(0, 7);
@@ -865,21 +880,28 @@ function buildEvidence(activeEvents: MatchEvent[]): Record<string, MatchEvent> {
 
 function computeStateVersion(events: MatchEvent[], request: AnalysisRequest): string {
   const canonical = events.map((evt) => `${evt.id}@${evt.revision}${evt.rescinded ? ":x" : ""}`).join("|");
-  const payload = `${canonical}::${request.atSecond}::${request.persona}::${request.language}::${request.favoritePlayerId ?? ""}::${request.correction ? "1" : "0"}`;
+  const period = request.period && request.period !== "full" ? `::${request.period}` : "";
+  const payload = `${canonical}::${request.atSecond}::${request.persona}::${request.language}::${request.favoritePlayerId ?? ""}::${request.correction ? "1" : "0"}${period}${request.favoriteClubId ? `::club:${request.favoriteClubId}` : ""}`;
   return createHash("sha256").update(payload).digest("hex");
 }
 
 export function analyzeFixture(fixture: MatchFixture, request: AnalysisRequest): MatchSnapshot {
   assertRequest(request, fixture);
+  const period = request.period ?? "full";
   const ingested = fixture.events.filter((evt) => eventSecond(evt) <= request.atSecond);
-  const { activeEvents, corrections } = reconcileEvents(ingested, fixture, request.atSecond, Boolean(request.correction));
+  // Reconcile over the whole match first so a later correction still lands in the original half.
+  const { activeEvents: matchEvents, corrections } = reconcileEvents(ingested, fixture, request.atSecond, Boolean(request.correction));
+  const canonical = computeStats(matchEvents, metricOptions(fixture));
+  const boundary = periodBoundary(fixture);
+  const scope = periodScope(fixture, period, request.atSecond, boundary);
+  const activeEvents = scope.available ? filterByPeriod(matchEvents, period, boundary) : [];
 
   const localizedCorrections = corrections.map((c) => ({
     ...c,
     message: `${tr(request.language, "correctionNotice")} (${c.eventId})`
   }));
-  const stats = computeStats(activeEvents);
-  const stories = buildStories(fixture, activeEvents, request, stats);
+  const stats = period === "full" ? canonical : computeStats(activeEvents, metricOptions(fixture));
+  const stories = scope.available ? buildStories(fixture, activeEvents, request, stats, periodWindow(period, boundary, request.atSecond, activeEvents)) : [];
   const recentEvents = sortEventsStable(activeEvents).filter((evt) => !evt.rescinded).slice(-20).map((evt) => ({ ...evt }));
   const evidence = buildEvidence(activeEvents);
   const allStoryRefs = stories.flatMap((story) => story.evidenceIds);
@@ -888,6 +910,13 @@ export function analyzeFixture(fixture: MatchFixture, request: AnalysisRequest):
     return Boolean(event && !event.rescinded);
   });
   const evidenceCoverage = allStoryRefs.length === 0 ? 0 : Number(((validStoryRefs.length / allStoryRefs.length) * 100).toFixed(2));
+  const favoriteTeam = resolveFavoriteTeam(fixture, request.favoriteClubId);
+  const focus = request.favoriteClubId || request.favoritePlayerId
+    ? {
+        ...(request.favoriteClubId ? { favoriteClubId: request.favoriteClubId, favoriteClubInMatch: favoriteTeam.inMatch, ...(favoriteTeam.teamId ? { favoriteTeamId: favoriteTeam.teamId } : {}) } : {}),
+        ...(request.favoritePlayerId ? { favoritePlayerId: request.favoritePlayerId, favoritePlayerInMatch: true } : {}),
+      }
+    : undefined;
 
   return {
     fixtureId: fixture.id,
@@ -895,7 +924,10 @@ export function analyzeFixture(fixture: MatchFixture, request: AnalysisRequest):
     stateVersion: computeStateVersion(activeEvents, request),
     persona: request.persona,
     language: request.language,
-    score: stats.score,
+    score: canonical.score,
+    periodScore: stats.score,
+    scope,
+    ...(focus ? { focus } : {}),
     stats: { home: stats.home, away: stats.away },
     stories,
     recentEvents,

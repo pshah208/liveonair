@@ -11,7 +11,12 @@ import {
   LOCALIZER_AGENT_NAME,
   PRODUCER_AGENT_NAME,
   RESEARCHER_AGENT_NAME,
+  DIRECTOR_AGENT_NAME,
+  TACTICS_ANALYST_AGENT_NAME,
 } from "./agents/index.js";
+import { DIRECTOR_CHOICES, directorResponseSchema } from "./agents/director.js";
+import { deriveTacticsProposals, tacticsAnalystResponseSchema, type TacticsInput } from "./agents/tactics-analyst.js";
+import type { DirectorInput, DirectorProposal } from "./coordinator.js";
 import {
   activeEvents,
   claimProposalArraySchema,
@@ -70,7 +75,20 @@ export interface AgentRunner {
   produce(input: { claims: string[]; feedback?: string[] }): Promise<ProducerDraft>;
   factCheck(input: { claims: string[]; headline: string; onAirLine: string; overlay: string }): Promise<FactCheckResult>;
   localize(input: { headline: string; onAirLine: string; overlay: string }): Promise<LocalizationDraft>;
+  /** Optional director: proposes the next handoff. Missing => deterministic coordinator policy. */
+  direct?(input: DirectorInput): Promise<DirectorProposal>;
+  /** Optional tactics analyst: turns engine story cards into claim proposals. Missing => step is skipped. */
+  tactics?(input: TacticsInput): Promise<z.infer<typeof claimProposalArraySchema>>;
 }
+
+const directorProposalSchema = z.object({
+  next: z.enum(DIRECTOR_CHOICES),
+  reason: z.string().trim().min(1).max(300),
+}).strict();
+
+const tacticsSelectionSchema = z.object({
+  selections: z.array(z.object({ cardId: z.string().trim().min(1).max(200), reason: z.string().max(400) }).strict()).max(3),
+}).strict();
 
 type FoundryRunnerOptions = {
   endpoint?: string;
@@ -517,6 +535,40 @@ class FoundryAgentRunner implements AgentRunner {
       this.deadlineMs,
     );
     return localizationSchema.parse(raw);
+  }
+
+  async direct(input: DirectorInput): Promise<DirectorProposal> {
+    const raw = await invokeAgentJson<DirectorProposal>(
+      this.openai,
+      DIRECTOR_AGENT_NAME,
+      "director_decision",
+      directorResponseSchema as unknown as Record<string, unknown>,
+      JSON.stringify(input),
+      undefined,
+      undefined,
+      this.maxToolIterations,
+      Math.min(this.deadlineMs, 20_000),
+    );
+    return directorProposalSchema.parse(raw);
+  }
+
+  async tactics(input: TacticsInput) {
+    const raw = await invokeAgentJson<{ selections: Array<{ cardId: string; reason: string }> }>(
+      this.openai,
+      TACTICS_ANALYST_AGENT_NAME,
+      "tactics_selection",
+      tacticsAnalystResponseSchema as unknown as Record<string, unknown>,
+      JSON.stringify({
+        trigger: input.trigger,
+        cards: input.cards.map(({ id, kind, title, summary, evidenceIds, importance }) => ({ id, kind, title, summary, evidenceIds, importance })),
+      }),
+      undefined,
+      undefined,
+      this.maxToolIterations,
+      this.deadlineMs,
+    );
+    const selected = new Set(tacticsSelectionSchema.parse(raw).selections.map((selection) => selection.cardId));
+    return claimProposalArraySchema.parse(deriveTacticsProposals(input.cards.filter((card) => selected.has(card.id)), input));
   }
 }
 

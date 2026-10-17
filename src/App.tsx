@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { AppHeader } from "./components.js";
+import { FanPage } from "./FanPage.js";
+import { EMPTY_MATCH_CONTEXT, type ActiveMatchContext } from "./liveContext.js";
 import { StudioPage } from "./StudioPage.js";
 import { VarDeskPage } from "./VarDeskPage.js";
 import type { Theme } from "./utils.js";
@@ -7,13 +9,19 @@ import type { Theme } from "./utils.js";
 const INFRA_KEY = "matchlens.infrastructure.open";
 const DESK_KEY = "matchlens.desk";
 
-export type Desk = "studio" | "var";
+export type Desk = "studio" | "fan" | "var";
+const DESKS: readonly Desk[] = ["studio", "fan", "var"];
+
+function isDesk(value: unknown): value is Desk {
+  return typeof value === "string" && (DESKS as readonly string[]).includes(value);
+}
 
 function initialDesk(): Desk {
-  if (window.location.hash === "#var") return "var";
-  if (window.location.hash === "#studio") return "studio";
+  const fromHash = window.location.hash.slice(1);
+  if (isDesk(fromHash)) return fromHash;
   try {
-    return window.localStorage.getItem(DESK_KEY) === "var" ? "var" : "studio";
+    const stored = window.localStorage.getItem(DESK_KEY);
+    return isDesk(stored) ? stored : "studio";
   } catch {
     return "studio";
   }
@@ -27,10 +35,15 @@ function initialInfraOpen(): boolean {
   }
 }
 
+// Memoised so Fan View context updates do not re-render the whole Studio Desk.
+const StudioDesk = memo(StudioPage);
+
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => (document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light"));
   const [infraOpen, setInfraOpen] = useState(initialInfraOpen);
   const [desk, setDesk] = useState<Desk>(initialDesk);
+  const [matchContext, setMatchContext] = useState<ActiveMatchContext>(EMPTY_MATCH_CONTEXT);
+  const toggleInfra = useCallback(() => setInfraOpen((current) => !current), []);
 
   useEffect(() => {
     try { window.localStorage.setItem(DESK_KEY, desk); } catch { /* storage unavailable */ }
@@ -49,11 +62,12 @@ export default function App() {
 
   return (
     <div className="app-shell" data-desk={desk}>
-      <AppHeader theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} infraOpen={infraOpen} onToggleInfra={() => setInfraOpen((current) => !current)} desk={desk} onDesk={setDesk} />
-      {/* The Studio Desk stays mounted so the live stream and Video lab keep running while the VAR Desk is open. */}
+      <AppHeader theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} infraOpen={infraOpen} onToggleInfra={toggleInfra} desk={desk} onDesk={setDesk} />
+      {/* The Studio Desk stays mounted so the live stream and Video lab keep running while another desk is open. */}
       <div hidden={desk !== "studio"}>
-        <StudioPage theme={theme} infraOpen={infraOpen} onToggleInfra={() => setInfraOpen((current) => !current)} />
+        <StudioDesk theme={theme} infraOpen={infraOpen} onToggleInfra={toggleInfra} onLiveContext={setMatchContext} />
       </div>
+      {desk === "fan" && <FanPage context={matchContext} theme={theme} onOpenStudio={() => setDesk("studio")} />}
       {desk === "var" && <VarDeskPage onOpenStudio={() => setDesk("studio")} />}
     </div>
   );

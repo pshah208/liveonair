@@ -1,4 +1,4 @@
-import type { FixtureSummary, MatchEvent, MatchFixture, Player, Team, TeamId } from "../shared/types.js";
+import type { FixtureSummary, MatchEvent, MatchFixture, Player, SyntheticTracking, Team, TeamId, TrackingSample } from "../shared/types.js";
 import { getArchive } from "./archive/index.js";
 
 interface EventInput {
@@ -81,7 +81,89 @@ export function cloneFixture(fixture: MatchFixture): MatchFixture {
     home: { ...fixture.home, players: fixture.home.players.map((player) => ({ ...player })) },
     away: { ...fixture.away, players: fixture.away.players.map((player) => ({ ...player })) },
     events: fixture.events.map((event) => ({ ...event })),
+    ...(fixture.tracking ? { tracking: { ...fixture.tracking, samples: fixture.tracking.samples.map((sample) => ({ ...sample })) } } : {}),
   };
+}
+
+/** FNV-1a: a stable 32-bit seed per string, so per-event randomness never disturbs the main event stream. */
+function hashSeed(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+const PITCH_LENGTH_M = 105;
+const PITCH_WIDTH_M = 68;
+const metres = (dx: number, dy: number) => Math.hypot((dx / 100) * PITCH_LENGTH_M, (dy / 100) * PITCH_WIDTH_M);
+const flightFor = (distanceM: number, speedKmh: number) => Math.max(1, Math.round((distanceM / (speedKmh / 3.6)) * 1000));
+
+/**
+ * Seeded synthetic ball physics for an event's own delivery. Passes and corners get `flightMs` from their
+ * length at 40–100 km/h (longer balls travel faster); shots get `speedKmh` 60–130 km/h (headers from corners
+ * 35–75 km/h) and the matching `flightMs` to the goal centre. Values depend only on the seed and event id.
+ */
+export function withSyntheticBallFlight(event: MatchEvent, seed: number, byId: Map<string, MatchEvent>): MatchEvent {
+  const rand = lcg(hashSeed(`${seed}:${event.id}`));
+  if ((event.type === "pass" || event.type === "corner") && event.endX !== undefined && event.endY !== undefined) {
+    const startX = event.type === "corner" ? 100 : event.x;
+    const startY = event.type === "corner" ? (event.y < 50 ? 1 : 99) : event.y;
+    const distance = metres(event.endX - startX, event.endY - startY);
+    if (distance < 1) return event;
+    const speed = 40 + Math.min(1, distance / 50) * 40 + rand() * 20;
+    return { ...event, flightMs: flightFor(distance, speed) };
+  }
+  if (event.type === "shot") {
+    const header = byId.get(event.relatedEventId ?? "")?.type === "corner";
+    const speedKmh = Math.round((header ? 35 + rand() * 40 : 60 + rand() * 70) * 10) / 10;
+    const distance = Math.max(1, metres(100 - event.x, 50 - event.y));
+    return { ...event, speedKmh, flightMs: flightFor(distance, speedKmh) };
+  }
+  return event;
+}
+
+const TRACKING_CADENCE_SECONDS = 60;
+const METRES_PER_MINUTE: Record<string, number> = { CM: 128, DM: 122, AM: 120, RB: 116, LB: 116, RW: 114, LW: 114, CB: 102, ST: 106 };
+
+/**
+ * Seeded synthetic tracking: one sample per outfield player per minute with distance covered (± 15 % around a
+ * positional base) and peak speed (≈ 1 in 4 minutes contains a 25–34.5 km/h sprint). Dismissed players stop.
+ */
+export function syntheticTracking(seed: number, home: Team, away: Team, durationSeconds: number, dismissals: DismissalTimeline[] = []): SyntheticTracking {
+  const samples: TrackingSample[] = [];
+  for (const player of [...home.players, ...away.players]) {
+    if (player.position === "GK") continue;
+    const rand = lcg(hashSeed(`${seed}:tracking:${player.id}`));
+    const base = METRES_PER_MINUTE[player.position] ?? 112;
+    const sentOff = dismissals.find((dismissal) => dismissal.playerId === player.id && dismissal.teamId === player.teamId)?.atSecond;
+    for (let second = TRACKING_CADENCE_SECONDS; second <= durationSeconds; second += TRACKING_CADENCE_SECONDS) {
+      if (sentOff !== undefined && second - TRACKING_CADENCE_SECONDS >= sentOff) break;
+      const distanceM = Math.round(base * (0.85 + rand() * 0.3));
+      const sprint = rand() < 0.25;
+      const speedKmh = Math.round((sprint ? 25 + rand() * 9.5 : 14 + rand() * 10.5) * 10) / 10;
+      samples.push({ playerId: player.id, second, distanceM, speedKmh });
+    }
+  }
+  samples.sort((a, b) => a.second - b.second || a.playerId.localeCompare(b.playerId));
+  return { source: "synthetic", cadenceSeconds: TRACKING_CADENCE_SECONDS, samples };
+}
+
+/**
+ * Background passes are generated as short local exchanges; give a seeded share of them realistic length
+ * (≈ 25 % medium 15–30 m, ≈ 15 % long or switched balls) so pass-length and difficulty metrics have spread.
+ * Only the pass's own end point changes; the main event stream (timing, players, outcomes) is untouched.
+ */
+export function withRealisticPassLength(event: MatchEvent, seed: number): MatchEvent {
+  if (event.type !== "pass" || event.endX === undefined || event.endY === undefined) return event;
+  const rand = lcg(hashSeed(`${seed}:shape:${event.id}`));
+  const roll = rand();
+  if (roll < 0.6) return event;
+  const long = roll >= 0.85;
+  const dx = long ? 20 + rand() * 22 : 12 + rand() * 14;
+  const dy = (rand() < 0.5 ? -1 : 1) * (long ? 8 + rand() * 45 : rand() * 18);
+  return { ...event, endX: clampCoord(event.x + dx), endY: clampCoord(event.y + dy) };
 }
 
 export function fixtureSummary(fixture: MatchFixture): FixtureSummary {
@@ -190,6 +272,11 @@ export function buildComposedFixture(fixture: Omit<MatchFixture, "events"> & { c
     avoidSeconds,
     dismissals,
   );
+  const halftime = fixture.curatedEvents.find((event) => event.type === "halftime");
+  const halftimeSecond = halftime ? eventSecond(halftime) : undefined;
+  const sortedEvents = sortEventsStable([...fixture.curatedEvents, ...backgroundEvents.map((event) => withRealisticPassLength(event, fixture.seed))]);
+  const byId = new Map(sortedEvents.map((event) => [event.id, event]));
+  const events = sortedEvents.map((event) => withSyntheticBallFlight(event, fixture.seed, byId));
   return {
     id: fixture.id,
     seed: fixture.seed,
@@ -197,10 +284,13 @@ export function buildComposedFixture(fixture: Omit<MatchFixture, "events"> & { c
     description: fixture.description,
     home: fixture.home,
     away: fixture.away,
-    events: sortEventsStable([...fixture.curatedEvents, ...backgroundEvents]),
+    // Synthetic halves split on the halftime whistle; events at the whistle second belong to the first half.
+    events: halftimeSecond === undefined ? events : events.map((event): MatchEvent => ({ ...event, period: eventSecond(event) <= halftimeSecond ? 1 : 2 })),
     durationSeconds: fixture.durationSeconds,
     correctionEventId: fixture.correctionEventId,
     correctionAvailableAt: fixture.correctionAvailableAt,
+    ...(halftimeSecond === undefined ? {} : { periods: { source: "synthetic" as const, halftimeSecond } }),
+    tracking: syntheticTracking(fixture.seed, fixture.home, fixture.away, fixture.durationSeconds, dismissals),
   };
 }
 

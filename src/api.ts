@@ -4,6 +4,7 @@ import type {
   FixtureSummary,
   Language,
   MatchFixture,
+  MatchPeriod,
   MatchSnapshot,
   NarrativeRequest,
   NarrativeResponse
@@ -33,6 +34,8 @@ export type PlayerNote = {
   source: "foundry" | "rules";
   agent?: string;
   problem?: string;
+  period?: MatchPeriod;
+  asOfSecond?: number;
 };
 
 type RequestOptions = Omit<RequestInit, "body"> & {
@@ -79,9 +82,9 @@ export const api = {
   getFixture(id: string, signal?: AbortSignal) { return requestJson<MatchFixture>(`/api/fixtures/${id}`, { signal }); },
   analyze(body: AnalysisRequest, signal?: AbortSignal) { return requestJson<MatchSnapshot>("/api/analyze", { method: "POST", body, signal }); },
   narrate(body: NarrativeRequest, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/narrate", { method: "POST", body, signal }); },
-  narrateLive(body: { persona: "analyst" | "casual"; language: Language }, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/live/narrate", { method: "POST", body, signal }); },
+  narrateLive(body: { persona: "analyst" | "casual"; language: Language; favoritePlayerId?: string; favoriteClubId?: string }, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/live/narrate", { method: "POST", body, signal }); },
   highlightCommentary(body: HighlightCommentaryRequest, signal?: AbortSignal) { return requestJson<HighlightCommentary>("/api/live/highlights/commentary", { method: "POST", body, signal }); },
-  analysePlayer(playerId: string, language: Language, signal?: AbortSignal) { return requestJson<PlayerNote>(`/api/live/players/${encodeURIComponent(playerId)}/analysis`, { method: "POST", body: { language }, signal }); },
+  analysePlayer(playerId: string, language: Language, period: MatchPeriod = "full", signal?: AbortSignal) { return requestJson<PlayerNote>(`/api/live/players/${encodeURIComponent(playerId)}/analysis`, { method: "POST", body: { language, period }, signal }); },
   getArchiveSummary(signal?: AbortSignal) { return requestJson<ArchiveSummary>("/api/archive/summary", { signal }); },
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },

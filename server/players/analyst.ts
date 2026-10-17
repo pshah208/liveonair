@@ -2,7 +2,8 @@ import { AIProjectClient } from "@azure/ai-projects";
 import { z } from "zod";
 
 import { analysePlayers, IMPACT_WEIGHTS, type PlayerAnalysis } from "../../shared/playerStats.js";
-import type { Language, MatchFixture } from "../../shared/types.js";
+import { PERIOD_LABEL, periodScope } from "../../shared/periods.js";
+import type { Language, MatchFixture, MatchPeriod } from "../../shared/types.js";
 import { getAzureCredential } from "../azure/credential.js";
 import { PLAYER_ANALYST_AGENT_NAME, playerAnalystAgentSpec } from "../desk/agents/player-analyst.js";
 import { invokeAgentJson } from "../desk/runner.js";
@@ -24,16 +25,21 @@ export type PlayerNote = {
   source: "foundry" | "rules";
   agent?: string;
   problem?: string;
+  /** Scope and watermark the figures were computed for, so clients can discard stale replies. */
+  period?: MatchPeriod;
+  asOfSecond?: number;
 };
 
 export interface PlayerAnalyst {
   readonly configured: boolean;
-  write(fixture: MatchFixture, playerId: string, language: Language, clockSecond: number): Promise<PlayerNote>;
+  write(fixture: MatchFixture, playerId: string, language: Language, clockSecond: number, period?: MatchPeriod): Promise<PlayerNote>;
 }
 
 type Invoke = (input: string) => Promise<unknown>;
 
 const LANGUAGE_NAME: Record<Language, string> = { en: "British English", es: "Spanish (Spain)", fr: "French (France)", pt: "Brazilian Portuguese" };
+// Spelled out so the scope adds no digits the grounding guard would then accept.
+const PERIOD_SCOPE: Record<MatchPeriod, string> = { full: "full match so far", first: "first half only", second: "second half only" };
 const noteSchema = z.object({
   headline: z.string().trim().min(1).max(160),
   summary: z.string().trim().min(1).max(900),
@@ -78,22 +84,31 @@ function figures(player: PlayerAnalysis) {
 }
 
 /** The JSON the agent sees; the grounding guard checks the note against exactly this text. */
-export function analystInput(fixture: MatchFixture, playerId: string, language: Language, clockSecond: number) {
-  const all = analysePlayers(fixture, clockSecond);
+export function analystInput(fixture: MatchFixture, playerId: string, language: Language, clockSecond: number, period: MatchPeriod = "full") {
+  const scope = periodScope(fixture, period, clockSecond);
+  if (!scope.available) {
+    throw new HttpError(409, scope.reason === "not_started" ? `The ${PERIOD_LABEL[period]} has not started yet` : "Half-by-half figures are unavailable for this match");
+  }
+  const whole = analysePlayers(fixture, clockSecond);
+  const all = period === "full" ? whole : analysePlayers(fixture, clockSecond, period);
   const target = all.find((entry) => entry.player.id === playerId);
   if (!target) throw new HttpError(404, "Player not found in this match");
   const teammates = all.filter((entry) => entry.teamId === target.teamId && entry.involvements > 0)
     .sort((a, b) => b.impact.rating - a.impact.rating);
   const goals = { home: 0, away: 0 };
-  for (const entry of all) goals[entry.teamId] += entry.goals;
+  for (const entry of whole) goals[entry.teamId] += entry.goals;
+  const periodGoals = { home: 0, away: 0 };
+  for (const entry of all) periodGoals[entry.teamId] += entry.goals;
   return {
     target,
     payload: {
       language: LANGUAGE_NAME[language],
+      ...(period === "full" ? {} : { period: PERIOD_SCOPE[period] }),
       match: {
         home: fixture.home.name,
         away: fixture.away.name,
         score: `${goals.home}-${goals.away}`,
+        ...(period === "full" ? {} : { goalsInPeriod: `${periodGoals.home}-${periodGoals.away}` }),
         minutesPlayedInMatch: Math.floor(clockSecond / 60),
         team: target.teamId === "home" ? fixture.home.name : fixture.away.name,
       },
@@ -144,13 +159,14 @@ export function createPlayerAnalyst(options: { endpoint?: string; invoke?: Invok
   const cache = new Map<string, PlayerNote>();
   return {
     configured: Boolean(invoke),
-    async write(fixture, playerId, language, clockSecond) {
-      const { target, payload } = analystInput(fixture, playerId, language, clockSecond);
+    async write(fixture, playerId, language, clockSecond, period = "full") {
+      const { target, payload } = analystInput(fixture, playerId, language, clockSecond, period);
+      const scoped = (note: PlayerNote): PlayerNote => ({ ...structuredClone(note), period, asOfSecond: clockSecond });
       const fallback = rulesNote(target);
-      if (!invoke) return fallback;
-      const key = JSON.stringify([fixture.id, language, payload]);
+      if (!invoke) return scoped(fallback);
+      const key = JSON.stringify([fixture.id, language, period, payload]);
       const cached = cache.get(key);
-      if (cached) return structuredClone(cached);
+      if (cached) return scoped(cached);
       let note: PlayerNote;
       try {
         const draft = noteSchema.parse(await invoke(JSON.stringify(payload)));
@@ -166,7 +182,7 @@ export function createPlayerAnalyst(options: { endpoint?: string; invoke?: Invok
         cache.set(key, note);
         while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value as string);
       }
-      return structuredClone(note);
+      return scoped(note);
     },
   };
 }

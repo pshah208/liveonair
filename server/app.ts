@@ -28,6 +28,10 @@ import { createPlatform, type Platform } from "./platform.js";
 import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
 import { createStudioRouter } from "./routes/studio.js";
+import { createA2aRouter } from "./a2a/index.js";
+import { getArchive } from "./archive/index.js";
+import { createArchiveRetrievalFromEnv } from "./desk/retrieval.js";
+import { createMcpRouter } from "./mcp/index.js";
 import { createVideoRouter } from "./routes/video.js";
 import { createProgressiveVideoRouter, isProgressiveFrameRequest, PROGRESSIVE_BODY_LIMIT } from "./routes/progressiveVideo.js";
 import { createProgressiveVideoService } from "./video/progressive.js";
@@ -300,8 +304,12 @@ export function createApp(options: CreateAppOptions = {}) {
         persona: body.persona,
         language: body.language,
         format: "recap",
+        ...(body.period === undefined ? {} : { period: body.period }),
+        ...(body.favoritePlayerId === undefined ? {} : { favoritePlayerId: body.favoritePlayerId }),
+        ...(body.favoriteClubId === undefined ? {} : { favoriteClubId: body.favoriteClubId }),
       });
       const fixture = deepClone(view.fixture);
+      assertKnownFavoritePlayer(fixture, parsed.favoritePlayerId);
       const snapshot = analyzeFixture(fixture, { ...parsed, correction: false });
       const narrative = await narrator.narrate(parsed, snapshot, {
         requestId: response.locals.requestId as string,
@@ -320,11 +328,11 @@ export function createApp(options: CreateAppOptions = {}) {
       const view = platform.live.current();
       if (!view) throw new HttpError(404, "Live match not found");
       const playerId = parseStrict(z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_.-]+$/u), request.params.playerId);
-      const body = parseStrict(z.object({ language: z.enum(["en", "es", "fr", "pt"]).default("en") }).strict(), request.body ?? {});
+      const body = parseStrict(z.object({ language: z.enum(["en", "es", "fr", "pt"]).default("en"), period: z.enum(["full", "first", "second"]).default("full") }).strict(), request.body ?? {});
       const fixture = deepClone(view.fixture);
       const status = platform.live.status();
       const clock = status.state === "running" ? Math.max(0, Math.round(status.clockSecond)) : fixture.durationSeconds;
-      response.json(await playerAnalyst.write(fixture, playerId, body.language, clock));
+      response.json(await playerAnalyst.write(fixture, playerId, body.language, clock, body.period));
     } catch (error) {
       next(error);
     }
@@ -373,6 +381,11 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture }));
   app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
+  app.use(createMcpRouter({
+    live: platform.live, desk: platform.desk, analyzeFixture, archive: getArchive(),
+    retrieval: createArchiveRetrievalFromEnv(), version, token: process.env.MCP_TOKEN || undefined,
+  }));
+  app.use(createA2aRouter({ live: platform.live, desk: platform.desk, version, token: process.env.A2A_TOKEN || undefined }));
 
   const visionCaller = createVisionCallerFromEnv();
   const vision = options.video?.vision ?? createVisionAnalyzerFromEnv(process.env, visionCaller);

@@ -73,6 +73,13 @@ try {
   } else {
     Write-Warning 'fabric/.secrets.local.json not found: the app will use the local live bus instead of Fabric Eventstream.'
   }
+  # Optional telemetry: use the liveonair-insights Application Insights component when it exists.
+  $insights = & az monitor app-insights component show --app liveonair-insights --resource-group $ResourceGroup `
+    --subscription $SubscriptionId --query connectionString --output tsv 2>$null
+  if ($LASTEXITCODE -eq 0 -and $insights) {
+    $parameters.appInsightsConnectionString = @{ value = ($insights -join '').Trim() }
+  }
+  Remove-Variable insights -ErrorAction SilentlyContinue
   $parameterFile = Join-Path ([IO.Path]::GetTempPath()) "matchlens-app-$([guid]::NewGuid()).json"
   try {
     @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = $parameters } |

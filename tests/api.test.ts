@@ -426,6 +426,105 @@ test("POST /api/live/narrate narrates the live view, honouring live corrections"
   }
 });
 
+test("POST /api/live/players/:id/analysis scopes the note to the requested period", async () => {
+  const { getFixture } = await import("../server/fixtures.js");
+  const liveFixture = structuredClone(getFixture("rivergate-comeback"));
+  let clockSecond = 30 * 60;
+  const view = { matchId: "m1", fixture: liveFixture, clockSecond };
+  const platform = {
+    live: {
+      status: () => ({ state: "running", transport: "local", transportConfigured: false, clockSecond, speed: 1, eventsReceived: 0, duplicatesIgnored: 0, stress: false }),
+      current: () => view,
+    },
+    desk: { list: () => [] },
+    close: async () => undefined,
+  };
+  const app = createApp({ narrator: new MockNarrator(false) as never, platform: platform as never, staticDir, version: "test-version" });
+  const server = http.createServer(app);
+  await new Promise<void>((resolveServer) => server.listen(0, "127.0.0.1", resolveServer));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const post = (body: unknown) => fetch(`${baseUrl}/api/live/players/away-p11/analysis`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  try {
+    const legacy = await post({ language: "en" });
+    assert.equal(legacy.status, 200);
+    assert.deepEqual(await legacy.json().then((note) => [note.period, note.asOfSecond]), ["full", 30 * 60]);
+
+    const notStarted = await post({ language: "en", period: "second" });
+    assert.equal(notStarted.status, 409);
+
+    const invalid = await post({ language: "en", period: "third" });
+    assert.equal(invalid.status, 400);
+
+    clockSecond = 60 * 60;
+    const first = await post({ language: "en", period: "first" });
+    assert.equal(first.status, 200);
+    const note = await first.json();
+    assert.equal(note.period, "first");
+    assert.equal(note.asOfSecond, 60 * 60);
+    assert.equal(note.source, "rules");
+  } finally {
+    await new Promise<void>((resolveServer) => server.close(() => resolveServer()));
+  }
+});
+
+test("analysis requests accept an optional period; recaps stay full match", async () => {
+  const { parseAnalysisRequest, parseNarrativeRequest } = await import("../server/validation.js");
+  const base = { fixtureId: "fixture-1", atSecond: 60, persona: "analyst", language: "en" };
+  assert.equal(parseAnalysisRequest({ ...base, period: "second" }).period, "second");
+  assert.equal(parseAnalysisRequest(base).period, undefined);
+  assert.throws(() => parseAnalysisRequest({ ...base, period: "third" }), /period/u);
+  assert.equal(parseNarrativeRequest({ ...base, format: "recap", period: "full" }).period, "full");
+  assert.throws(() => parseNarrativeRequest({ ...base, format: "recap", period: "first" }), /period/u);
+});
+
 test.after(() => {
   rmSync(staticDir, { recursive: true, force: true });
+});
+
+test("POST /api/live/narrate forwards the fan's focus and rejects half periods and unknown players", async () => {
+  const { getFixture } = await import("../server/fixtures.js");
+  const { describeFanFocus } = await import("../server/narrator.js");
+  const liveFixture = structuredClone(getFixture("rivergate-comeback"));
+  const player = liveFixture.away.players[0]!;
+  const seen: { request?: NarrativeRequest; snapshot?: MatchSnapshot } = {};
+  const narrator = {
+    health: () => ({ configured: true, deployment: "test-model", authentication: "managed_identity_or_cli" }) as const,
+    async narrate(request: NarrativeRequest, snapshot: MatchSnapshot): Promise<NarrativeResponse> {
+      seen.request = request;
+      seen.snapshot = snapshot;
+      return { title: "Recap", script: "Script", claims: [], trace: [], source: "foundry", model: "test-model", stateVersion: snapshot.stateVersion, latencyMs: 1, cached: false, usage: { inputTokens: 1, outputTokens: 1 } };
+    },
+  };
+  const view = { matchId: "m1", fixture: liveFixture, clockSecond: liveFixture.durationSeconds };
+  const platform = {
+    live: {
+      status: () => ({ state: "finished", transport: "local", transportConfigured: false, clockSecond: 0, speed: 1, eventsReceived: 0, duplicatesIgnored: 0, stress: false }),
+      current: () => view,
+    },
+    desk: { list: () => [] },
+    close: async () => undefined,
+  };
+  const app = createApp({ narrator: narrator as never, platform: platform as never, staticDir, version: "test-version" });
+  const server = http.createServer(app);
+  await new Promise<void>((resolveServer) => server.listen(0, "127.0.0.1", resolveServer));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const post = (body: unknown) => fetch(`${baseUrl}/api/live/narrate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  try {
+    const response = await post({ persona: "casual", language: "fr", favoritePlayerId: player.id, favoriteClubId: "away" });
+    assert.equal(response.status, 200);
+    assert.equal(seen.request?.favoritePlayerId, player.id);
+    assert.equal(seen.request?.favoriteClubId, "away");
+    assert.equal(seen.request?.persona, "casual");
+    assert.equal(seen.snapshot?.focus?.favoriteTeamId, "away");
+    assert.deepEqual(describeFanFocus(seen.request!, liveFixture), { club: liveFixture.away.name, player: `${player.name} (${liveFixture.away.name})` });
+    assert.equal(describeFanFocus({ favoriteClubId: "club-elsewhere" }, liveFixture), undefined);
+
+    assert.equal((await post({ persona: "casual", language: "en", favoritePlayerId: "missing-player" })).status, 400);
+    assert.equal((await post({ persona: "casual", language: "en", favoriteClubId: "bad club!" })).status, 400);
+    assert.equal((await post({ persona: "analyst", language: "en", period: "first" })).status, 400);
+  } finally {
+    await new Promise<void>((resolveServer) => server.close(() => resolveServer()));
+  }
 });

@@ -4,6 +4,7 @@ import type {
   AnalysisRequest,
   Language,
   MatchFixture,
+  MatchPeriod,
   MatchSnapshot,
   NarrativeRequest,
   Persona,
@@ -12,6 +13,8 @@ import type {
 const personaValues = ["analyst", "casual", "player"] as const satisfies readonly Persona[];
 const languageValues = ["en", "es", "fr", "pt"] as const satisfies readonly Language[];
 const formatValues = ["story", "recap"] as const satisfies readonly NarrativeRequest["format"][];
+export const periodValues = ["full", "first", "second"] as const satisfies readonly MatchPeriod[];
+export const periodSchema = z.enum(periodValues);
 
 const boundedId = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_-]+$/u);
 
@@ -22,11 +25,15 @@ const analysisSchema = z.object({
   persona: z.enum(personaValues),
   language: z.enum(languageValues),
   favoritePlayerId: boundedId.optional(),
+  favoriteClubId: boundedId.optional(),
+  period: periodSchema.optional(),
 }).strict();
 
+// Recaps walk the whole match (half-time score, every storyline), so only the full-match scope is narrated.
 const narrativeSchema = analysisSchema.extend({
   format: z.enum(formatValues),
   storyId: boundedId.optional(),
+  period: z.literal("full").optional(),
 }).strict();
 
 export class HttpError extends Error {

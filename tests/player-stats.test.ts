@@ -107,3 +107,73 @@ test("player analyst keeps grounded agent notes and falls back when a note inven
 
   await assert.rejects(() => offline.write(match, "nobody", "en", 5400), /Player not found/u);
 });
+
+const halves = fixture([
+  event({ id: "k1", type: "pass", playerId: "h8", minute: 10, second: 0, endX: 80 }),
+  event({ id: "k2", type: "pass", playerId: "h8", minute: 10, second: 5, outcome: "incomplete" }),
+  event({ id: "ks", type: "shot", playerId: "h9", minute: 10, second: 10, xg: 0.3, outcome: "success" }),
+  event({ id: "kg", type: "goal", playerId: "h9", minute: 10, second: 11, outcome: "success", relatedEventId: "ks" }),
+  // Pass in first-half stoppage, shot after the whistle: within 15 s but across halftime.
+  event({ id: "late-pass", type: "pass", playerId: "h8", minute: 46, second: 55 }),
+  event({ id: "ht", type: "halftime", playerId: "h9", minute: 47, second: 0, outcome: "none" }),
+  event({ id: "s2", type: "shot", playerId: "h9", minute: 47, second: 5, xg: 0.2, outcome: "success" }),
+  event({ id: "g2", type: "goal", playerId: "h9", minute: 47, second: 6, outcome: "success", relatedEventId: "s2" }),
+  event({ id: "p3", type: "pass", playerId: "h8", minute: 60, second: 0 }),
+  event({ id: "p4", type: "pass", playerId: "h8", minute: 61, second: 0 }),
+  event({ id: "p5", type: "pass", playerId: "h8", minute: 62, second: 0, outcome: "incomplete" }),
+  event({ id: "t1", type: "tackle", teamId: "away", playerId: "a4", minute: 20, x: 30, outcome: "success" }),
+  // Rescinded in the first half by a revision published during the second half.
+  event({ id: "ag", type: "goal", teamId: "away", playerId: "a4", minute: 30, outcome: "success" }),
+  event({ id: "ag", revision: 2, type: "goal", teamId: "away", playerId: "a4", minute: 30, outcome: "success", rescinded: true }),
+]);
+
+test("full match is the default and matches an explicit full scope", () => {
+  assert.deepEqual(analysePlayers(match), analysePlayers(match, Number.POSITIVE_INFINITY, "full"));
+  assert.deepEqual(analysePlayers(halves, 5400), analysePlayers(halves, 5400, "full"));
+});
+
+test("half scopes split additive counts and recompute percentages from scoped counts", () => {
+  const pick = (period: "full" | "first" | "second", id: string) => analysePlayers(halves, 5400, period).find((entry) => entry.player.id === id)!;
+  const [full, first, second] = (["full", "first", "second"] as const).map((period) => pick(period, "h8"));
+  assert.equal(first!.passes + second!.passes, full!.passes);
+  assert.equal(first!.passAccuracy, 67);
+  assert.equal(second!.passAccuracy, 67);
+  assert.equal(full!.passAccuracy, 67);
+  assert.equal(pick("first", "h9").goals + pick("second", "h9").goals, pick("full", "h9").goals);
+  assert.equal(pick("second", "h9").goals, 1);
+  assert.equal(pick("second", "a4").tackles, 0);
+  assert.equal(pick("second", "a4").involvementShare, 0);
+  assert.equal(pick("second", "h9").touches.every((touch) => touch.minute >= 47), true);
+});
+
+test("assists never cross halftime, in a half or in the full match", () => {
+  assert.equal(analysePlayers(halves, 5400, "full").find((entry) => entry.player.id === "h8")!.assists, 1, "only the first-half assist counts");
+  assert.equal(analysePlayers(halves, 5400, "first").find((entry) => entry.player.id === "h8")!.assists, 1);
+  assert.equal(analysePlayers(halves, 5400, "second").find((entry) => entry.player.id === "h8")!.assists, 0);
+  const noHalftime = fixture(halves.events.filter((item) => item.id !== "ht"));
+  assert.equal(analysePlayers(noHalftime, 5400).find((entry) => entry.player.id === "h8")!.assists, 2, "without halves the 15 s heuristic still applies");
+});
+
+test("a first-half goal rescinded during the second half is removed from the first half", () => {
+  const before = fixture(halves.events.filter((item) => !(item.id === "ag" && item.revision === 2)));
+  assert.equal(analysePlayers(before, 5400, "first").find((entry) => entry.player.id === "a4")!.goals, 1);
+  assert.equal(analysePlayers(halves, 5400, "first").find((entry) => entry.player.id === "a4")!.goals, 0);
+});
+
+test("player analyst scopes notes to the period, returns as-of identity and refuses unavailable scopes", async () => {
+  const inputs: string[] = [];
+  const analyst = createPlayerAnalyst({ invoke: async (input) => { inputs.push(input); return { headline: "Ana Ruiz", summary: "Ana Ruiz scored.", strengths: [], concerns: [] }; } });
+  const first = await analyst.write(halves, "h9", "en", 5400, "first");
+  assert.equal(first.period, "first");
+  assert.equal(first.asOfSecond, 5400);
+  assert.match(inputs.at(-1)!, /first half only/u);
+  const full = await analyst.write(halves, "h9", "en", 5400);
+  assert.equal(full.period, "full");
+  assert.equal(inputs.length, 2, "cached notes never leak across periods");
+  await analyst.write(halves, "h9", "en", 5400, "first");
+  assert.equal(inputs.length, 2, "same period reuses the cache");
+
+  const offline = createPlayerAnalyst();
+  await assert.rejects(() => offline.write(halves, "h9", "en", 40 * 60, "second"), (error: unknown) => (error as { status?: number }).status === 409 && /not started/u.test((error as Error).message));
+  await assert.rejects(() => offline.write(match, "h9", "en", 5400, "first"), /unavailable/u);
+});

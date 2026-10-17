@@ -27,6 +27,7 @@ import type {
   TeamId,
 } from "../shared/types.js";
 import type { Storyline } from "../shared/platform.js";
+import { resolveFavoriteTeam } from "../shared/fan.js";
 import { HttpError } from "./validation.js";
 import { groundingProblems } from "./spokenGuard.js";
 
@@ -481,6 +482,18 @@ function resolvePlayerName(fixture: MatchFixture | undefined, playerId: string):
   return players.find((player) => player.id === playerId)?.name ?? playerId;
 }
 
+/** Fan focus for the writer prompt: names resolved against the fixture. Unknown IDs are dropped, never guessed. */
+export function describeFanFocus(request: Pick<NarrativeRequest, "favoriteClubId" | "favoritePlayerId">, fixture: MatchFixture | undefined): { club?: string; player?: string } | undefined {
+  if (!fixture) return undefined;
+  const teamId = resolveFavoriteTeam(fixture, request.favoriteClubId).teamId;
+  const player = request.favoritePlayerId ? [...fixture.home.players, ...fixture.away.players].find((entry) => entry.id === request.favoritePlayerId) : undefined;
+  if (!teamId && !player) return undefined;
+  return {
+    ...(teamId ? { club: resolveTeamName("en", fixture, teamId) } : {}),
+    ...(player ? { player: `${player.name} (${resolveTeamName("en", fixture, player.teamId)})` } : {}),
+  };
+}
+
 function buildStoryFact(snapshot: MatchSnapshot, story: StoryCard): LedgerFact {
   const text = `${story.summary.trim()} ${story.whyItMatters.trim()}`.trim();
   return {
@@ -749,6 +762,7 @@ function createNarrativeCacheKey(request: NarrativeRequest, snapshot: MatchSnaps
     request.language,
     request.storyId ?? "-",
     request.favoritePlayerId ?? "-",
+    request.favoriteClubId ?? "-",
     String(request.atSecond),
     request.correction ? "1" : "0",
     storylineSignature(storylines),
@@ -1152,6 +1166,7 @@ async function runAnalystStep(
         language: request.language,
         requestedStoryId: request.storyId ?? null,
         favoritePlayerId: request.favoritePlayerId ?? null,
+        favoriteClubId: request.favoriteClubId ?? null,
       }),
     },
   ];
@@ -1384,6 +1399,7 @@ async function runWriterStep(
       .filter((event) => event.type === "goal" && event.rescinded && toSecond(event) <= snapshot.atSecond)
       .map((event) => ({ minute: event.minute, player: resolvePlayerName(fixture, event.playerId), team: resolveTeamName("en", fixture, event.teamId) })),
     ...(snapshot.atSecond > 45 * 60 ? { halfTimeScore: halfTimeScore(ledger) } : {}),
+    ...(describeFanFocus(request, fixture) ? { fanFocus: describeFanFocus(request, fixture) } : {}),
   };
   const usage = createUsage();
   try {
@@ -1398,6 +1414,7 @@ async function runWriterStep(
             "Open with the result and the headline story. Then walk through the match in order, first half then second half (use halfTimeScore when given): every goal with scorer, team, minute and how it changed the score; every red card and what being down to ten meant; any goal in goalsRuledOut, saying it was ruled out after review; the best chances and key saves from matchFlow; and the approved storylines.",
             "Close with what the result means on the day: who controlled the game, the turning point and how it was decided.",
             request.persona === "casual" ? "The audience is casual fans: warm, vivid and jargon-free." : "The audience is analysts: precise and insightful, but still readable prose.",
+            "If fanFocus is given, the reader follows that club and/or player: give their involvement extra attention and say plainly when they had little logged involvement, but still report both sides fairly and never invent involvement, actions or quotes for them.",
             "Use ONLY the approved facts and match flow provided. Never invent players, assists, minutes, scores, statistics, injuries, records, quotes, weather or crowd details, and do not speculate about league position or future fixtures.",
             "Every item in mustMention is a red card or a producer-approved storyline: the recap MUST cover each one, naming the player involved.",
             "Every number you write must appear in the input. Write minutes as digits. Do not mention xG values, IDs or clock seconds.",

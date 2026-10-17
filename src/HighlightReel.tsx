@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightKind } from "../shared/highlights.js";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightClip, type HighlightKind } from "../shared/highlights.js";
 import type { Storyline } from "../shared/platform.js";
 import type { Language, MatchFixture } from "../shared/types.js";
 import { createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
@@ -16,6 +16,12 @@ type HighlightReelPanelProps = {
   /** The Video lab clip behind this fixture, when there is one. */
   footage: { url: string; name: string } | null;
   onOpenVideoLab: () => void;
+  /** Keeps only matching moments (e.g. Fan View's favourite club or player); selection itself is unchanged. */
+  clipFilter?: (clip: HighlightClip) => boolean;
+  title?: string;
+  /** Replaces the default explanation under the title. */
+  intro?: React.ReactNode;
+  initialLanguage?: Language;
 };
 
 const SOUND_KEY = "matchlens.reel.sound";
@@ -34,7 +40,8 @@ function pickMimeType(): string | undefined {
   return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
 }
 
-export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, footage, onOpenVideoLab }: HighlightReelPanelProps) {
+export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, footage, onOpenVideoLab, clipFilter, title, intro, initialLanguage = "en" }: HighlightReelPanelProps) {
+  const titleId = useId();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelRef = useRef<ReelModel | null>(null);
   const timeRef = useRef(0);
@@ -46,13 +53,18 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
   const [footageClip, setFootageClip] = useState(-1);
   const [footagePlaying, setFootagePlaying] = useState(false);
   const [seekRequest, setSeekRequest] = useState<{ index: number; nonce: number } | null>(null);
-  const [language, setLanguage] = useState<Language>("en");
+  const [language, setLanguage] = useState<Language>(initialLanguage);
   const [sound, setSound] = useState(() => localStorage.getItem(SOUND_KEY) !== "off");
   const recorderSupported = useMemo(() => Boolean(pickMimeType()), []);
   const voiceSupported = useMemo(() => speechSupported(), []);
   const source: "data" | "footage" = footage ? "footage" : "data";
 
-  const reel = useMemo(() => buildHighlightReel(fixture, storylines, { uptoSecond, language }), [fixture, storylines, uptoSecond, language]);
+  const reel = useMemo(() => {
+    const built = buildHighlightReel(fixture, storylines, { uptoSecond, language });
+    if (!clipFilter) return built;
+    const clips = built.clips.filter(clipFilter);
+    return { ...built, clips, totalMatchSeconds: clips.reduce((sum, clip) => sum + (clip.endSecond - clip.startSecond), 0) };
+  }, [fixture, storylines, uptoSecond, language, clipFilter]);
   const commentary = useHighlightCommentary(reel, sound);
   const model = useMemo(() => (reel.clips.length > 0 ? createReelModel(fixture, reel, readPalette(), commentary.durations) : null), [fixture, reel, theme, commentary.durations]);
   modelRef.current = model;
@@ -224,11 +236,11 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
   );
 
   return (
-    <section className="panel reel" aria-labelledby="reel-title">
+    <section className="panel reel" aria-labelledby={titleId}>
       <header className="panel__header">
         <div>
           <span className="eyebrow">Auto-generated</span>
-          <h2 id="reel-title">{source === "footage" ? "Video recap" : "Highlight reel"}</h2>
+          <h2 id={titleId}>{title ?? (source === "footage" ? "Video recap" : "Highlight reel")}</h2>
         </div>
         <div className="chips">
           <span className="tag">{reel.clips.length} {reel.clips.length === 1 ? "moment" : "moments"}</span>
@@ -240,7 +252,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
           <label className="inline-select"><span className="sr-only">Reel language</span><select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
         </div>
       </header>
-      {source === "footage" ? (
+      {intro ? <div className="lede">{intro}</div> : source === "footage" ? (
         <p className="lede">
           Cut automatically from your Video lab clip. Live on Air ranks the events the video worker and your Video lab tags found, takes each moment
           from the footage, and always keeps goals, red cards and approved storylines, captioned with the copy approved on the live desk.

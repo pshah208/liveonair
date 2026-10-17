@@ -618,6 +618,80 @@ test("rescinded revisions retract dependent storylines and facts", async () => {
   assert.equal(desk.facts(view.matchId)[0].retracted, true);
 });
 
+test("rescinding the trigger mid-pipeline keeps the storyline retracted and blocks approval", async () => {
+  const runner = new FakeRunner();
+  let releaseProduce!: (draft: ProducerDraft) => void;
+  runner.researchQueue.push([proposal("live_event", { eventId: "goal-home-72" }, [source("event", "goal-home-72")])]);
+  runner.produceQueue.push(new Promise<ProducerDraft>((resolve) => { releaseProduce = resolve; }));
+  runner.factCheckQueue.push({ verdict: "pass", issues: [] });
+  runner.localizeQueue.push(localizationDraft());
+  const desk = createStorylineDesk({ archive: archive(), runner });
+  const view = liveView(triggerGoalEvents());
+  desk.onEvent(view, view.fixture.events[1]);
+
+  await waitFor(() => {
+    assert.equal(runner.calls.produce, 1);
+  });
+  desk.onEvent(view, { ...view.fixture.events[1], revision: 2, rescinded: true });
+  assert.equal(desk.list(view.matchId)[0].status, "retracted");
+  releaseProduce(producerDraft("Rowan scores", "Ilias Rowan scored for Rivergate FC.", "rowan scores", 80));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const storyline = desk.list(view.matchId)[0];
+  assert.equal(storyline.status, "retracted");
+  assert.equal(storyline.approvedAt, undefined);
+  assert.equal(runner.calls.localize, 0);
+  assert.ok(desk.facts(view.matchId).length > 0);
+  assert.ok(desk.facts(view.matchId).every((fact) => fact.retracted));
+  await assert.rejects(desk.review(storyline.id, { decision: "approve" }), (error: unknown) => error instanceof HttpError && error.status === 409);
+  await assert.rejects(
+    desk.review(storyline.id, { decision: "edit", onAirLine: "Ilias Rowan scored for Rivergate FC." }),
+    (error: unknown) => error instanceof HttpError && error.status === 409,
+  );
+  assert.equal(desk.list(view.matchId)[0].status, "retracted");
+});
+
+test("research finishing after a rescind publishes no facts from the stale fixture", async () => {
+  const runner = new FakeRunner();
+  let releaseResearch!: (proposals: ClaimProposal[]) => void;
+  runner.researchQueue.push(new Promise<ClaimProposal[]>((resolve) => { releaseResearch = resolve; }));
+  const desk = createStorylineDesk({ archive: archive(), runner });
+  const view = liveView(triggerGoalEvents());
+  desk.onEvent(view, view.fixture.events[1]);
+
+  await waitFor(() => {
+    assert.equal(runner.calls.research, 1);
+  });
+  desk.onEvent(view, { ...view.fixture.events[1], revision: 2, rescinded: true });
+  releaseResearch([proposal("live_event", { eventId: "goal-home-72" }, [source("event", "goal-home-72")])]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(desk.list(view.matchId)[0].status, "retracted");
+  assert.equal(desk.facts(view.matchId).filter((fact) => !fact.retracted).length, 0);
+  assert.equal(runner.calls.produce, 0);
+});
+
+test("approval records approvedAt and it survives a later retraction", async () => {
+  const runner = new FakeRunner();
+  runner.researchQueue.push([proposal("live_event", { eventId: "goal-home-72" }, [source("event", "goal-home-72")])]);
+  runner.produceQueue.push(producerDraft("Rowan scores", "Ilias Rowan scored for Rivergate FC.", "rowan scores", 80));
+  runner.factCheckQueue.push({ verdict: "pass", issues: [] });
+  runner.localizeQueue.push(localizationDraft());
+  const desk = createStorylineDesk({ archive: archive(), runner });
+  const view = liveView(triggerGoalEvents());
+  desk.onEvent(view, view.fixture.events[1]);
+
+  await waitFor(() => {
+    assert.equal(desk.list(view.matchId)[0].status, "needs_review");
+  });
+  const approved = await desk.review(desk.list(view.matchId)[0].id, { decision: "approve" });
+  assert.ok(approved.approvedAt);
+  desk.onEvent(view, { ...view.fixture.events[1], revision: 2, rescinded: true });
+  const retracted = desk.list(view.matchId)[0];
+  assert.equal(retracted.status, "retracted");
+  assert.equal(retracted.approvedAt, approved.approvedAt);
+});
+
 test("review approve, reject, edit and validation errors behave correctly", async () => {
   const runner = new FakeRunner();
   runner.researchQueue.push(

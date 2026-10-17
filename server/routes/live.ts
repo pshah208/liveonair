@@ -2,9 +2,10 @@ import express from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 
-import type { LiveMessage, LiveStreamQuery, StartLiveRequest } from "../../shared/platform.js";
-import type { AnalysisRequest, MatchFixture } from "../../shared/types.js";
+import type { LiveMessage, LiveStreamQuery, StartLiveRequest, Storyline, VerifiedFact } from "../../shared/platform.js";
+import type { AnalysisRequest, MatchFixture, MatchSnapshot } from "../../shared/types.js";
 import type { AnalyzeFixture, LiveMatchView, LiveService, StorylineDesk } from "../contracts.js";
+import { isPublicStoryline } from "../agentAccess.js";
 import { type TickSource } from "../live/service.js";
 import { HttpError, assertKnownFavoritePlayer, isHttpError } from "../validation.js";
 
@@ -52,6 +53,8 @@ const streamQuerySchema: z.ZodType<LiveStreamQuery> = z.object({
   persona: z.enum(["analyst", "casual", "player"]),
   language: z.enum(["en", "es", "fr", "pt"]),
   favoritePlayerId: boundedId.optional(),
+  favoriteClubId: boundedId.optional(),
+  period: z.enum(["full", "first", "second"]).optional(),
 }).strict();
 
 function parseStrict<T>(schema: z.ZodType<T>, payload: unknown): T {
@@ -69,7 +72,44 @@ function sendJsonError(response: express.Response, status: number, message: stri
 }
 
 function filterStoryline(role: LiveStreamQuery["role"], storyline: ReturnType<StorylineDesk["list"]>[number]): boolean {
-  return role === "studio" || storyline.status === "approved" || storyline.status === "retracted";
+  return role === "studio" || isPublicStoryline(storyline);
+}
+
+/**
+ * Fan projection of a storyline: producer-approved copy and verified claims only. Agent traces, handoffs,
+ * review notes and failure details stay in the studio. Presentation filtering, not access control.
+ */
+export function projectFanStoryline(storyline: Storyline): Storyline {
+  return {
+    id: storyline.id,
+    matchId: storyline.matchId,
+    triggerEventIds: [...storyline.triggerEventIds],
+    triggerMinute: storyline.triggerMinute,
+    createdAt: storyline.createdAt,
+    updatedAt: storyline.updatedAt,
+    status: storyline.status,
+    priority: storyline.priority,
+    headline: storyline.headline,
+    onAirLine: storyline.onAirLine,
+    overlay: storyline.overlay,
+    claims: storyline.claims.filter((claim) => claim.status === "verified").map((claim) => ({ id: claim.id, kind: claim.kind, text: claim.text, sources: claim.sources, status: claim.status })),
+    trace: [],
+    ...(storyline.review ? { review: { decision: storyline.review.decision, at: storyline.review.at } } : {}),
+    ...(storyline.approvedAt ? { approvedAt: storyline.approvedAt } : {}),
+    ...(storyline.retractionReason ? { retractionReason: storyline.retractionReason } : {}),
+    version: storyline.version,
+  };
+}
+
+/**
+ * Fans only receive facts of approved storylines (and the retraction of a fact whose previously approved storyline
+ * was retracted), so unapproved editorial facts never leak through the ticker on bootstrap, reconnect or update.
+ */
+export function fanFactAllowed(fact: VerifiedFact, storylines: Storyline[]): boolean {
+  if (!fact.storylineId) return false;
+  const storyline = storylines.find((item) => item.id === fact.storylineId);
+  if (!storyline) return false;
+  return storyline.status === "approved" || (storyline.status === "retracted" && Boolean(storyline.approvedAt) && fact.retracted === true);
 }
 
 function writeMessage(response: express.Response, message: LiveMessage): boolean {
@@ -80,10 +120,19 @@ function safeCurrent(live: LiveService): LiveMatchView | undefined {
   return live.current();
 }
 
-function validateFavoritePlayer(liveFixture: MatchFixture | undefined, favoritePlayerId?: string): void {
-  if (liveFixture) {
+function validateFavoritePlayer(role: LiveStreamQuery["role"], liveFixture: MatchFixture | undefined, favoritePlayerId?: string): void {
+  // A fan's saved favourite may simply not play in this match: the snapshot reports it instead of failing.
+  if (liveFixture && role === "studio") {
     assertKnownFavoritePlayer(liveFixture, favoritePlayerId);
   }
+}
+
+function isKnownPlayer(fixture: MatchFixture, playerId: string): boolean {
+  return [...fixture.home.players, ...fixture.away.players].some((player) => player.id === playerId);
+}
+
+function withStoryline(storylines: Storyline[], storyline: Storyline): Storyline[] {
+  return [...storylines.filter((item) => item.id !== storyline.id), storyline];
 }
 
 function tickSource(live: LiveService): TickSource | undefined {
@@ -155,7 +204,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
 
       const query = parseStrict(streamQuerySchema, request.query);
       const current = safeCurrent(options.live);
-      validateFavoritePlayer(current?.fixture, query.favoritePlayerId);
+      validateFavoritePlayer(query.role, current?.fixture, query.favoritePlayerId);
 
       response.status(200);
       response.setHeader("Content-Type", "text/event-stream");
@@ -202,16 +251,22 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
           return;
         }
 
-        validateFavoritePlayer(view.fixture, query.favoritePlayerId);
+        validateFavoritePlayer(query.role, view.fixture, query.favoritePlayerId);
+        const missingFavorite = query.role === "fan" && query.favoritePlayerId !== undefined && !isKnownPlayer(view.fixture, query.favoritePlayerId);
         const analysisRequest: AnalysisRequest = {
           fixtureId: view.fixture.id,
           atSecond: Math.floor(view.clockSecond),
           persona: query.persona,
           language: query.language,
-          favoritePlayerId: query.favoritePlayerId,
+          favoritePlayerId: missingFavorite ? undefined : query.favoritePlayerId,
           correction: false,
+          ...(query.favoriteClubId ? { favoriteClubId: query.favoriteClubId } : {}),
+          ...(query.period ? { period: query.period } : {}),
         };
-        const snapshot = options.analyzeFixture(view.fixture, analysisRequest);
+        let snapshot: MatchSnapshot = options.analyzeFixture(view.fixture, analysisRequest);
+        if (missingFavorite) {
+          snapshot = { ...snapshot, focus: { ...snapshot.focus, favoritePlayerId: query.favoritePlayerId, favoritePlayerInMatch: false } };
+        }
         pendingSnapshot = false;
         lastSnapshotAt = nowMs;
         blocked = !writeMessage(response, { type: "snapshot", snapshot, status: options.live.status() });
@@ -276,11 +331,31 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
         if (closed || !matchId) {
           return;
         }
+        if (query.role === "studio") {
+          if (update.storyline && update.storyline.matchId === matchId) {
+            blocked = !writeMessage(response, { type: "storyline", storyline: update.storyline }) || blocked;
+          }
+          if (update.fact && update.fact.matchId === matchId) {
+            blocked = !writeMessage(response, { type: "fact", fact: update.fact }) || blocked;
+          }
+          return;
+        }
         if (update.storyline && update.storyline.matchId === matchId && filterStoryline(query.role, update.storyline)) {
-          blocked = !writeMessage(response, { type: "storyline", storyline: update.storyline }) || blocked;
+          const storyline = update.storyline;
+          blocked = !writeMessage(response, { type: "storyline", storyline: projectFanStoryline(storyline) }) || blocked;
+          // Facts drafted before approval were withheld; release them now that the producer approved the storyline.
+          const storylines = withStoryline(options.desk.list(matchId), storyline);
+          for (const fact of options.desk.facts(matchId)) {
+            if (fact.storylineId === storyline.id && fanFactAllowed(fact, storylines)) {
+              blocked = !writeMessage(response, { type: "fact", fact }) || blocked;
+            }
+          }
         }
         if (update.fact && update.fact.matchId === matchId) {
-          blocked = !writeMessage(response, { type: "fact", fact: update.fact }) || blocked;
+          const storylines = update.storyline ? withStoryline(options.desk.list(matchId), update.storyline) : options.desk.list(matchId);
+          if (fanFactAllowed(update.fact, storylines)) {
+            blocked = !writeMessage(response, { type: "fact", fact: update.fact }) || blocked;
+          }
         }
       });
 
@@ -290,13 +365,16 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
       blocked = !writeMessage(response, { type: "status", status: options.live.status() });
       if (current) {
         queueSnapshot();
-        for (const storyline of options.desk.list(current.matchId)) {
+        const storylines = options.desk.list(current.matchId);
+        for (const storyline of storylines) {
           if (filterStoryline(query.role, storyline)) {
-            blocked = !writeMessage(response, { type: "storyline", storyline }) || blocked;
+            blocked = !writeMessage(response, { type: "storyline", storyline: query.role === "fan" ? projectFanStoryline(storyline) : storyline }) || blocked;
           }
         }
         for (const fact of options.desk.facts(current.matchId)) {
-          blocked = !writeMessage(response, { type: "fact", fact }) || blocked;
+          if (query.role === "studio" || fanFactAllowed(fact, storylines)) {
+            blocked = !writeMessage(response, { type: "fact", fact }) || blocked;
+          }
         }
       }
     } catch (error) {
