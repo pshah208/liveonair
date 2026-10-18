@@ -68,7 +68,21 @@ export type WebScoutResult = {
 
 export type WebScout = {
   search(input: { prompt: string; timeoutMs: number }): Promise<WebScoutResult>;
+  /** Resolved Responses API base URL. Set by the live client; stubs may omit it. */
+  readonly baseURL?: string;
 };
+
+/** Test seam. Production leaves this unset and uses Entra via getAzureCredential. */
+export type WebScoutAuth = {
+  tokenProvider?: () => Promise<string>;
+};
+
+export const AZURE_RESPONSES_API_VERSION = "preview";
+
+/** Resource root, with one trailing slash removed, plus the Responses v1 prefix. */
+export function azureResponsesBaseUrl(endpoint: string): string {
+  return `${endpoint.replace(/\/$/u, "")}/openai/v1/`;
+}
 
 export type AcceptedWebItem = {
   title: string;
@@ -275,23 +289,32 @@ export function parseResponsesWebResult(payload: LooseResponse): WebScoutResult 
   return { text, annotations, sources, queries: [...new Set(queries)] };
 }
 
-/** Live web scout. Free-text Responses call so url_citation annotations are kept (json_schema drops them). */
-export function createWebScoutFromEnv(env: NodeJS.ProcessEnv = process.env): WebScout | undefined {
-  if (resolveWebSearchMode(env) !== "on") return undefined;
-  const endpoint = env.AZURE_OPENAI_ENDPOINT;
-  if (!endpoint) return undefined;
-  const deployment = env.AZURE_OPENAI_DEPLOYMENT || "matchlens-narrator";
-  const root = endpoint.replace(/\/$/u, "");
-  const tokenProvider = getBearerTokenProvider(getAzureCredential(env), "https://cognitiveservices.azure.com/.default");
-  const client = new AzureOpenAI({
-    endpoint: root,
-    baseURL: `${root}/openai/v1/`,
-    apiVersion: env.AZURE_OPENAI_API_VERSION || "2024-10-21",
+/**
+ * Azure Responses client for web search.
+ * The SDK throws if `endpoint` and `baseURL` are both set, so this passes only `baseURL`.
+ * Auth stays the Entra token provider; do not add an API key.
+ */
+export function createAzureResponsesClient(endpoint: string, tokenProvider: () => Promise<string>): AzureOpenAI {
+  return new AzureOpenAI({
+    baseURL: azureResponsesBaseUrl(endpoint),
+    // The /openai/v1/ surface rejects dated versions (AZURE_OPENAI_API_VERSION is for chat) with 400.
+    apiVersion: AZURE_RESPONSES_API_VERSION,
     azureADTokenProvider: tokenProvider,
     maxRetries: 0,
   });
+}
+
+/** Live web scout. Free-text Responses call so url_citation annotations are kept (json_schema drops them). */
+export function createWebScoutFromEnv(env: NodeJS.ProcessEnv = process.env, auth: WebScoutAuth = {}): WebScout | undefined {
+  if (resolveWebSearchMode(env) !== "on") return undefined;
+  const endpoint = env.AZURE_OPENAI_ENDPOINT?.trim();
+  if (!endpoint) return undefined;
+  const deployment = env.AZURE_OPENAI_DEPLOYMENT?.trim() || "matchlens-narrator";
+  const tokenProvider = auth.tokenProvider ?? getBearerTokenProvider(getAzureCredential(env), "https://cognitiveservices.azure.com/.default");
+  const client = createAzureResponsesClient(endpoint, tokenProvider);
 
   return {
+    baseURL: client.baseURL,
     async search({ prompt, timeoutMs }) {
       const response = await client.responses.create({
         model: deployment,
