@@ -9,6 +9,8 @@ import type {
   StorylineHandoff,
   VerifiedFact,
 } from "../../shared/platform.js";
+import type { ChanceInsight } from "../../shared/chanceSequence.js";
+import { chanceInsightId, shotEventIdFromInsight } from "../../shared/chanceSequence.js";
 import type { AgentStep, MatchEvent, MatchFixture } from "../../shared/types.js";
 import type { AnalyzeFixture, LiveMatchView, StorylineDesk } from "../contracts.js";
 import { analyzeFixture } from "../engine.js";
@@ -38,6 +40,7 @@ import {
 import {
   activeEvents,
   buildArchiveIndexes,
+  buildChanceSequenceProposal,
   englishClaimTexts,
   guardDraftText,
   guardLocalization,
@@ -199,6 +202,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
   private readonly maxConcurrent: number;
   private readonly listeners = new Set<(update: StorylineUpdate) => void>();
   private readonly byMatchId = new Map<string, MatchState>();
+  private readonly chanceInsights = new Map<string, ChanceInsight>();
   private readonly byStorylineId = new Map<string, Storyline>();
   private readonly storylineFixtures = new Map<string, MatchFixture>();
   private readonly queue: PendingJob[] = [];
@@ -291,6 +295,15 @@ export class DefaultStorylineDesk implements StorylineDesk {
       trace: [],
       version: 1,
     };
+    if (event.type === "shot" || event.type === "goal") {
+      const insightId = chanceInsightId(event.id);
+      storyline.insightId = insightId;
+      const insight = this.chanceInsights.get(insightId);
+      if (insight && insight.matchId === view.matchId) {
+        storyline.insightRevision = insight.revision;
+        storyline.insightStatus = insight.status;
+      }
+    }
     this.saveStoryline(storyline);
     this.storylineFixtures.set(storyline.id, deepClone(view.fixture));
     this.emit({ storyline });
@@ -587,6 +600,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
           sources: [{ type: "event", id: job.event.id }],
         }];
       }
+      proposals = this.withChanceProposal(job, proposals);
       workspace.proposals = proposals;
       this.updateStoryline(workspace.storylineId, (current) => {
         current.trace.push(makeTrace("researcher", "complete", `Produced ${proposals.length} claim proposal(s) via ${this.retrieval.describe()}`, started, this.now));
@@ -633,6 +647,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
     this.updateStoryline(workspace.storylineId, (current) => {
       current.claims = [];
     });
+    workspace.proposals = this.withChanceProposal(job, workspace.proposals);
     const { verified, rejected } = this.verifyInto(workspace, job, workspace.proposals);
     this.updateStoryline(workspace.storylineId, (current) => {
       current.claims = [...workspace.claims.verified, ...workspace.claims.rejected];
@@ -679,9 +694,10 @@ export class DefaultStorylineDesk implements StorylineDesk {
         events: activeEvents(job.view.fixture, job.view.clockSecond),
         existing: deepClone(workspace.proposals),
       }));
+      const chance = this.withChanceProposal(job, workspace.proposals).filter((proposal) => proposal.kind === "chance_sequence" && !workspace.proposals.some((existing) => existing.kind === "chance_sequence"));
       workspace.tactics.proposals = proposals;
-      workspace.proposals = [...workspace.proposals, ...proposals];
-      const { verified, rejected } = this.verifyInto(workspace, job, proposals);
+      workspace.proposals = [...workspace.proposals, ...proposals, ...chance];
+      const { verified, rejected } = this.verifyInto(workspace, job, [...proposals, ...chance]);
       this.updateStoryline(workspace.storylineId, (current) => {
         current.claims = [...workspace.claims.verified, ...workspace.claims.rejected];
         current.trace.push(makeTrace(
@@ -975,6 +991,91 @@ export class DefaultStorylineDesk implements StorylineDesk {
       ...validated,
       detail: failures.length > 0 ? `Translation unavailable for ${failures.join("; ")}` : "Localized English draft to es, fr and pt",
     };
+  }
+
+  private withChanceProposal(job: PendingJob, proposals: ClaimProposal[]): ClaimProposal[] {
+    if (proposals.some((proposal) => proposal.kind === "chance_sequence")) {
+      return proposals;
+    }
+    const chance = buildChanceSequenceProposal(job.view.fixture, job.event, job.view.clockSecond);
+    return chance ? [...proposals, chance] : proposals;
+  }
+
+  /**
+   * Records an insight revision and retracts or flags storylines that explain that chance.
+   * Called by the insight feed, which runs before this desk on the live listener list.
+   */
+  applyChanceInsight(insight: ChanceInsight): void {
+    this.chanceInsights.set(insight.insightId, insight);
+    const match = this.byMatchId.get(insight.matchId);
+    if (!match) {
+      return;
+    }
+    const shotId = shotEventIdFromInsight(insight.insightId);
+    for (const storyline of [...match.storylines]) {
+      const linked = storyline.insightId === insight.insightId
+        || (shotId !== undefined && storyline.triggerEventIds.includes(shotId));
+      if (!linked || storyline.status === "retracted") {
+        continue;
+      }
+      if (insight.status === "withdrawn") {
+        const reason = insight.withdrawalReason ?? "Chance insight was withdrawn";
+        this.updateStoryline(storyline.id, (current) => {
+          current.status = "retracted";
+          current.retractionReason = reason;
+          current.insightId = insight.insightId;
+          current.insightRevision = insight.revision;
+          current.insightStatus = "withdrawn";
+          current.insightNote = reason;
+        });
+        for (const fact of match.facts) {
+          if (fact.storylineId === storyline.id && !fact.retracted) {
+            fact.retracted = true;
+            this.emit({ fact });
+          }
+        }
+        continue;
+      }
+      if (insight.status === "revised") {
+        const published = storyline.status === "approved" || Boolean(storyline.approvedAt);
+        this.updateStoryline(storyline.id, (current) => {
+          current.insightId = insight.insightId;
+          current.insightRevision = insight.revision;
+          current.insightStatus = "revised";
+          current.insightNote = insight.revisionReason ?? `Chance insight revised to revision ${insight.revision}. On-air numbers may be stale.`;
+          if (current.status === "approved") {
+            current.status = "needs_review";
+          }
+        });
+        // Previously published facts are stale the moment the insight moves. Retract them now and
+        // emit, so a connected fan drops them without waiting for a reconnect.
+        if (published) {
+          for (const fact of match.facts) {
+            if (fact.storylineId === storyline.id && !fact.retracted) {
+              fact.retracted = true;
+              this.emit({ fact });
+            }
+          }
+        }
+        continue;
+      }
+      if (storyline.insightRevision !== insight.revision || storyline.insightStatus !== insight.status) {
+        this.updateStoryline(storyline.id, (current) => {
+          current.insightId = insight.insightId;
+          current.insightRevision = insight.revision;
+          current.insightStatus = insight.status;
+        });
+      }
+    }
+    if (insight.status === "withdrawn" && shotId) {
+      for (const fact of match.facts) {
+        const citesShot = fact.sources.some((source) => source.type === "event" && source.id === shotId);
+        if (citesShot && !fact.retracted) {
+          fact.retracted = true;
+          this.emit({ fact });
+        }
+      }
+    }
   }
 
   onEvent(view: LiveMatchView, event: MatchEvent): void {

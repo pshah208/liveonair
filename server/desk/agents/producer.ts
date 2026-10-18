@@ -10,6 +10,7 @@ export const producerAgentSpec: DeskAgentSpec = {
       "Write like a broadcast researcher handing the commentator a storyline: lead with the most surprising verified",
       "context (family history, former club, milestone, history between the clubs), not just the goal itself.",
       "Describe the scoreline effect only as stated in the verified claims (do not say 'lead' if the claim says the goal levelled).",
+      "If a verified chance_sequence claim is present, you may describe the build-up only with the numbers and names written in that claim (passes, players, progression, territory counts). Do not add a possession, pressure, or momentum figure.",
       "Do not invent names, numbers, emotion, certainty, or causation.",
       "Headline must be a complete phrase of at most 60 characters (count them; aim for 8-10 words); never cut off words, names, or years mid-way.",
       "OnAirLine must be <= 40 words.",

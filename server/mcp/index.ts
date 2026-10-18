@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
+import type { ChanceInsight } from "../../shared/chanceSequence.js";
 import { analysePlayers } from "../../shared/playerStats.js";
 import type { ArchiveSnapshot } from "../../shared/platform.js";
 import type { AnalysisRequest, MatchEvent } from "../../shared/types.js";
@@ -22,6 +23,7 @@ import {
 export type McpDeps = {
   live: LiveService;
   desk: StorylineDesk;
+  insights?: { list(matchId: string): ChanceInsight[] };
   analyzeFixture: AnalyzeFixture;
   archive: ArchiveSnapshot;
   retrieval: ArchiveRetrieval;
@@ -114,6 +116,21 @@ export function createMcpServer(deps: McpDeps, context: CallContext): McpServer 
     });
   });
 
+  server.registerTool("get_chance_insights", {
+    title: "Chance insights",
+    description: "Versioned chance-sequence insights for the live match: inferred build-up, event-derived territory, and issued/revised/withdrawn status. Read-only. Not possession or pressure.",
+    annotations: readOnly,
+  }, async () => {
+    const view = deps.live.current();
+    if (!view) return ok({ matchId: null, metricVersion: "chance-sequence/1", insights: [] });
+    return ok({
+      matchId: view.matchId,
+      metricVersion: "chance-sequence/1",
+      insights: deps.insights?.list(view.matchId) ?? [],
+      note: "Sequence boundaries are inferred from event order. Territory is event-derived, not possession.",
+    });
+  });
+
   server.registerTool("get_event", {
     title: "Get live event",
     description: "Latest revision of one live match event by ID, including whether it was rescinded.",
@@ -182,9 +199,9 @@ export function createMcpServer(deps: McpDeps, context: CallContext): McpServer 
     title: "Verify claim",
     description: "Runs the deterministic Storyline Desk verifier on a structured claim against the live event log and archive.",
     inputSchema: {
-      kind: z.enum(["live_event", "match_state", "live_metric", "former_club", "family_link", "career_goals", "head_to_head", "historic_final", "club_honour"]),
+      kind: z.enum(["live_event", "match_state", "live_metric", "chance_sequence", "former_club", "family_link", "career_goals", "head_to_head", "historic_final", "club_honour"]),
       params: z.record(z.string(), z.unknown()),
-      sources: z.array(z.object({ type: z.enum(["event", "archive"]), id: boundedId })).min(1).max(8),
+      sources: z.array(z.object({ type: z.enum(["event", "archive"]), id: boundedId })).min(1).max(12),
       triggerEventId: boundedId.optional().describe("Event the claim is about; defaults to the latest goal or red card"),
     },
     annotations: readOnly,

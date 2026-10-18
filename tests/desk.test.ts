@@ -477,8 +477,10 @@ test("pipeline happy path emits facts, statuses, and trace roles", async () => {
   });
 
   const storyline = desk.list(view.matchId)[0];
-  // Three researched claims plus the live analyst's automatic scoreline claim.
-  assert.equal(storyline.claims.filter((claim) => claim.status === "verified").length, 4);
+  // Three researched claims, the live analyst's scoreline claim, and the deterministic chance-sequence claim.
+  assert.equal(storyline.claims.filter((claim) => claim.status === "verified").length, 5);
+  assert.ok(storyline.claims.some((claim) => claim.kind === "chance_sequence" && claim.status === "verified"));
+  assert.equal(storyline.insightId, "chance:goal-home-72");
   assert.ok(storyline.claims.some((claim) => claim.kind === "match_state" && /The goal (levelled|put|extended|reduced)/u.test(claim.text.en)));
   assert.deepEqual(storyline.trace.map((step) => step.role), ["researcher", "verifier", "producer", "fact-checker", "localizer"]);
   assert.ok(desk.facts(view.matchId).length >= 3);
@@ -901,8 +903,8 @@ test("studio routes expose storylines, facts, review, storyboard, and health", a
     const storylines = await fetch(`${baseUrl}/api/studio/storylines`).then((response) => response.json());
     assert.equal(storylines.length, 1);
     const facts = await fetch(`${baseUrl}/api/studio/facts`).then((response) => response.json());
-    // The researched claim plus the automatic scoreline claim.
-    assert.equal(facts.length, 2);
+    // The researched claim, the automatic scoreline claim, and the chance-sequence claim.
+    assert.equal(facts.length, 3);
     const health = await fetch(`${baseUrl}/api/studio/health`).then((response) => response.json());
     assert.equal(health.mode, "foundry-agents");
     const storyboard = await fetch(`${baseUrl}/api/studio/storyboard`);

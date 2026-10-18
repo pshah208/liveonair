@@ -3,13 +3,14 @@
 import { latestRevisions, eventSecondOf, type HighlightClip } from "./highlights.js";
 import { filterByPeriod, isMatchPeriod, periodBoundary } from "./periods.js";
 import type { Storyline } from "./platform.js";
-import type { Language, MatchEvent, MatchFixture, MatchPeriod, Persona, Player, TeamId } from "./types.js";
+import type { Language, MatchEvent, MatchFixture, MatchPeriod, Player, TeamId } from "./types.js";
 
 export const FAN_PREFS_KEY = "liveonair.fan.prefs.v1";
 export const FAN_PREFS_VERSION = 1;
 export const FAN_CURSOR_KEY = "liveonair.fan.cursor.v1";
 
-const PERSONAS: readonly Persona[] = ["analyst", "casual", "player"];
+/** Fan View always asks the server for the casual persona. */
+export const FAN_PERSONA = "casual" as const;
 const LANGUAGES: readonly Language[] = ["en", "es", "fr", "pt"];
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,120}$/u;
 
@@ -23,20 +24,16 @@ export interface FanFavoritePlayer {
 
 export interface FanPrefs {
   version: typeof FAN_PREFS_VERSION;
-  persona: Persona;
   language: Language;
   /** "home" | "away" (match-local) or a synthetic archive club ID (stable across matches). */
   favoriteClubId?: string;
   favoritePlayer?: FanFavoritePlayer;
-  followPlayer: boolean;
   period: MatchPeriod;
 }
 
 export const DEFAULT_FAN_PREFS: FanPrefs = Object.freeze({
   version: FAN_PREFS_VERSION,
-  persona: "casual",
   language: "en",
-  followPlayer: false,
   period: "full",
 }) as FanPrefs;
 
@@ -48,7 +45,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Validates stored preferences field by field; anything unknown or malformed falls back to the default. */
+/**
+ * Validates stored preferences field by field; anything unknown or malformed falls back to the default.
+ * Legacy `persona` and `followPlayer` keys from earlier versions are ignored and dropped on the next save.
+ */
 export function parseFanPrefs(raw: unknown): FanPrefs {
   let value = raw;
   if (typeof raw === "string") {
@@ -57,9 +57,7 @@ export function parseFanPrefs(raw: unknown): FanPrefs {
   if (!isRecord(value) || value.version !== FAN_PREFS_VERSION) return { ...DEFAULT_FAN_PREFS };
   const prefs: FanPrefs = {
     version: FAN_PREFS_VERSION,
-    persona: PERSONAS.includes(value.persona as Persona) ? value.persona as Persona : DEFAULT_FAN_PREFS.persona,
     language: LANGUAGES.includes(value.language as Language) ? value.language as Language : DEFAULT_FAN_PREFS.language,
-    followPlayer: value.followPlayer === true,
     period: isMatchPeriod(value.period) ? value.period : DEFAULT_FAN_PREFS.period,
   };
   if (isFanId(value.favoriteClubId)) prefs.favoriteClubId = value.favoriteClubId;
@@ -67,8 +65,6 @@ export function parseFanPrefs(raw: unknown): FanPrefs {
   if (isRecord(player) && isFanId(player.id) && typeof player.name === "string" && player.name.trim().length > 0 && player.name.length <= 120) {
     prefs.favoritePlayer = { id: player.id, name: player.name.trim(), ...(isFanId(player.archiveId) ? { archiveId: player.archiveId } : {}) };
   }
-  // Follow mode requires a selected player.
-  if (!prefs.favoritePlayer) prefs.followPlayer = false;
   return prefs;
 }
 

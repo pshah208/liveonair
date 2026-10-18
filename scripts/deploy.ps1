@@ -4,7 +4,9 @@ param(
   [string] $Location = 'eastus2',
   [string] $ImageTag = (Get-Date -Format 'yyyyMMddHHmmss'),
   [switch] $ProvisionOnly,
-  [switch] $UseExistingInfrastructure
+  [switch] $UseExistingInfrastructure,
+  # Optional. Omit to keep the bicep default for narrativeWebSearch ('on').
+  [string] $NarrativeWebSearch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +82,12 @@ try {
     $parameters.appInsightsConnectionString = @{ value = ($insights -join '').Trim() }
   }
   Remove-Variable insights -ErrorAction SilentlyContinue
+  if ($PSBoundParameters.ContainsKey('NarrativeWebSearch')) {
+    if ($NarrativeWebSearch -notin @('on', 'off')) {
+      throw "NarrativeWebSearch must be 'on' or 'off'."
+    }
+    $parameters.narrativeWebSearch = @{ value = $NarrativeWebSearch }
+  }
   $parameterFile = Join-Path ([IO.Path]::GetTempPath()) "matchlens-app-$([guid]::NewGuid()).json"
   try {
     @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = $parameters } |

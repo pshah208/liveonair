@@ -494,7 +494,7 @@ test("MCP endpoint exposes the read-only tool contract", async () => {
     try {
       const { tools } = await client.listTools();
       assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-        "get_event", "get_live_snapshot", "get_live_status", "get_player_stats", "list_storylines", "search_archive", "verify_claim",
+        "get_chance_insights", "get_event", "get_live_snapshot", "get_live_status", "get_player_stats", "list_storylines", "search_archive", "verify_claim",
       ]);
       assert.ok(tools.every((tool) => tool.annotations?.readOnlyHint === true));
 

@@ -7,8 +7,10 @@ import type {
   MatchPeriod,
   MatchSnapshot,
   NarrativeRequest,
-  NarrativeResponse
+  NarrativeResponse,
+  PostMatchStorylinesResponse
 } from "../shared/types.js";
+import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type {
   ArchivePlayerProfile,
   ArchiveSummary,
@@ -83,12 +85,16 @@ export const api = {
   analyze(body: AnalysisRequest, signal?: AbortSignal) { return requestJson<MatchSnapshot>("/api/analyze", { method: "POST", body, signal }); },
   narrate(body: NarrativeRequest, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/narrate", { method: "POST", body, signal }); },
   narrateLive(body: { persona: "analyst" | "casual"; language: Language; favoritePlayerId?: string; favoriteClubId?: string }, signal?: AbortSignal) { return requestJson<NarrativeResponse>("/api/live/narrate", { method: "POST", body, signal }); },
+  postMatchStorylines(body: { language: Language; persona?: "analyst" | "casual" | "player"; favoriteClubId?: string; favouriteClubId?: string; favoritePlayerId?: string; favouritePlayerId?: string }, signal?: AbortSignal) {
+    return requestJson<PostMatchStorylinesResponse>("/api/live/storylines/postmatch", { method: "POST", body, signal });
+  },
   highlightCommentary(body: HighlightCommentaryRequest, signal?: AbortSignal) { return requestJson<HighlightCommentary>("/api/live/highlights/commentary", { method: "POST", body, signal }); },
   analysePlayer(playerId: string, language: Language, period: MatchPeriod = "full", signal?: AbortSignal) { return requestJson<PlayerNote>(`/api/live/players/${encodeURIComponent(playerId)}/analysis`, { method: "POST", body: { language, period }, signal }); },
   getArchiveSummary(signal?: AbortSignal) { return requestJson<ArchiveSummary>("/api/archive/summary", { signal }); },
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },
   getLiveStatus(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/status", { signal }); },
+  getChanceInsights(signal?: AbortSignal) { return requestJson<ChanceInsight[]>("/api/live/insights?role=studio", { signal }); },
   getLiveFixture(signal?: AbortSignal) { return requestJson<MatchFixture>("/api/live/fixture", { signal, allowNotFound: true }); },
   startLive(body: StartLiveRequest, signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/start", { method: "POST", body, signal }); },
   stopLive(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/stop", { method: "POST", signal, allowNotFound: true }); },

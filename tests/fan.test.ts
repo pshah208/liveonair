@@ -45,32 +45,32 @@ function fixture(events: MatchEvent[] = []): MatchFixture {
   };
 }
 
-test("fan preferences default to casual, English, neutral, full match and reject malformed values", () => {
+test("fan preferences default to English, neutral, full match and reject malformed values; legacy keys are ignored", () => {
   assert.deepEqual(parseFanPrefs(null), DEFAULT_FAN_PREFS);
   assert.deepEqual(parseFanPrefs("{not json"), DEFAULT_FAN_PREFS);
-  assert.deepEqual(parseFanPrefs({ version: 2, persona: "analyst" }), DEFAULT_FAN_PREFS, "unknown versions are ignored");
+  assert.deepEqual(parseFanPrefs({ version: 2, language: "es" }), DEFAULT_FAN_PREFS, "unknown versions are ignored");
   const parsed = parseFanPrefs(JSON.stringify({
     version: 1,
-    persona: "robot",
+    persona: "analyst",
     language: "de",
     favoriteClubId: "bad club!",
     favoritePlayer: { id: "h1", name: "Alice", archiveId: "person-alice" },
     followPlayer: true,
     period: "third",
   }));
-  assert.equal(parsed.persona, "casual");
   assert.equal(parsed.language, "en");
   assert.equal(parsed.favoriteClubId, undefined);
   assert.deepEqual(parsed.favoritePlayer, { id: "h1", name: "Alice", archiveId: "person-alice" });
-  assert.equal(parsed.followPlayer, true);
   assert.equal(parsed.period, "full");
-  assert.equal(parseFanPrefs({ version: 1, followPlayer: true }).followPlayer, false, "follow mode requires a player");
+  assert.equal("persona" in parsed, false, "legacy persona is dropped");
+  assert.equal("followPlayer" in parsed, false, "legacy follow mode is dropped");
+  assert.equal(parseFanPrefs({ version: 1, persona: "player", followPlayer: true, language: "pt" }).language, "pt");
 });
 
 test("fan preferences round-trip through storage and fall back to memory when storage fails", () => {
   const store = new Map<string, string>();
   const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } };
-  const prefs = { ...DEFAULT_FAN_PREFS, persona: "analyst" as const, language: "pt" as const, favoriteClubId: "club-blue", period: "second" as const };
+  const prefs = { ...DEFAULT_FAN_PREFS, language: "pt" as const, favoriteClubId: "club-blue", period: "second" as const };
   assert.equal(saveFanPrefs(storage, prefs), true);
   assert.ok(store.has(FAN_PREFS_KEY));
   assert.deepEqual(loadFanPrefs(storage), { prefs, persisted: true });

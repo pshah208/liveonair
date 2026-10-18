@@ -250,6 +250,211 @@ const legends: ArchivePerson[] = [
   legend({ id: "per-legend-victor-yarrow", name: "Victor Yarrow", birthYear: 1974, hometown: "Vale Junction", position: "ST", career: [{ clubId: CLUB_VALE_UNION, fromYear: 1993, toYear: 2008, appearances: 327, goals: 124 }] }),
 ];
 
+function coach(input: {
+  id: string;
+  name: string;
+  birthYear: number;
+  hometown: string;
+  role: "head_coach" | "assistant_coach";
+  currentClubId: string | null;
+  retired?: boolean;
+  career: ArchivePerson["career"];
+  relations?: ArchiveRelation[];
+  tenureNotes: string;
+  staffRecord: NonNullable<ArchivePerson["staffRecord"]>;
+  notableMatchIds?: string[];
+}): ArchivePerson {
+  return {
+    id: input.id,
+    name: input.name,
+    birthYear: input.birthYear,
+    hometown: input.hometown,
+    position: input.role === "head_coach" ? "Head coach" : "Assistant coach",
+    currentClubId: input.currentClubId,
+    career: input.career,
+    relations: input.relations ?? [],
+    retired: input.retired ?? false,
+    role: input.role,
+    realWorld: false,
+    tenureNotes: input.tenureNotes,
+    staffRecord: input.staffRecord,
+    notableMatchIds: input.notableMatchIds,
+  };
+}
+
+const spell = (clubId: string, fromYear: number, toYear: number | null): ArchivePerson["career"][number] => ({
+  clubId, fromYear, toYear, appearances: 0, goals: 0,
+});
+
+/** Synthetic head coaches and assistants. Not on matchday squads; linked to clubs via currentClubId. */
+const staff: ArchivePerson[] = [
+  coach({
+    id: "per-coach-rivergate-helena-voss",
+    name: "Helena Voss",
+    birthYear: 1974,
+    hometown: "Rivergate",
+    role: "head_coach",
+    currentClubId: CLUB_RIVERGATE,
+    career: [spell(CLUB_EASTFORD, 2014, 2018), spell(CLUB_RIVERGATE, 2019, null)],
+    tenureNotes: "Helena Voss has managed Rivergate FC since 2019 after four seasons at Eastford Town. She was in the dugout for the 2019 River Shield final win over Kingsport Albion and the 2024 Civic Cup final loss to Vale Union. Record at Rivergate: 214 matches, 118 wins, 46 draws, 50 losses.",
+    staffRecord: { matches: 214, wins: 118, draws: 46, losses: 50 },
+    notableMatchIds: ["match-riv-kpa-2019-river-final", "match-vun-riv-2024-civic-final"],
+  }),
+  coach({
+    id: "per-coach-rivergate-marcus-pell",
+    name: "Marcus Pell",
+    birthYear: 1981,
+    hometown: "Hollowmere",
+    role: "assistant_coach",
+    currentClubId: CLUB_RIVERGATE,
+    career: [spell(CLUB_STONEHAVEN, 2016, 2020), spell(CLUB_RIVERGATE, 2021, null)],
+    relations: [relation("sibling", "per-coach-northbridge-lila-pell")],
+    tenureNotes: "Marcus Pell joined Helena Voss's staff in 2021. His sister Lila Pell is assistant coach at Northbridge Athletic, so the Rivergate-Northbridge meetings are a family occasion as well as a rivalry.",
+    staffRecord: { matches: 148, wins: 79, draws: 31, losses: 38 },
+  }),
+  coach({
+    id: "per-coach-rivergate-otto-lang",
+    name: "Otto Lang",
+    birthYear: 1962,
+    hometown: "Rivergate",
+    role: "head_coach",
+    currentClubId: null,
+    retired: true,
+    career: [spell(CLUB_RIVERGATE, 2008, 2018)],
+    tenureNotes: "Otto Lang managed Rivergate FC from 2008 to 2018, including the 2017 Crown Cup final win over Northbridge Athletic. He left after a winless run of 8 league matches.",
+    staffRecord: { matches: 412, wins: 201, draws: 96, losses: 115 },
+    notableMatchIds: ["match-nba-riv-2017-crown-final"],
+  }),
+  coach({
+    id: "per-coach-northbridge-idris-okonkwo",
+    name: "Idris Okonkwo",
+    birthYear: 1976,
+    hometown: "Northbridge",
+    role: "head_coach",
+    currentClubId: CLUB_NORTHBRIDGE,
+    career: [spell(CLUB_KINGSPORT, 2015, 2019), spell(CLUB_NORTHBRIDGE, 2020, null)],
+    tenureNotes: "Idris Okonkwo has managed Northbridge Athletic since 2020. He was in the dugout for the 2024 Founders Cup final win over Stonehaven City. Record at Northbridge: 198 matches, 109 wins, 41 draws, 48 losses.",
+    staffRecord: { matches: 198, wins: 109, draws: 41, losses: 48 },
+    notableMatchIds: ["match-nba-shc-2024-founders-final"],
+  }),
+  coach({
+    id: "per-coach-northbridge-lila-pell",
+    name: "Lila Pell",
+    birthYear: 1983,
+    hometown: "Hollowmere",
+    role: "assistant_coach",
+    currentClubId: CLUB_NORTHBRIDGE,
+    career: [spell(CLUB_NORTHBRIDGE, 2018, null)],
+    relations: [relation("sibling", "per-coach-rivergate-marcus-pell")],
+    tenureNotes: "Lila Pell has been assistant coach at Northbridge Athletic since 2018. Her brother Marcus Pell is assistant coach at Rivergate FC.",
+    staffRecord: { matches: 246, wins: 131, draws: 52, losses: 63 },
+  }),
+  coach({
+    id: "per-coach-northbridge-prior-keel",
+    name: "Prior Keel",
+    birthYear: 1960,
+    hometown: "Northbridge",
+    role: "head_coach",
+    currentClubId: null,
+    retired: true,
+    career: [spell(CLUB_NORTHBRIDGE, 2006, 2019)],
+    tenureNotes: "Prior Keel managed Northbridge Athletic from 2006 to 2019 and led them to the 2008 Harbor Shield and the 2012 Metro Cup, both against Rivergate FC.",
+    staffRecord: { matches: 520, wins: 268, draws: 112, losses: 140 },
+    notableMatchIds: ["match-nba-riv-2008-harbor-final", "match-riv-nba-2012-metro-final"],
+  }),
+  coach({
+    id: "per-coach-eastford-naomi-kerr",
+    name: "Naomi Kerr",
+    birthYear: 1979,
+    hometown: "Eastford",
+    role: "head_coach",
+    currentClubId: CLUB_EASTFORD,
+    career: [spell(CLUB_VALE_UNION, 2016, 2020), spell(CLUB_EASTFORD, 2021, null)],
+    tenureNotes: "Naomi Kerr has managed Eastford Town since 2021. Record: 156 matches, 64 wins, 40 draws, 52 losses. She has spoken about needing a result against the top six.",
+    staffRecord: { matches: 156, wins: 64, draws: 40, losses: 52 },
+  }),
+  coach({
+    id: "per-coach-eastford-tomas-abebe",
+    name: "Tomas Abebe",
+    birthYear: 1985,
+    hometown: "Eastford",
+    role: "assistant_coach",
+    currentClubId: CLUB_EASTFORD,
+    career: [spell(CLUB_EASTFORD, 2019, null)],
+    tenureNotes: "Tomas Abebe has been assistant coach at Eastford Town since 2019, through the end of the previous head coach's spell and Naomi Kerr's appointment.",
+    staffRecord: { matches: 210, wins: 88, draws: 54, losses: 68 },
+  }),
+  coach({
+    id: "per-coach-stonehaven-edgar-quill",
+    name: "Edgar Quill",
+    birthYear: 1971,
+    hometown: "Stonehaven",
+    role: "head_coach",
+    currentClubId: CLUB_STONEHAVEN,
+    career: [spell(CLUB_STONEHAVEN, 2017, null)],
+    tenureNotes: "Edgar Quill has managed Stonehaven City since 2017. He was in the dugout for the 2024 Founders Cup final loss to Northbridge Athletic. Record: 302 matches, 121 wins, 74 draws, 107 losses.",
+    staffRecord: { matches: 302, wins: 121, draws: 74, losses: 107 },
+    notableMatchIds: ["match-nba-shc-2024-founders-final"],
+  }),
+  coach({
+    id: "per-coach-stonehaven-sable-nguyen",
+    name: "Sable Nguyen",
+    birthYear: 1986,
+    hometown: "Stonehaven",
+    role: "assistant_coach",
+    currentClubId: CLUB_STONEHAVEN,
+    career: [spell(CLUB_EASTFORD, 2015, 2019), spell(CLUB_STONEHAVEN, 2020, null)],
+    tenureNotes: "Sable Nguyen joined Edgar Quill's staff in 2020 after four seasons at Eastford Town.",
+    staffRecord: { matches: 188, wins: 72, draws: 49, losses: 67 },
+  }),
+  coach({
+    id: "per-coach-kingsport-freya-moss",
+    name: "Freya Moss",
+    birthYear: 1978,
+    hometown: "Kingsport",
+    role: "head_coach",
+    currentClubId: CLUB_KINGSPORT,
+    career: [spell(CLUB_KINGSPORT, 2018, null)],
+    tenureNotes: "Freya Moss has managed Kingsport Albion since 2018, including the 2019 River Shield final loss to Rivergate FC and the 2021 Summit Trophy win over Vale Union. Record: 276 matches, 132 wins, 61 draws, 83 losses.",
+    staffRecord: { matches: 276, wins: 132, draws: 61, losses: 83 },
+    notableMatchIds: ["match-riv-kpa-2019-river-final", "match-kpa-vun-2021-summit-final"],
+  }),
+  coach({
+    id: "per-coach-kingsport-julian-adeyemi",
+    name: "Julian Adeyemi",
+    birthYear: 1984,
+    hometown: "Kingsport",
+    role: "assistant_coach",
+    currentClubId: CLUB_KINGSPORT,
+    career: [spell(CLUB_KINGSPORT, 2019, null)],
+    tenureNotes: "Julian Adeyemi has been assistant coach at Kingsport Albion since 2019, working under Freya Moss.",
+    staffRecord: { matches: 230, wins: 108, draws: 52, losses: 70 },
+  }),
+  coach({
+    id: "per-coach-vale-conrad-briggs",
+    name: "Conrad Briggs",
+    birthYear: 1973,
+    hometown: "Vale Junction",
+    role: "head_coach",
+    currentClubId: CLUB_VALE_UNION,
+    career: [spell(CLUB_STONEHAVEN, 2012, 2017), spell(CLUB_VALE_UNION, 2018, null)],
+    tenureNotes: "Conrad Briggs has managed Vale Union since 2018. He won the 2024 Civic Cup final against Rivergate FC and lost the 2021 Summit Trophy final to Kingsport Albion. Record at Vale Union: 268 matches, 119 wins, 63 draws, 86 losses.",
+    staffRecord: { matches: 268, wins: 119, draws: 63, losses: 86 },
+    notableMatchIds: ["match-vun-riv-2024-civic-final", "match-kpa-vun-2021-summit-final"],
+  }),
+  coach({
+    id: "per-coach-vale-anika-shah",
+    name: "Anika Shah",
+    birthYear: 1982,
+    hometown: "Vale Junction",
+    role: "assistant_coach",
+    currentClubId: CLUB_VALE_UNION,
+    career: [spell(CLUB_VALE_UNION, 2018, null)],
+    tenureNotes: "Anika Shah has been assistant coach at Vale Union since Conrad Briggs arrived in 2018.",
+    staffRecord: { matches: 268, wins: 119, draws: 63, losses: 86 },
+  }),
+];
+
 export const people: ArchivePerson[] = [
   ...rivergateCurrent,
   ...northbridgeCurrent,
@@ -258,6 +463,7 @@ export const people: ArchivePerson[] = [
   ...kingsportCurrent,
   ...valeUnionCurrent,
   ...legends,
+  ...staff,
 ];
 
 export const matches: ArchiveMatch[] = [

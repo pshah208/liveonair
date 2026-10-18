@@ -82,6 +82,13 @@ with live health.
   language, with a neural-voice reading to listen to; the grounded claims and evidence stay
   alongside it. Every red card and every producer-approved storyline must appear: a draft that
   leaves one out is rejected and the grounded fact-by-fact recap (which lists them) is used instead.
+* **Post-match storylines** (``POST /api/live/storylines/postmatch``) on the Recap tab, also available
+  mid-match as the story so far. Three to five titled lines weave the verified feed, synthetic archive
+  history (including head coaches) and the synthetic news wire, plus a 150–250 word summary in the
+  requested language and optional speech audio. A favourite club or player is placed first when the
+  pack supports it. Live web search adds real-world precedent only ("From around the game"); it never
+  attributes real news to fictional people. Synthetic wire items stay labelled synthetic. If search is
+  off, fails, or yields nothing citable, the copy says "No live web context" and does not invent news.
 * **Recap chapters** that link each phase of the match to its storylines.
 
 **Player analysis**
@@ -126,13 +133,43 @@ with live health.
   revisions. Fan View never starts or stops a match; with nothing live it says so and links to
   the Studio Desk. Its own fan stream is open only while the view is visible.
 * Preferences, saved in this browser only (versioned, validated; if storage is blocked they apply
-  for the session with a notice): persona (casual, analyst, player focus), language (EN/ES/FR/PT),
-  favourite club, favourite player (grouped by team), **Follow one player** and its own
-  Full match / 1st half / 2nd half selector. Default: casual, English, neutral, full match.
-  A saved favourite who is not in this match is shown as "not in this match"; no one is substituted.
-* **My match**: your club's and player's moments first, while every goal, ruled-out goal and red
-  card for both sides is always shown. A favourite club only reorders and marks insights; it never
-  changes statistics or facts.
+  for the session with a notice): language (EN/ES/FR/PT), favourite club, favourite player
+  (grouped by team) and its own Full match / 1st half / 2nd half selector. Default: English,
+  neutral, full match. Fan View always asks the server for the casual persona; the old
+  *View as* persona toggle and **Follow one player** mode were removed, and any stored
+  ``persona`` / ``followPlayer`` keys are ignored. A saved favourite who is not in this match is
+  shown as "not in this match"; no one is substituted.
+* **Player card** (headline card, top of the page): a shareable ranking card for your favourite
+  player. Each row shows stat, a ranking pill (1st, T-2nd for a joint rank, in EN/ES/FR/PT) and the
+  value. Ranks are competition ranks (1, 2, 2, 4) among the players with at least one logged
+  action in the match ("among the N players in this match"). Rows follow the player's position
+  (GK, defender, midfielder, attacker): goals, shots, shots on target, chances created, passes
+  completed, pass accuracy (ranked only from 10 passes), tackles won, saves (keepers), hardest pass
+  and top speed (only when the fixture carries synthetic tracking). A stat nobody has yet shows
+  "No one yet" instead of a rank. The headline ("The one and only", "Top of the class", "Right in
+  the mix", "Quiet but busy", "Their moment is coming") comes from the best ranks. The card
+  recomputes live, announces rank changes politely (at most every 10 s), shows the shirt as an
+  *Illustrative graphic* and carries a "Synthetic demo data" footer. Without a favourite it
+  offers the top three by impact to pick from; if your player isn't playing it shows a labelled
+  *Spotlight instead* card. **Save as picture** draws the card to a canvas and shares or downloads
+  ``playercard_<playerId>_<matchId>_<minute>.png``.
+* **Match in numbers**: two-team head-to-head bars for goals, shots, shots on target, passes
+  completed, team pass accuracy, corners, fouls and cards. Empty rows show "—"; equal rows say
+  "Level". No possession figure (the feed cannot measure it).
+* **Big moment**: one producer-approved, non-retracted story: goals first, then red cards, then the
+  latest, with a mini-map of the linked event. If the shown story is later withdrawn the card says
+  "This moment was updated".
+* **How the chance was built**: the latest non-withdrawn chance insight from the live stream
+  (``insight`` messages), favourite player's then favourite club's chances first, then goals. Casual
+  copy ("6 passes from their own half, 3 players involved"), player · action chips, and an
+  event-derived comparison with the previous 10 minutes. Revised insights show "Updated"; withdrawn
+  ones disappear with "This chance was updated after a correction". Chains are inferred from event
+  order, not provider possessions.
+* **Player of the match** vote: local to your browser (``liveonair.fan.vote.v1``), top three per team
+  by impact, opens at 60' and locks at full time. No tallies and nothing is sent anywhere.
+* **My match** (key moments): your club's and player's moments first, while every goal, ruled-out
+  goal and red card for both sides is always shown. A favourite club only reorders and marks
+  moments; it never changes statistics or facts.
 * **Press box** (side rail beside *My match*): a wall of *synthetic* posts from six **fictional**
   journalists, labelled "Synthetic posts · fictional journalists" with a "Synthetic" tag on every
   card so a saved screenshot stays labelled. No real names, handles or logos, and no links. Text is
@@ -144,20 +181,13 @@ with live health.
   persona. Newest first, at most 12; counts and wording are seeded from the fixture, so they are
   reproducible. With a favourite club, an *All / My team* filter appears. New posts are announced
   politely, one at a time. Engine: ``shared/pressBox.ts``.
-* **Why it matters**: the engine's persona-aware insight cards with observed/inferred labels.
-  Casual shows plain language and key counts; analyst adds full stats, metrics, windows and the
-  evidence events.
-* **Follow one player**: the player's logged actions in the selected period, an action map and key
-  stats. It is logged involvement from the event feed, not continuous tracking.
 * **Approved stories** (localised, with English fallback flagged), **What changed since you last
   looked** (new goals, cards, corrections and approved stories since you left the view), in-app
-  favourite-player alerts (deduplicated; no push notifications), **My match summary** (an *AI
-  summary* written on demand for your persona, language, club and player, with audio when Azure AI
-  Speech is available; always full match) and **My moments**, a data-rendered reel built for you
-  in the selected half. With a favourite player it is that player's own reel (up to 10 moments):
-  their goals, shots (saved, blocked or missed), chances created and assists, saves, tackles won
-  and hardest completed passes (difficulty ≥ 60). With only a favourite club it is the club's
-  moments plus every goal and red card in the match; with neither, the studio's match reel.
+  favourite-player alerts (deduplicated; no push notifications) and **My match summary** (an *AI
+  summary* written on demand for your language, club and player, with audio when Azure AI
+  Speech is available; always full match). The former *Why it matters* panel and *My moments*
+  reel were removed from Fan View. A slot is reserved for the upcoming *Chance build-up* and
+  post-match *Storylines* cards.
 * The fan stream (``/api/live/stream?role=fan``) only carries producer-approved storylines, without
   agent traces, handoffs, review notes or rejected claims, and only the verified facts of approved
   storylines. ``role=fan`` is presentation filtering, **not access control**: the demo's producer
@@ -194,7 +224,7 @@ How it works
    Producer approval (human in the loop)  <── handoff timeline + trace in the storyline panel
              |
              v
-   Outputs: lower-third JSON · narrated recap · highlight reel · cut list   (EN / ES / FR / PT)
+   Outputs: lower-third JSON · narrated recap · post-match storylines · highlight reel · cut list   (EN / ES / FR / PT)
    External agents: MCP server (/mcp) · A2A agent (/.well-known/agent-card.json, /a2a)
 
 1. **Ingest.** The simulator publishes each event to a Fabric Eventstream custom endpoint.
@@ -206,8 +236,12 @@ How it works
    evidence-linked story cards on every event. Only the latest revision of each event counts.
 4. **Explain.** On key events the storyline desk runs its Foundry agents under a director.
    Claims are verified deterministically before a producer ever sees them.
+   A shot or goal also gets a chance insight: the preceding sequence and event-derived
+   territory, recomputed on every event. Definitions and limits are in ``docs/metrics.md``.
 5. **Render and personalise.** Approved copy becomes lower-thirds, recaps and
-   highlight captions in four languages.
+   highlight captions in four languages. Studio shows the chance build-up before approval.
+   Fan and studio streams both receive issued, revised and withdrawn insights so a client
+   can drop a withdrawn card. Tailored fan copy still waits for producer approval.
 
 Director, handoffs and recovery
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -241,7 +275,8 @@ Agents for external tools
 **MCP server.** ``POST /mcp`` is a stateless streamable-HTTP MCP endpoint
 (``@modelcontextprotocol/sdk``) with read-only tools: ``get_live_status``,
 ``get_live_snapshot`` (persona, language, optional ``period``), ``get_event``,
-``get_player_stats``, ``search_archive`` (Foundry IQ / AI Search, or local keyword search),
+``get_player_stats``, ``get_chance_insights`` (inferred build-up and event-derived territory),
+``search_archive`` (Foundry IQ / AI Search, or local keyword search),
 ``list_storylines`` (approved only unless the caller is authenticated) and ``verify_claim``
 (the deterministic verifier). It is rate limited; when ``MCP_TOKEN`` is set every call needs
 ``Authorization: Bearer <token>`` and may request drafts. VS Code / GitHub Copilot
@@ -440,6 +475,9 @@ Trust and guardrails
   or uses an unlisted number falls back to the verified caption or fact text.
 * Nothing goes on air without producer approval. Edits are recorded in the trace.
 * A goal correction keeps the original event in the audit trail and retracts dependent output.
+  A withdrawn chance insight retracts storylines linked by ``insightId`` or the shot event id.
+  A revised insight flags approved copy back to review. Sequence and territory numbers in
+  on-air copy must come from a verified ``chance_sequence`` claim.
 * Video Lab manual review stays local. Optional full-upload AI requires explicit footage/upload
   permission; Live Desk progressive AI separately requires permission to send sampled frames.
   Full-upload sources are deleted after processing and playback uses the local file.
@@ -448,6 +486,18 @@ Trust and guardrails
   footage was seen. Progressive failures preserve partial coverage, not a claim of full-time
   analysis. Model detections must cite sampled frames; rule-inferred suggestions are labelled.
 * When the model is unavailable, AI features say so; there is no hidden mock narration.
+* Post-match web search (``NARRATIVE_WEB_SEARCH``, default on only when ``AZURE_OPENAI_ENDPOINT`` is
+  set) sends public situation queries to the Azure OpenAI Responses ``web_search`` tool. The Container
+  App parameter ``narrativeWebSearch`` is ``on`` or ``off`` and defaults to ``on``. Those queries
+  leave the Azure compliance boundary. Only public topics are sent: real-world precedent such as
+  comebacks, early red cards, late winners and set pieces. Fictional demo names are not searched.
+  A name is searched only when that archive club or adult person is explicitly flagged ``realWorld``.
+  A citation is kept only when its URL matches a returned search source exactly. Scheme and host case,
+  a trailing slash and a fragment may be normalised; the query string is kept, so a different query or
+  a path suffix is rejected. The host must not be a social or user-generated site.
+  ``filters.allowed_domains`` is not used: gpt-4.1-mini rejects it. Web snippets are untrusted quoted
+  data and are not copied into fallback copy. Generation is cached per match: one scout, one finished
+  recap per language and persona, and so-far copy at most once per five minutes of match clock.
 
 Synthetic data and footage policy
 ---------------------------------
@@ -555,11 +605,15 @@ API
    * - ``POST /api/live/correction``
      - Rule out a goal by event ID
    * - ``GET /api/live/stream``
-     - Server-sent events: match events, storylines, facts
+     - Server-sent events: status, snapshot, storyline, fact, insight, heartbeat
+   * - ``GET /api/live/insights``
+     - Current chance insights (optional ``role=fan|studio``; both roles see withdrawn)
    * - ``GET /api/live/status``, ``GET /api/live/fixture``
      - Clock, transport and lag; the live view with every event revision
    * - ``POST /api/live/narrate``
      - Recap of the live view (persona and language), with ``audioUrl``
+   * - ``POST /api/live/storylines/postmatch``
+     - 3–5 grounded storylines plus a summary. Body: language, persona, optional favourite club/player. Running matches are "so far"; finished matches are post-match. ``webContext.label`` is "No live web context" when live search was not used.
    * - ``POST /api/live/highlights/commentary``
      - Spoken commentary for the reel's clips (language, clip windows), with audio URLs
    * - ``GET /api/audio/{id}.mp3``
@@ -623,8 +677,8 @@ Two-minute demo
 2. Start the comeback fixture at 60x speed. Point out Fabric transport and lag.
 3. Open a storyline: claims, sources, agent trace. Approve it and show the lower-third in Spanish.
 4. Rule out a goal. The score, storylines and captions update.
-5. Switch to **Fan View**: pick the away club and a player, switch to Spanish and the analyst
-   persona, turn on **Follow one player** and show the approved story arriving in the fan feed.
+5. Switch to **Fan View**: pick the away club and a player, switch to Spanish, show the player card
+   and its ranks, and show the approved story arriving in the fan feed and the Big moment card.
 6. Back on the Studio Desk, switch to **Recap and highlights**. Play the reel, switch it to French and export it.
 7. Generate a recap in Spanish.
 

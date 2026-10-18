@@ -22,6 +22,12 @@ param eventstreamDestinationConnectionString string = ''
 param eventstreamConsumerGroup string = '$Default'
 @secure()
 param appInsightsConnectionString string = ''
+@description('Kill switch for post-match live web search. Queries leave the Azure compliance boundary.')
+@allowed([
+  'on'
+  'off'
+])
+param narrativeWebSearch string = 'on'
 
 var eventstreamConfigured = !empty(eventstreamSourceConnectionString) && !empty(eventstreamDestinationConnectionString)
 var eventstreamSecrets = eventstreamConfigured ? [
@@ -81,6 +87,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'AZURE_OPENAI_API_VERSION', value: '2024-10-21' }
           { name: 'AI_MAX_REQUESTS_PER_HOUR', value: string(aiMaxRequestsPerHour) }
           { name: 'AI_MAX_CONCURRENT', value: '2' }
+          { name: 'NARRATIVE_WEB_SEARCH', value: narrativeWebSearch }
         ], deskEnv, searchEnv, eventstreamEnv, telemetryEnv)
         probes: [
           {

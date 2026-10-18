@@ -18,6 +18,14 @@ import type {
 } from "../../shared/platform.js";
 import type { Language, MatchEvent, MatchFixture } from "../../shared/types.js";
 import { LIVE_METRICS, liveMetricFact } from "../metricClaims.js";
+import {
+  buildChanceSequence,
+  buildTerritory,
+  chanceClaimNumbersForTeam,
+  chanceClaimText,
+  isChanceFixtureCamera,
+  type ChanceClaimNumbers,
+} from "../../shared/chanceSequence.js";
 
 const boundedIdSchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_-]+$/u);
 const claimSourceSchema = z.object({
@@ -76,6 +84,23 @@ const liveMetricParamsSchema = z.object({
   metric: z.enum(LIVE_METRICS),
 }).strict();
 
+const chanceSequenceParamsSchema = z.object({
+  shotEventId: boundedIdSchema,
+  actions: z.number().int().min(1).max(10),
+  passes: z.number().int().min(0).max(10),
+  players: z.number().int().min(0).max(10),
+  originZone: z.enum(["defensive", "middle", "final"]),
+  progressionM: z.number().int().nullable(),
+  matchClockSpanSeconds: z.number().int().min(0),
+  boundary: z.enum(["turnover", "time_gap", "stoppage", "corner_origin", "action_cap", "match_start"]),
+  ownHalf: z.boolean(),
+  finalThirdEntries: z.number().int().nullable(),
+  completedPassesEndingInFinalThird: z.number().int().nullable(),
+  attackingActionsInFinalThird: z.number().int().min(0),
+  attackingActions: z.number().int().min(0),
+  windowMinutes: z.number().int().min(0),
+}).strict();
+
 export const claimProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("family_link"), params: familyLinkParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
   z.object({ kind: z.literal("former_club"), params: formerClubParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
@@ -86,6 +111,7 @@ export const claimProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("live_event"), params: liveEventParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
   z.object({ kind: z.literal("match_state"), params: matchStateParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
   z.object({ kind: z.literal("live_metric"), params: liveMetricParamsSchema, sources: z.array(claimSourceSchema).min(1).max(8) }).strict(),
+  z.object({ kind: z.literal("chance_sequence"), params: chanceSequenceParamsSchema, sources: z.array(claimSourceSchema).min(1).max(12) }).strict(),
 ]);
 
 export const claimProposalArraySchema = z.array(claimProposalSchema).max(5);
@@ -691,7 +717,78 @@ export function verifyClaimProposal(
         fact: buildLocalizedFact(storylineId, context.matchId, context.event.minute, claim.id, text, proposal.sources, createdAt),
       };
     }
+    case "chance_sequence": {
+      if (proposal.params.shotEventId !== context.event.id) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, "chance_sequence must describe the trigger event") };
+      }
+      const shot = eventsById.get(proposal.params.shotEventId);
+      const reason = verifyEventReference(shot, context);
+      if (!shot || reason) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, reason ?? "Unknown event") };
+      }
+      if (shot.type !== "shot" && shot.type !== "goal") {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, "chance_sequence needs a shot or goal") };
+      }
+      const sequence = buildChanceSequence(fixture.events, shot, isChanceFixtureCamera(fixture));
+      if (!sequence) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, "Chance sequence could not be computed") };
+      }
+      const territory = buildTerritory(fixture.events, shot);
+      const expected = chanceClaimNumbersForTeam(sequence, territory, shot.teamId);
+      const mismatch = chanceNumbersMismatch(expected, proposal.params);
+      if (mismatch) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, mismatch) };
+      }
+      const cited = proposal.sources;
+      const ids = sequence.eventIds;
+      if (cited.length !== ids.length || cited.some((source, index) => source.type !== "event" || source.id !== ids[index])) {
+        return { ok: false, claim: rejectClaim(proposal.kind, proposal.sources, "chance_sequence sources must list the sequence event ids in order") };
+      }
+      const teamName = shot.teamId === "home" ? fixture.home.name : fixture.away.name;
+      const players = [...fixture.home.players, ...fixture.away.players];
+      const names = sequence.playerIds
+        .map((playerId) => players.find((player) => player.id === playerId)?.name)
+        .filter((name): name is string => Boolean(name));
+      const text = chanceClaimText(expected, teamName, names);
+      const claim = verifiedClaim(proposal.kind, proposal.sources, text);
+      return {
+        ok: true,
+        claim,
+        fact: buildLocalizedFact(storylineId, context.matchId, shot.minute, claim.id, text, proposal.sources, createdAt),
+      };
+    }
   }
+}
+
+function chanceNumbersMismatch(expected: ChanceClaimNumbers, actual: ChanceClaimNumbers): string | undefined {
+  const fields = Object.keys(expected) as (keyof ChanceClaimNumbers)[];
+  for (const field of fields) {
+    if (expected[field] !== actual[field]) {
+      return `chance_sequence ${field} does not match the computed insight`;
+    }
+  }
+  return undefined;
+}
+
+/** Deterministic chance-sequence proposal for a shot or goal trigger. The verifier recomputes the numbers. */
+export function buildChanceSequenceProposal(fixture: MatchFixture, event: MatchEvent, clockSecond: number): ClaimProposal | null {
+  if ((event.type !== "shot" && event.type !== "goal") || event.rescinded || eventSecond(event) > clockSecond) {
+    return null;
+  }
+  const shot = activeEvents(fixture, clockSecond).find((candidate) => candidate.id === event.id);
+  if (!shot || shot.rescinded || (shot.type !== "shot" && shot.type !== "goal")) {
+    return null;
+  }
+  const sequence = buildChanceSequence(fixture.events, shot, isChanceFixtureCamera(fixture));
+  if (!sequence) {
+    return null;
+  }
+  const territory = buildTerritory(fixture.events, shot);
+  return {
+    kind: "chance_sequence",
+    params: chanceClaimNumbersForTeam(sequence, territory, shot.teamId),
+    sources: sequence.eventIds.map((id) => ({ type: "event", id })),
+  };
 }
 
 export function knownNamesForGuard(archive: ArchiveSnapshot, fixture: MatchFixture): Set<string> {
@@ -726,19 +823,59 @@ export function numberTokens(text: string): string[] {
   return [...text.matchAll(/\b\d+\b/gu)].map((match) => match[0]);
 }
 
+/** Integer, decimal, percent or ordinal as one token. `12` is not a token of `123` or `12.5`. */
+const COMPLETE_NUMBER = /\b\d+(?:\.\d+)?%|\b\d+(?:st|nd|rd|th)\b|\b\d+(?:\.\d+)?\b/giu;
+const TITLE_CASE_TOKEN = /\b[A-Z][a-z]+(?:['’-][A-Z][a-z]+)?\b/gu;
+
+/**
+ * Words that are capitalised because they start a sentence, name a month or a weekday.
+ * Team and player names are not listed here: they pass only as known entities or verified-claim tokens.
+ */
+const PROPER_NAME_STOPLIST = new Set([
+  "a", "an", "the", "and", "but", "or", "nor", "so", "yet",
+  "in", "on", "at", "to", "for", "from", "with", "of", "by", "as",
+  "after", "before", "during", "against", "into", "over", "under", "between",
+  "his", "her", "their", "its", "this", "that", "these", "those",
+  "he", "she", "they", "it", "we", "i",
+  "january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december",
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+]);
+
+export function completeNumericTokens(text: string): string[] {
+  return [...text.matchAll(COMPLETE_NUMBER)].map((match) => match[0].toLowerCase());
+}
+
+function containsCompleteToken(haystack: string, token: string): boolean {
+  return new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\b`, "iu").test(haystack);
+}
+
+function unsupportedTitleCaseName(text: string, claimTexts: string[], knownNames: Set<string>): string | undefined {
+  const claims = claimTexts.join("\n");
+  const entities = [...knownNames].join("\n");
+  for (const match of text.matchAll(TITLE_CASE_TOKEN)) {
+    const token = match[0];
+    if (PROPER_NAME_STOPLIST.has(token.toLowerCase())) continue;
+    if (containsCompleteToken(claims, token) || containsCompleteToken(entities, token)) continue;
+    return `Unsupported proper name: ${token}`;
+  }
+  return undefined;
+}
+
 export function guardDraftText(text: string, claimTexts: string[], knownNames: Set<string>): string | undefined {
-  const reference = claimTexts.join(" \n ").toLowerCase();
-  for (const token of numberTokens(text)) {
-    if (!reference.includes(token.toLowerCase())) {
+  const allowedNumbers = new Set(claimTexts.flatMap(completeNumericTokens));
+  for (const token of completeNumericTokens(text)) {
+    if (!allowedNumbers.has(token)) {
       return `Unsupported number token: ${token}`;
     }
   }
+  const reference = claimTexts.join(" \n ").toLowerCase();
   for (const name of properNamesUsed(text, knownNames)) {
     if (!reference.includes(name.toLowerCase())) {
       return `Unsupported proper name: ${name}`;
     }
   }
-  return undefined;
+  return unsupportedTitleCaseName(text, claimTexts, knownNames);
 }
 
 export function guardLocalization(source: string, localized: string, knownNames: Set<string>): string | undefined {

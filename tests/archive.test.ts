@@ -22,14 +22,12 @@ test("archive validates cleanly and relations are symmetric", () => {
 test("rivergate and northbridge fixture rosters match archive current squads", () => {
   const archive = getArchive();
   const fixture = getFixture("rivergate-comeback");
-  const rivergateArchiveNames = archive.people
-    .filter((person) => person.currentClubId === fixture.home.archiveClubId && !person.retired)
+  const squad = (clubId: string | undefined) => archive.people
+    .filter((person) => person.currentClubId === clubId && !person.retired && (!person.role || person.role === "player"))
     .map((person) => person.name)
     .sort();
-  const northbridgeArchiveNames = archive.people
-    .filter((person) => person.currentClubId === fixture.away.archiveClubId && !person.retired)
-    .map((person) => person.name)
-    .sort();
+  const rivergateArchiveNames = squad(fixture.home.archiveClubId);
+  const northbridgeArchiveNames = squad(fixture.away.archiveClubId);
 
   assert.deepEqual(fixture.home.players.map((player) => player.name).sort(), rivergateArchiveNames);
   assert.deepEqual(fixture.away.players.map((player) => player.name).sort(), northbridgeArchiveNames);

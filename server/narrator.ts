@@ -695,10 +695,49 @@ export function buildEvidenceLedger(snapshot: MatchSnapshot, fixture?: MatchFixt
   };
 }
 
+function normalizedProse(value: string): string {
+  return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
+function containsProseWord(haystack: string, needle: string): boolean {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(haystack);
+}
+
+/** Names the evidence never lists, plus title-case phrases that are not in the source text. */
+export function unlistedNames(output: string, sourceText: string, knownNames: readonly string[]): string[] {
+  const text = normalizedProse(output);
+  const source = normalizedProse(sourceText);
+  const fromList = knownNames.filter((name) => {
+    const normalized = normalizedProse(name.trim());
+    return normalized.length >= 4 && containsProseWord(text, normalized) && !containsProseWord(source, normalized);
+  });
+  const phrases = output.match(/\b\p{Lu}[\p{L}'-]{1,}(?:\s+\p{Lu}[\p{L}'-]{1,})+\b/gu) ?? [];
+  const fromPhrases = phrases.filter((phrase) => !source.includes(normalizedProse(phrase)));
+  return [...new Set([...fromList, ...fromPhrases])];
+}
+
+/**
+ * Same rule as the spoken recap guard, extended to archive and news-wire names.
+ * Every number must appear in the source text. Every listed person or title-case name must too.
+ */
+export function validateGroundedProse(
+  output: string,
+  sourceText: string,
+  fixture: MatchFixture | undefined,
+  knownNames: readonly string[] = [],
+): string[] {
+  const problems = groundingProblems(output, sourceText, fixture);
+  const names = unlistedNames(output, sourceText, knownNames);
+  if (names.length > 0) problems.push(`unsupported names: ${names.slice(0, 5).join(", ")}`);
+  return problems;
+}
+
 export function validateGroundedNarrativeDraft(
   draft: NarrativeDraft,
   snapshot: MatchSnapshot,
   ledger: EvidenceLedger,
+  extras?: { sourceText: string; fixture?: MatchFixture; knownNames?: readonly string[] },
 ): void {
   if (draft.title.length > 180 || draft.script.length > 2_000) {
     throw new HttpError(503, "Narrative text exceeded allowed bounds");
@@ -749,6 +788,14 @@ export function validateGroundedNarrativeDraft(
     }
     if (approvedFacts.every((fact) => !Object.values(fact.text).includes(claim.text))) {
       throw new HttpError(503, "Narrative claim text did not match approved evidence");
+    }
+  }
+
+  if (extras) {
+    const prose = [draft.title, draft.script, ...draft.claims.map((claim) => claim.text)].join("\n");
+    const problems = validateGroundedProse(prose, `${extras.sourceText}\n${Object.values(ledger.facts).map((fact) => fact.text.en).join("\n")}`, extras.fixture, extras.knownNames ?? []);
+    if (problems.length > 0) {
+      throw new HttpError(503, `Narrative prose was not grounded: ${problems.join("; ")}`);
     }
   }
 }

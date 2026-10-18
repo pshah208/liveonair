@@ -248,3 +248,58 @@ export interface AppHealth {
   ai: { configured: boolean; deployment: string; authentication: string };
   version: string;
 }
+
+/** Where a post-match storyline sentence is allowed to come from. */
+export type NarrativeSourceType = "match" | "history" | "news_wire" | "web";
+
+export interface NarrativeEvidenceRef {
+  type: NarrativeSourceType;
+  id: string;
+  label: string;
+  url?: string;
+  /** Synthetic news-wire items must stay labelled in the UI. */
+  synthetic?: boolean;
+}
+
+export interface PostMatchStorylineCard {
+  id: string;
+  title: string;
+  angle: string;
+  narrative: string;
+  evidence: NarrativeEvidenceRef[];
+  sourceTypes: NarrativeSourceType[];
+  /** Set when this card leads because it concerns the requested favourite. */
+  favourite?: boolean;
+}
+
+export interface PostMatchWebItem {
+  title: string;
+  url: string;
+  domain: string;
+  snippet: string;
+}
+
+export interface PostMatchWebContext {
+  status: "used" | "disabled" | "unavailable" | "no_live_web_context" | "filtered";
+  used: boolean;
+  queries: string[];
+  /** Human label. "No live web context" when search was off, failed, or yielded nothing citable. */
+  label: string;
+  items: PostMatchWebItem[];
+}
+
+/** POST /api/live/storylines/postmatch */
+export interface PostMatchStorylinesResponse {
+  headline: string;
+  summary: string;
+  storylines: PostMatchStorylineCard[];
+  sources: NarrativeEvidenceRef[];
+  webContext: PostMatchWebContext;
+  language: Language;
+  phase: "postmatch" | "so_far";
+  audioUrl?: string;
+  cached: boolean;
+  model: string;
+  source: "foundry" | "fallback";
+  configured: boolean;
+}

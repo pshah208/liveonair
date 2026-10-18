@@ -1,5 +1,6 @@
 // Shared contracts for Live on Air v2: synthetic archive, MatchLab, live feed and Storyline Desk.
 // Browser and server both import these types. Keep them serialisable JSON.
+import type { ChanceInsight } from "./chanceSequence.js";
 import type {
   AgentStep,
   FixtureSummary,
@@ -22,6 +23,11 @@ export interface ArchiveClub {
   stadium: string;
   founded: number;
   honours: ArchiveHonour[];
+  /**
+   * When true, a news scout may search this club's public name.
+   * Demo clubs are fictional and leave this unset.
+   */
+  realWorld?: boolean;
 }
 
 export interface ArchiveHonour {
@@ -42,6 +48,16 @@ export interface ArchiveCareerSpell {
 
 export type RelationKind = "parent" | "child" | "sibling";
 
+export type ArchiveRole = "player" | "head_coach" | "assistant_coach";
+
+/** Synthetic coaching record. Numbers here are the only figures a recap may cite for that spell. */
+export interface ArchiveStaffRecord {
+  matches: number;
+  wins: number;
+  draws: number;
+  losses: number;
+}
+
 /** `kind` is the role of `personId` relative to the record that lists it ("parent" = that person is this person's parent). */
 export interface ArchiveRelation {
   kind: RelationKind;
@@ -59,6 +75,15 @@ export interface ArchivePerson {
   career: ArchiveCareerSpell[];
   relations: ArchiveRelation[];
   retired: boolean;
+  /** Omitted means player, so existing roster records stay valid. */
+  role?: ArchiveRole;
+  /** When true, a news scout may search this person's public name. Demo people leave this unset. */
+  realWorld?: boolean;
+  /** Synthetic notes: tenure, previous meetings, notable situations. Not a live quote. */
+  tenureNotes?: string;
+  staffRecord?: ArchiveStaffRecord;
+  /** Archive match ids this coach was in the dugout for. */
+  notableMatchIds?: string[];
 }
 
 export interface ArchiveGoal {
@@ -86,8 +111,30 @@ export interface ArchiveDocument {
   id: string;
   title: string;
   body: string;
-  kind: "player_profile" | "club_history" | "match_report" | "family_note";
+  kind: "player_profile" | "club_history" | "match_report" | "family_note" | "manager_profile" | "news_wire";
   recordIds: string[];
+}
+
+export type NewsWireTheme =
+  | "manager_pressure"
+  | "injury_return"
+  | "contract"
+  | "milestone"
+  | "rivalry"
+  | "form";
+
+/** Dated synthetic pre-match copy. Always labelled synthetic; never treated as real journalism. */
+export interface ArchiveNewsItem {
+  id: string;
+  /** ISO date (YYYY-MM-DD). Retrieval keeps items on or before the match as-of date. */
+  publishedAt: string;
+  outlet: string;
+  synthetic: true;
+  headline: string;
+  body: string;
+  clubIds: string[];
+  personIds: string[];
+  themes: NewsWireTheme[];
 }
 
 export interface ArchiveSnapshot {
@@ -96,6 +143,8 @@ export interface ArchiveSnapshot {
   people: ArchivePerson[];
   matches: ArchiveMatch[];
   documents: ArchiveDocument[];
+  /** Optional so hand-built test snapshots keep compiling. The shipped archive always sets it. */
+  news?: ArchiveNewsItem[];
 }
 
 /** GET /api/archive/players/:archiveId */
@@ -179,6 +228,7 @@ export type ClaimKind =
   | "live_event"
   | "match_state"
   | "live_metric"
+  | "chance_sequence"
   | "former_club"
   | "family_link"
   | "career_goals"
@@ -232,6 +282,12 @@ export interface Storyline {
   version: number;
   /** Coordinator handoff log (agent -> agent), including recoveries and director fallbacks. */
   handoffs?: StorylineHandoff[];
+  /** Chance insight explained by this storyline, when the trigger is a shot or goal (`chance:<eventId>`). */
+  insightId?: string;
+  insightRevision?: number;
+  insightStatus?: "issued" | "revised" | "withdrawn";
+  /** Set when a linked insight was revised or withdrawn and on-air copy may be stale. */
+  insightNote?: string;
 }
 
 export interface StorylineHandoff {
@@ -288,6 +344,7 @@ export type LiveMessage =
   | { type: "snapshot"; snapshot: MatchSnapshot; status: LiveStatus }
   | { type: "storyline"; storyline: Storyline }
   | { type: "fact"; fact: VerifiedFact }
+  | { type: "insight"; insight: ChanceInsight }
   | { type: "heartbeat"; at: string };
 
 export interface LiveStreamQuery {

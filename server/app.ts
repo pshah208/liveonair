@@ -17,6 +17,7 @@ import type {
   NarrativeRequest,
 } from "../shared/types.js";
 import { createNarrator, createCompletionClientFromEnv, hashInlineScript, type Narrator } from "./narrator.js";
+import { createPostMatchNarrator, createPostMatchNarratorFromEnv, type PostMatchNarrator } from "./narrative/postmatch.js";
 import { commentaryRequestSchema, createCommentator, type Commentator } from "./commentary.js";
 import { createPlayerAnalyst, type PlayerAnalyst } from "./players/analyst.js";
 import { z } from "zod";
@@ -60,6 +61,8 @@ export type EngineAdapter = {
 
 type CreateAppOptions = {
   narrator?: Narrator;
+  /** Injected so tests never construct an Azure client for post-match storylines. */
+  postMatch?: PostMatchNarrator;
   speech?: SpeechService;
   commentator?: Commentator;
   playerAnalyst?: PlayerAnalyst;
@@ -164,6 +167,8 @@ function buildCspHeader(staticMeta: StaticMeta): string {
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const narrator = options.narrator ?? createNarrator();
+  // Same rule as speech and commentary: an injected narrator means this process must not open Azure clients.
+  const postMatch = options.postMatch ?? (options.narrator ? createPostMatchNarrator() : createPostMatchNarratorFromEnv());
   // Tests that inject a narrator get no speech unless they inject it too, so they never reach Azure.
   const speech = options.speech ?? (options.narrator ? createSpeechService({ endpoint: "" }) : createSpeechService());
   const voiceRecap = (script: string, language: Language) => {
@@ -219,6 +224,15 @@ export function createApp(options: CreateAppOptions = {}) {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many narration requests" },
+  });
+  // Separate from the narrate limiter. Distributed cost is bounded in the narrator
+  // (one scout per match, one generation per phase bucket, language and persona).
+  const storylineLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 12,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many storyline requests" },
   });
 
   app.get("/api/health", (_request, response) => {
@@ -322,6 +336,89 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  const postMatchRequestSchema = z.object({
+    language: z.enum(["en", "es", "fr", "pt"]).default("en"),
+    persona: z.enum(["analyst", "casual", "player"]).default("analyst"),
+    favoriteClubId: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9:_.-]+$/u).optional(),
+    favouriteClubId: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9:_.-]+$/u).optional(),
+    favoritePlayerId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_.-]+$/u).optional(),
+    favouritePlayerId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9:_.-]+$/u).optional(),
+  }).strict();
+
+  // Post-match storylines. Separate from /api/live/narrate so the existing recap contract stays stable.
+  app.post("/api/live/storylines/postmatch", storylineLimiter, async (request, response, next) => {
+    try {
+      if (!postMatch.configured) {
+        throw new HttpError(503, "AI narration is not configured");
+      }
+      const body = parseStrict(postMatchRequestSchema, request.body ?? {});
+      if (body.favoriteClubId && body.favouriteClubId && body.favoriteClubId !== body.favouriteClubId) {
+        throw new HttpError(400, "favoriteClubId and favouriteClubId must match");
+      }
+      if (body.favoritePlayerId && body.favouritePlayerId && body.favoritePlayerId !== body.favouritePlayerId) {
+        throw new HttpError(400, "favoritePlayerId and favouritePlayerId must match");
+      }
+      const favoriteClubId = body.favoriteClubId ?? body.favouriteClubId;
+      const favoritePlayerId = body.favoritePlayerId ?? body.favouritePlayerId;
+      const status = platform.live.status();
+      if (status.state !== "running" && status.state !== "finished") {
+        throw new HttpError(409, "Post-match storylines are available once a match is running or finished");
+      }
+      const view = platform.live.current();
+      if (!view) {
+        throw new HttpError(404, "Live match not found");
+      }
+      const fixture = deepClone(view.fixture);
+      assertKnownFavoritePlayer(fixture, favoritePlayerId);
+      const phase = status.state === "finished" ? "postmatch" : "so_far";
+      const atSecond = status.state === "running"
+        ? Math.min(fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
+        : fixture.durationSeconds;
+      const snapshot = analyzeFixture(fixture, {
+        fixtureId: fixture.id,
+        atSecond,
+        persona: body.persona,
+        language: body.language,
+        correction: false,
+        ...(favoritePlayerId ? { favoritePlayerId } : {}),
+        ...(favoriteClubId ? { favoriteClubId } : {}),
+      });
+      const chanceInsights = (platform.insights?.list(view.matchId) ?? [])
+        .filter((insight) => insight.status !== "withdrawn" && insight.summaryFacts.length > 0)
+        .map((insight) => ({
+          id: insight.insightId,
+          text: insight.summaryFacts.join(" "),
+          evidenceIds: insight.evidenceEventIds.map((ref) => ref.eventId),
+        }));
+      const result = await postMatch.generate({
+        fixture,
+        snapshot,
+        language: body.language,
+        persona: body.persona,
+        phase,
+        matchId: view.matchId,
+        ...(favoriteClubId ? { favoriteClubId } : {}),
+        ...(favoritePlayerId ? { favoritePlayerId } : {}),
+        approvedStorylines: platform.desk.list(view.matchId),
+        ...(chanceInsights.length > 0 ? { chanceInsights } : {}),
+      }, { requestId: response.locals.requestId as string });
+      const audioUrl = voiceRecap(`${result.headline}. ${result.summary}`, body.language);
+      console.info(JSON.stringify({
+        level: "info",
+        event: "postmatch_storylines",
+        requestId: response.locals.requestId,
+        phase: result.phase,
+        language: result.language,
+        source: result.source,
+        web: result.webContext.status,
+        storylines: result.storylines.length,
+      }));
+      response.json(audioUrl ? { ...result, audioUrl } : result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // Scouting note for one player of the live match, from event-derived statistics.
   app.post("/api/live/players/:playerId/analysis", narrateLimiter, async (request, response, next) => {
     try {
@@ -379,11 +476,12 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture }));
+  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights }));
   app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
   app.use(createMcpRouter({
     live: platform.live, desk: platform.desk, analyzeFixture, archive: getArchive(),
     retrieval: createArchiveRetrievalFromEnv(), version, token: process.env.MCP_TOKEN || undefined,
+    insights: platform.insights,
   }));
   app.use(createA2aRouter({ live: platform.live, desk: platform.desk, version, token: process.env.A2A_TOKEN || undefined }));
 

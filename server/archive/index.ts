@@ -3,11 +3,13 @@ import type {
   ArchiveDocument,
   ArchiveGoal,
   ArchiveMatch,
+  ArchiveNewsItem,
   ArchivePerson,
   ArchivePlayerProfile,
   ArchiveSnapshot,
 } from "../../shared/platform.js";
 import { ARCHIVE_VERSION, clubs, matches, people } from "./data.js";
+import { newsItems } from "./news.js";
 
 type HistoricGoalRecord = { goal: ArchiveGoal; match: ArchiveMatch };
 
@@ -23,6 +25,9 @@ for (const person of people) {
 }
 for (const match of matches) {
   recordIdSet.add(match.id);
+}
+for (const item of newsItems) {
+  recordIdSet.add(item.id);
 }
 
 function clone<T>(value: T): T {
@@ -87,21 +92,51 @@ function renderPlayerProfileDocument(person: ArchivePerson): ArchiveDocument {
   };
 }
 
+function isPlayer(person: ArchivePerson): boolean {
+  return !person.role || person.role === "player";
+}
+
 function renderClubHistoryDocument(club: ArchiveClub): ArchiveDocument {
   const honoursLine = club.honours
     .map((honour) => `${honour.season} ${honour.competition} ${honour.result.replace("_", " ")}`)
     .join("; ");
   const notablePlayers = people
-    .filter((person) => person.currentClubId === club.id)
+    .filter((person) => person.currentClubId === club.id && isPlayer(person))
     .map((person) => person.name)
     .slice(0, 6)
     .join(", ");
+  const headCoach = people.find((person) => person.role === "head_coach" && person.currentClubId === club.id && !person.retired);
   return {
     id: `doc-club-${club.id}`,
     kind: "club_history",
     title: `${club.name} club history`,
-    body: `${club.name} (${club.shortName}) of ${club.city}, founded ${club.founded}, play at ${club.stadium}. Honours: ${honoursLine || "none recorded"}. Current archive roster sample: ${notablePlayers}.`,
-    recordIds: [club.id, ...club.honours.map((honour) => honour.id), ...club.honours.map((honour) => honour.finalMatchId).filter((value): value is string => Boolean(value))],
+    body: `${club.name} (${club.shortName}) of ${club.city}, founded ${club.founded}, play at ${club.stadium}. Honours: ${honoursLine || "none recorded"}. Current head coach: ${headCoach?.name ?? "not recorded"}. Current archive roster sample: ${notablePlayers}.`,
+    recordIds: [club.id, ...club.honours.map((honour) => honour.id), ...club.honours.map((honour) => honour.finalMatchId).filter((value): value is string => Boolean(value)), ...(headCoach ? [headCoach.id] : [])],
+  };
+}
+
+function renderManagerDocument(person: ArchivePerson): ArchiveDocument {
+  const club = person.currentClubId ? clubsById.get(person.currentClubId) : undefined;
+  const record = person.staffRecord;
+  const recordLine = record
+    ? `Record: ${record.matches} matches, ${record.wins} wins, ${record.draws} draws, ${record.losses} losses.`
+    : "";
+  return {
+    id: `doc-manager-${person.id}`,
+    kind: "manager_profile",
+    title: `${person.name} coaching profile`,
+    body: `${person.name} is ${person.retired ? "a former" : "the current"} ${person.position.toLowerCase()} ${club ? `of ${club.name}` : "in the synthetic archive"}. ${person.tenureNotes ?? ""} ${recordLine}`.replace(/\s+/gu, " ").trim(),
+    recordIds: [person.id, ...person.career.map((spell) => spell.clubId), ...(person.notableMatchIds ?? [])],
+  };
+}
+
+function renderNewsDocument(item: ArchiveNewsItem): ArchiveDocument {
+  return {
+    id: `doc-${item.id}`,
+    kind: "news_wire",
+    title: item.headline,
+    body: `${item.outlet} (${item.publishedAt}, synthetic): ${item.headline}. ${item.body}`,
+    recordIds: [item.id, ...item.clubIds, ...item.personIds],
   };
 }
 
@@ -164,10 +199,12 @@ function renderFamilyDocuments(): ArchiveDocument[] {
 
 function buildDocuments(): ArchiveDocument[] {
   return [
-    ...people.map(renderPlayerProfileDocument),
+    ...people.filter(isPlayer).map(renderPlayerProfileDocument),
+    ...people.filter((person) => person.role === "head_coach" || person.role === "assistant_coach").map(renderManagerDocument),
     ...clubs.map(renderClubHistoryDocument),
     ...matches.map(renderMatchReportDocument),
     ...renderFamilyDocuments(),
+    ...newsItems.map(renderNewsDocument),
   ].sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -177,6 +214,7 @@ const archive: ArchiveSnapshot = {
   people: clone(people),
   matches: clone(matches),
   documents: buildDocuments(),
+  news: clone(newsItems),
 };
 
 export function getArchive(): ArchiveSnapshot {
@@ -328,6 +366,33 @@ export function validateArchive(snapshot: ArchiveSnapshot): string[] {
     }
   }
 
+  for (const item of snapshot.news ?? []) {
+    if (!item.synthetic || item.outlet.trim().length === 0) {
+      errors.push(`News item ${item.id} must be labelled synthetic`);
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(item.publishedAt)) {
+      errors.push(`News item ${item.id} has an invalid date`);
+    }
+    for (const clubId of item.clubIds) {
+      if (!clubIds.has(clubId)) errors.push(`News item ${item.id} references unknown club ${clubId}`);
+    }
+    for (const personId of item.personIds) {
+      if (!peopleIds.has(personId)) errors.push(`News item ${item.id} references unknown person ${personId}`);
+    }
+  }
+
+  for (const person of snapshot.people) {
+    for (const matchId of person.notableMatchIds ?? []) {
+      if (!matchIds.has(matchId)) errors.push(`Person ${person.id} references missing notable match ${matchId}`);
+    }
+    if (person.staffRecord) {
+      const { matches: played, wins, draws, losses } = person.staffRecord;
+      if (wins + draws + losses !== played) {
+        errors.push(`Person ${person.id} staff record does not add up`);
+      }
+    }
+  }
+
   for (const document of snapshot.documents) {
     if (documentIds.has(document.id)) {
       errors.push(`Duplicate document ${document.id}`);
@@ -341,6 +406,57 @@ export function validateArchive(snapshot: ArchiveSnapshot): string[] {
   }
 
   return errors.sort();
+}
+
+export function isArchivePlayer(person: ArchivePerson): boolean {
+  return isPlayer(person);
+}
+
+/** Current head coach and assistant for a club, then former coaches who held a spell there. */
+export function staffForClub(clubId: string): ArchivePerson[] {
+  return people
+    .filter((person) => person.role === "head_coach" || person.role === "assistant_coach")
+    .filter((person) => person.currentClubId === clubId || person.career.some((spell) => spell.clubId === clubId))
+    .sort((left, right) => Number(left.retired) - Number(right.retired) || left.name.localeCompare(right.name))
+    .map((person) => clone(person));
+}
+
+export type NewsWireQuery = {
+  clubIds?: string[];
+  personIds?: string[];
+  /** Inclusive ISO date. Items published after this date are hidden so the wire stays pre-match. */
+  asOf?: string;
+  limit?: number;
+};
+
+/** Deterministic in-process retrieval. Does not require the Foundry IQ index to be re-provisioned. */
+export function searchNewsWire(query: NewsWireQuery, source: readonly ArchiveNewsItem[] = newsItems): ArchiveNewsItem[] {
+  const clubsWanted = new Set(query.clubIds ?? []);
+  const peopleWanted = new Set(query.personIds ?? []);
+  if (clubsWanted.size === 0 && peopleWanted.size === 0) return [];
+  const asOf = query.asOf ?? "9999-12-31";
+  return source
+    .filter((item) => item.publishedAt <= asOf)
+    .filter((item) => item.clubIds.some((id) => clubsWanted.has(id)) || item.personIds.some((id) => peopleWanted.has(id)))
+    .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt) || left.id.localeCompare(right.id))
+    .slice(0, query.limit ?? 8)
+    .map((item) => clone(item));
+}
+
+/** Keyword fallback over archive documents, including manager profiles and the news wire. */
+export function searchArchiveDocuments(queryText: string, limit = 5): ArchiveDocument[] {
+  const terms = queryText.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((term) => term.length > 1);
+  if (terms.length === 0) return [];
+  return archive.documents
+    .map((document) => {
+      const haystack = `${document.title} ${document.body}`.toLowerCase();
+      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+      return { document, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.document.id.localeCompare(right.document.id))
+    .slice(0, limit)
+    .map((entry) => clone(entry.document));
 }
 
 export function getPlayerProfile(archiveId: string): ArchivePlayerProfile {

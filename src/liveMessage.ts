@@ -1,3 +1,4 @@
+import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type { MatchSnapshot } from "../shared/types.js";
 import type { LiveMessage, LiveStatus, Storyline, VerifiedFact } from "../shared/platform.js";
 
@@ -41,6 +42,17 @@ function isStoryline(value: unknown): value is Storyline {
     && typeof value.version === "number";
 }
 
+function isChanceInsight(value: unknown): value is ChanceInsight {
+  return isRecord(value)
+    && typeof value.insightId === "string"
+    && typeof value.revision === "number"
+    && typeof value.matchId === "string"
+    && (value.status === "issued" || value.status === "revised" || value.status === "withdrawn")
+    && typeof value.metricVersion === "string"
+    && Array.isArray(value.evidenceEventIds)
+    && Array.isArray(value.summaryFacts);
+}
+
 function isVerifiedFact(value: unknown): value is VerifiedFact {
   return isRecord(value)
     && typeof value.id === "string"
@@ -58,6 +70,7 @@ export function isLiveMessage(value: unknown): value is LiveMessage {
     case "snapshot": return isLiveStatus(value.status) && isSnapshot(value.snapshot);
     case "storyline": return isStoryline(value.storyline);
     case "fact": return isVerifiedFact(value.fact);
+    case "insight": return isChanceInsight(value.insight);
     case "heartbeat": return typeof value.at === "string";
     default: return false;
   }

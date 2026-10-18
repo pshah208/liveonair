@@ -1,5 +1,7 @@
 import type { LiveService, StorylineDesk } from "./contracts.js";
+import type { ChanceInsightFeed } from "./chanceInsights.js";
 import { getArchive } from "./archive/index.js";
+import { createChanceInsightFeed } from "./chanceInsights.js";
 import { createStorylineDesk } from "./desk/index.js";
 import { createArchiveRetrievalFromEnv } from "./desk/retrieval.js";
 import { createFoundryAgentRunner } from "./desk/runner.js";
@@ -12,6 +14,8 @@ import { generateMatch } from "./matchlab/generator.js";
 export interface Platform {
   live: LiveService;
   desk: StorylineDesk;
+  /** Optional so partial test doubles of Platform still type-check when cast. */
+  insights?: ChanceInsightFeed;
   close(): Promise<void>;
 }
 
@@ -27,17 +31,24 @@ export function createPlatform(env: NodeJS.ProcessEnv = process.env): Platform {
     generateMatch,
     buildFeedPlan,
   });
+  const insights = createChanceInsightFeed();
   const desk = createStorylineDesk({
     archive: getArchive(),
     runner: createFoundryAgentRunner({ endpoint: env.PROJECT_ENDPOINT }),
     retrieval: createArchiveRetrievalFromEnv(env),
   });
-  const removeListener = live.addListener(desk);
+  // Insight feed first so a goal storyline can read the issued insight in the same event.
+  const removeInsights = live.addListener(insights);
+  const removeDesk = live.addListener(desk);
+  const unsubscribeInsights = insights.subscribe((insight) => desk.applyChanceInsight?.(insight));
   return {
     live,
     desk,
+    insights,
     async close() {
-      removeListener();
+      unsubscribeInsights();
+      removeInsights();
+      removeDesk();
       await live.close();
     },
   };

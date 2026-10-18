@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppHealth, FixtureSummary, Language, MatchFixture, MatchPeriod, MatchSnapshot, NarrativeResponse } from "../shared/types.js";
+import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type { ArchiveSummary, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline, VerifiedFact } from "../shared/platform.js";
 import { PERIOD_LABEL, periodBoundary } from "../shared/periods.js";
 import { api } from "./api.js";
 import { BroadcastBar, EventFeed, FactTicker, LiveStats, MatchIntelligence, OverlayPreview, Panel, Pitch, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
 import { HighlightReelPanel } from "./HighlightReel.js";
+import { PostMatchStorylines } from "./PostMatchStorylines.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
 import { PeriodSelector, periodScopeMessage, scopedTitle } from "./PeriodSelector.js";
@@ -13,6 +15,7 @@ import type { ActiveMatchContext } from "./liveContext.js";
 import { LabHighlightReel, type LabHighlights } from "./LabHighlightReel.js";
 import { PlayerAnalysisPage } from "./PlayerAnalysis.js";
 import { computePlayerTags, PlayerIdTags } from "./PlayerIdTags.js";
+import { ChanceInsightCard } from "./ChanceInsightCard.js";
 import { PlayerCam } from "./PlayerCam.js";
 import { LiveVideoPanel } from "./LiveVideoPanel.js";
 import type { ProgressiveVideoSession } from "../shared/progressiveVideo.js";
@@ -47,6 +50,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
   const [fixture, setFixture] = useState<MatchFixture | null>(null);
   const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null);
   const [storylines, setStorylines] = useState<Storyline[]>([]);
+  const [chanceInsights, setChanceInsights] = useState<ChanceInsight[]>([]);
   const [facts, setFacts] = useState<VerifiedFact[]>([]);
   const [storyboard, setStoryboard] = useState<RecapStoryboard | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -94,6 +98,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       api.getLiveStatus(signal).then((data) => { if (data) { matchIdRef.current = data.matchId; setStatus(data); } }),
       api.getLiveFixture(signal).then(setFixture),
       api.getStudioStorylines(signal).then((list) => setStorylines(sortStudioStorylines(list ?? []))),
+      api.getChanceInsights(signal).then((list) => setChanceInsights(list ?? [])),
       api.getStudioFacts(signal).then((list) => setFacts(sortFactsNewestFirst(list ?? []))),
       api.getStudioStoryboard(signal).then(setStoryboard)
     ]).then((results) => {
@@ -105,6 +110,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
 
   function resetMatchState() {
     setStorylines([]);
+    setChanceInsights([]);
     setFacts([]);
     setStoryboard(null);
     setSnapshot(null);
@@ -161,6 +167,14 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       if (message.type === "fact") {
         if (matchIdRef.current && message.fact.matchId !== matchIdRef.current) return;
         setFacts((current) => sortFactsNewestFirst(mergeById(current, message.fact)));
+        return;
+      }
+      if (message.type === "insight") {
+        if (matchIdRef.current && message.insight.matchId !== matchIdRef.current) return;
+        setChanceInsights((current) => {
+          const next = current.filter((item) => item.insightId !== message.insight.insightId);
+          return [...next, message.insight].sort((left, right) => right.effectiveSecond - left.effectiveSecond || left.insightId.localeCompare(right.insightId));
+        });
       }
     }
   });
@@ -417,6 +431,22 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
                 </div>
               )}
             </Panel>
+            <Panel eyebrow="Chance build-up" title="Chance insights" aside={<span className="tag">{chanceInsights.length}</span>}>
+              {chanceInsights.length === 0 ? <div className="empty-state">Shot and goal build-ups appear here as events arrive. Sequence boundaries are inferred, not provider possessions.</div> : (
+                <div className="chance-list">
+                  {chanceInsights.slice(0, 6).map((insight) => (
+                    <ChanceInsightCard
+                      key={insight.insightId}
+                      insight={insight}
+                      players={Object.fromEntries((fixture ? [...fixture.home.players, ...fixture.away.players] : []).map((player) => [player.id, player.name]))}
+                      teams={fixture ? { home: fixture.home.name, away: fixture.away.name } : undefined}
+                      language={deskLanguage}
+                      variant="studio"
+                    />
+                  ))}
+                </div>
+              )}
+            </Panel>
             <Panel eyebrow="Foundry agents" title="Storyline queue" aside={<>{counts.review > 0 && <span className="tag tag--accent">{counts.review} to review</span>}<span className="tag">{counts.onAir} on air</span></>}>
               {desk?.mode === "unconfigured" && <div className="banner banner--warning">Storyline agents aren't configured on this server.</div>}
               <StorylineQueue storylines={storylines} selectedId={onAir?.id ?? null} onSelect={setSelectedStorylineId} onReview={handleReview} pendingById={pendingById} errorById={reviewErrorById} language={deskLanguage} />
@@ -441,6 +471,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
                 <label className="inline-select"><span className="sr-only">Recap language</span><select value={recapLanguage} onChange={(event) => setRecapLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}</select></label>
               )}
             />
+            <PostMatchStorylines matchId={status?.matchId} language={recapLanguage} variant="studio" aiReady={Boolean(health?.ai.configured)} />
             <Panel eyebrow="Storyboard" title="Match chapters">
               <Storyboard storyboard={storyboard} fixture={fixture} storylines={storylines} language={recapLanguage} />
             </Panel>

@@ -1,4 +1,5 @@
 // Server-internal module contracts. Each module owner implements its side; app.ts wires them.
+import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type { AnalysisRequest, FixtureSummary, MatchEvent, MatchFixture, MatchSnapshot } from "../shared/types.js";
 import type {
   ArchiveSnapshot,
@@ -71,6 +72,8 @@ export interface LiveService {
 
 // ---- desk (owner: desk) ------------------------------------------------------------
 export interface StorylineDesk extends LiveListener {
+  /** Optional so test doubles stay valid. Links insight revisions to storylines. */
+  applyChanceInsight?(insight: ChanceInsight): void;
   list(matchId: string): Storyline[];
   facts(matchId: string): VerifiedFact[];
   review(id: string, request: ReviewStorylineRequest): Promise<Storyline>;

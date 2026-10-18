@@ -2,6 +2,7 @@ import express from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 
+import type { ChanceInsight } from "../../shared/chanceSequence.js";
 import type { LiveMessage, LiveStreamQuery, StartLiveRequest, Storyline, VerifiedFact } from "../../shared/platform.js";
 import type { AnalysisRequest, MatchFixture, MatchSnapshot } from "../../shared/types.js";
 import type { AnalyzeFixture, LiveMatchView, LiveService, StorylineDesk } from "../contracts.js";
@@ -9,10 +10,17 @@ import { isPublicStoryline } from "../agentAccess.js";
 import { type TickSource } from "../live/service.js";
 import { HttpError, assertKnownFavoritePlayer, isHttpError } from "../validation.js";
 
+type ChanceInsightFeed = {
+  list(matchId: string): ChanceInsight[];
+  subscribe(listener: (insight: ChanceInsight) => void): () => void;
+};
+
 type CreateLiveRouterOptions = {
   live: LiveService;
   desk: StorylineDesk;
   analyzeFixture: AnalyzeFixture;
+  /** Optional so existing test routers keep working. Fan and studio both receive issued, revised and withdrawn insights. */
+  insights?: ChanceInsightFeed;
   maxStreams?: number;
 };
 
@@ -97,19 +105,27 @@ export function projectFanStoryline(storyline: Storyline): Storyline {
     ...(storyline.review ? { review: { decision: storyline.review.decision, at: storyline.review.at } } : {}),
     ...(storyline.approvedAt ? { approvedAt: storyline.approvedAt } : {}),
     ...(storyline.retractionReason ? { retractionReason: storyline.retractionReason } : {}),
+    ...(storyline.insightId ? { insightId: storyline.insightId } : {}),
+    ...(storyline.insightRevision !== undefined ? { insightRevision: storyline.insightRevision } : {}),
+    ...(storyline.insightStatus ? { insightStatus: storyline.insightStatus } : {}),
+    ...(storyline.insightNote ? { insightNote: storyline.insightNote } : {}),
     version: storyline.version,
   };
 }
 
 /**
- * Fans only receive facts of approved storylines (and the retraction of a fact whose previously approved storyline
- * was retracted), so unapproved editorial facts never leak through the ticker on bootstrap, reconnect or update.
+ * Fans only receive facts of approved storylines, plus the retraction of a fact that was already published.
+ * A chance revision sends the storyline back to review instead of withdrawing it; that retraction must still
+ * reach a connected fan. Never-approved drafts stay off the ticker on bootstrap, reconnect and update.
  */
 export function fanFactAllowed(fact: VerifiedFact, storylines: Storyline[]): boolean {
   if (!fact.storylineId) return false;
   const storyline = storylines.find((item) => item.id === fact.storylineId);
   if (!storyline) return false;
-  return storyline.status === "approved" || (storyline.status === "retracted" && Boolean(storyline.approvedAt) && fact.retracted === true);
+  if (storyline.status === "approved") return true;
+  return fact.retracted === true
+    && Boolean(storyline.approvedAt)
+    && (storyline.status === "retracted" || storyline.status === "needs_review");
 }
 
 function writeMessage(response: express.Response, message: LiveMessage): boolean {
@@ -156,6 +172,16 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
 
   router.get("/api/live/status", (_request, response) => {
     response.json(options.live.status());
+  });
+
+  router.get("/api/live/insights", (request, response, next) => {
+    try {
+      parseStrict(z.object({ role: z.enum(["fan", "studio"]).optional() }).strict(), request.query);
+      const current = safeCurrent(options.live);
+      response.json(current && options.insights ? options.insights.list(current.matchId) : []);
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/api/live/fixture", (_request, response) => {
@@ -220,6 +246,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
       let snapshotTimer: NodeJS.Timeout | undefined;
       let unsubscribeLive = () => {};
       let unsubscribeDesk = () => {};
+      let unsubscribeInsights = () => {};
       let unsubscribeTick = () => {};
       let streamState: StreamState | undefined;
       const heartbeat = setInterval(() => {
@@ -289,6 +316,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
         unsubscribeLive();
         unsubscribeTick?.();
         unsubscribeDesk();
+        unsubscribeInsights();
         if (streamState) {
           streams.delete(streamState);
         }
@@ -324,6 +352,14 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
 
       unsubscribeTick = tickSource(options.live)?.subscribeTicks(() => {
         queueSnapshot();
+      }) ?? (() => {});
+
+      unsubscribeInsights = options.insights?.subscribe((insight) => {
+        const matchId = options.live.status().matchId;
+        if (closed || !matchId || insight.matchId !== matchId) {
+          return;
+        }
+        blocked = !writeMessage(response, { type: "insight", insight }) || blocked;
       }) ?? (() => {});
 
       unsubscribeDesk = options.desk.subscribe((update) => {
@@ -375,6 +411,9 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
           if (query.role === "studio" || fanFactAllowed(fact, storylines)) {
             blocked = !writeMessage(response, { type: "fact", fact }) || blocked;
           }
+        }
+        for (const insight of options.insights?.list(current.matchId) ?? []) {
+          blocked = !writeMessage(response, { type: "insight", insight }) || blocked;
         }
       }
     } catch (error) {
