@@ -133,6 +133,17 @@ with live health.
 * **My match**: your club's and player's moments first, while every goal, ruled-out goal and red
   card for both sides is always shown. A favourite club only reorders and marks insights; it never
   changes statistics or facts.
+* **Press box** (side rail beside *My match*): a wall of *synthetic* posts from six **fictional**
+  journalists, labelled "Synthetic posts · fictional journalists" with a "Synthetic" tag on every
+  card so a saved screenshot stays labelled. No real names, handles or logos, and no links. Text is
+  built only from the fixture's team and player names. Posts: kickoff, half-time and full-time with the
+  score, every goal (with game-state wording and own goals), red cards (straight or second yellow),
+  big chances (xG >= 0.30; "golden" from 0.50), big saves (merged with the shot), yellows only for a
+  second yellow or from 80', substitutions from 60' (grouped), a dominant spell and a quick double.
+  A ruled-out goal keeps its post (struck through) and gets a quoted correction from the same
+  persona. Newest first, at most 12; counts and wording are seeded from the fixture, so they are
+  reproducible. With a favourite club, an *All / My team* filter appears. New posts are announced
+  politely, one at a time. Engine: ``shared/pressBox.ts``.
 * **Why it matters**: the engine's persona-aware insight cards with observed/inferred labels.
   Casual shows plain language and key counts; analyst adds full stats, metrics, windows and the
   evidence events.

@@ -28,6 +28,7 @@ import {
 import { api } from "./api.js";
 import { FactTicker, LiveStats, Panel, Pitch } from "./components.js";
 import { HighlightReelPanel } from "./HighlightReel.js";
+import { PressBoxSection } from "./fan/PressBoxSection.js";
 import { useLiveStream, type LiveStreamState } from "./hooks/useLiveStream.js";
 import type { ActiveMatchContext } from "./liveContext.js";
 import { PeriodSelector, periodScopeMessage, scopedTitle } from "./PeriodSelector.js";
@@ -304,7 +305,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         </Panel>
       )}
 
-      <div className="fan-grid">
+      <div className="fan-grid fan-grid--press">
         <div className="desk-col">
           <Panel eyebrow={scopedTitle("My match", period)} title={focus.playerId || focus.teamId ? "Your moments first" : "Key moments"}>
             <FanFeed fixture={fixture} focus={focus} period={period} players={players} />
@@ -367,6 +368,8 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
             )}
           </Panel>
         </div>
+
+        <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
       </div>
 
       <HighlightReelPanel key={`${fixture.id}-${prefs.language}`} fixture={fixture} storylines={approved} uptoSecond={uptoSecond} theme={theme} footage={context.footage}

@@ -649,6 +649,11 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .fan-prefs__period { grid-column: span 2; }
 .fan-header .broadcast-bar__team.is-favorite { color: var(--cp-accent-text); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .fan-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.fan-grid--press { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(280px, 360px); }
+@media (max-width: 1280px) {
+  .fan-grid--press { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .fan-grid--press > .press-box { grid-column: 1 / -1; }
+}
 .fan-alerts { display: grid; gap: 8px; }
 .fan-alert { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .fan-alert .link-button { margin-left: auto; }
@@ -671,6 +676,7 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 }
 @media (max-width: 900px) {
   .fan-grid { grid-template-columns: 1fr; }
+  .fan-grid--press { grid-template-columns: 1fr; }
   .fan-prefs__row { grid-template-columns: 1fr; }
   .fan-prefs__period { grid-column: auto; }
 }
@@ -685,3 +691,32 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .player-id-tag > span:not(.player-id-tag__minute), .player-id-tag > small { grid-column: 2; }
 .player-id-tag__minute { color: var(--cp-text-soft); font-size: 12px; grid-row: span 3; }
 .pa-tracking__source { margin-left: 8px; vertical-align: middle; font-size: 11px; }
+
+/* press box: synthetic posts from fictional journalists */
+.press-box { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.press-box__head { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; justify-content: space-between; }
+.press-box__head .eyebrow, .press-box__label { margin: 0; }
+.press-box__label { font-size: 13px; color: var(--cp-text-muted); }
+.press-box__filter { display: inline-flex; gap: 4px; }
+.press-box__chip { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--cp-border-strong); background: transparent; color: var(--cp-text); cursor: pointer; }
+.press-box__chip[aria-pressed="true"] { background: var(--cp-accent); border-color: var(--cp-accent); color: var(--cp-accent-fg); }
+.press-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.press-card { --pc-bg: #fbfaf7; --pc-ink: #111114; --pc-muted: #52525b; --pc-line: rgba(17, 17, 20, 0.14); display: grid; gap: 6px; min-width: 0; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--pc-line); background: var(--pc-bg); color: var(--pc-ink); box-shadow: var(--shadow-card); }
+.press-card.is-ruled-out .press-card__text { text-decoration: line-through; text-decoration-color: var(--cp-danger); }
+.press-card__head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.press-card__avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: #3f3f46; color: #fff; font-size: 13px; font-weight: 700; }
+.press-card__who { display: grid; min-width: 0; }
+.press-card__name { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.press-card__badge { color: #1d4ed8; flex: none; }
+.press-card__meta, .press-card__outlet { font-size: 12px; color: var(--pc-muted); overflow-wrap: anywhere; margin: 0; }
+.press-card__synthetic { align-self: start; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 6px; border-radius: var(--radius-small); border: 1px dashed var(--pc-muted); color: var(--pc-muted); }
+.press-card__text { margin: 0; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.press-card__flag { margin: 0; font-size: 12px; font-weight: 700; color: #b91c1c; }
+.press-card__quote { display: grid; gap: 2px; margin: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--pc-line); font-size: 13px; color: var(--pc-muted); }
+.press-card__quote-who { font-weight: 600; font-size: 12px; }
+.press-card__stats { list-style: none; margin: 0; padding: 0; display: flex; gap: 18px; font-size: 12px; color: var(--pc-muted); }
+.press-card__stats li { display: inline-flex; align-items: center; gap: 4px; }
+@media (prefers-reduced-motion: no-preference) {
+  .press-card.is-new { animation: press-in 240ms ease-out; }
+  @keyframes press-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+}
