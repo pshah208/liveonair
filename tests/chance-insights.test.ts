@@ -261,6 +261,23 @@ test("title-case headlines allow listed football words and reject invented names
   assert.match(guardDraftText("May Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: May/u);
 });
 
+test("production storyline headlines pass and sentence case is strict mid-clause", () => {
+  const claims = ["Leo Arden scored for Rivergate FC in the 50th minute to level the match."];
+  const names = new Set(["Leo Arden", "Rivergate FC", "Northbridge"]);
+  assert.equal(guardDraftText("Leo Arden Levels Score for Rivergate FC", claims, names), undefined);
+  assert.equal(guardDraftText("Narrow Lead for Rivergate FC at the Break", claims, names), undefined);
+  assert.equal(guardDraftText("Leo Arden Scores Like His Father", claims, names), undefined);
+  assert.equal(guardDraftText("Echoing an Old Rivalry, Arden Levels It", claims, names), undefined);
+  assert.equal(guardDraftText("Leo Arden levels the score for Rivergate FC", claims, names), undefined);
+  assert.equal(guardDraftText("Narrow lead for Rivergate FC at the break", claims, names), undefined);
+  assert.match(guardDraftText("Leo Arden levels after Hope crossed", claims, names) ?? "", /Unsupported proper name: Hope/u);
+  assert.match(guardDraftText("Rivergate FC level through Narrow", claims, names) ?? "", /Unsupported proper name: Narrow/u);
+  assert.match(guardDraftText("Young scores for Rivergate FC", claims, names) ?? "", /Unsupported proper name: Young/u);
+  assert.match(guardDraftText("Arden Levels Young Scores", claims, names) ?? "", /Unsupported proper name: Young/u);
+  assert.match(guardDraftText("Brace Levels for Rivergate FC", claims, names) ?? "", /Unsupported proper name: Brace/u);
+  assert.match(guardDraftText("Late Winner Scores for Northbridge", ["Fiske scored for Northbridge."], names) ?? "", /Unsupported proper name: Winner/u);
+});
+
 test("verifier accepts a computed chance claim and rejects a mismatched number", () => {
   const shot = event({ id: "shot-1", minute: 8, second: 5, type: "shot", teamId: "home", playerId: "home-p9", outcome: "saved", x: 84, y: 40 });
   const events = [

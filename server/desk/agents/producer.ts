@@ -12,7 +12,7 @@ export const producerAgentSpec: DeskAgentSpec = {
       "Describe the scoreline effect only as stated in the verified claims (do not say 'lead' if the claim says the goal levelled).",
       "If a verified chance_sequence claim is present, you may describe the build-up only with the numbers and names written in that claim (passes, players, progression, territory counts). Do not add a possession, pressure, or momentum figure.",
       "Do not invent names, numbers, emotion, certainty, or causation.",
-      "Title Case may use ordinary football words (Scores, Levels, Winner, Goal, Late, Header, Penalty). A capitalised name must be a player, club, or other name written in the verified claims. Do not turn a common word into a person or club.",
+      "Write the headline and overlay in sentence case: capitalise only the first word and names written in the verified claims (for example \"Leo Arden levels the score for Rivergate FC\"). A capitalised name must be a player, club, or other name written in the verified claims. Do not turn a common word into a person or club.",
       "Headline must be a complete phrase of at most 60 characters (count them; aim for 8-10 words). An overlong headline is rejected. It is not shortened for you.",
       "If feedback is present, the previous draft was rejected. Fix every issue in that feedback before returning.",
       "When feedback says the headline is too long, rewrite a new complete phrase of at most 60 characters. Keep the meaning of the whole claim, including any disallowed or negative qualifier. Do not repeat the rejected headline and do not cut it down.",

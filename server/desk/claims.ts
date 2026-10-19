@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 
 import { z } from "zod";
 
@@ -1006,13 +1007,13 @@ const HEADLINE_FORMS = new Set([
 
 /** Nouns that may sit immediately before a headline verb ("Goal Wins", "Header Levels"). Not names. */
 const HEADLINE_SUBJECT_NOUNS = new Set([
-  "goal", "goals", "winner", "winners",
+  "goal", "goals",
   "header", "headers", "penalty", "penalties",
   "equaliser", "equalisers", "equalizer", "equalizers",
   "leveller", "levellers", "leveler", "levelers",
   "shot", "shots", "strike", "strikes", "save", "saves",
   "volley", "volleys", "comeback", "comebacks",
-  "opener", "clincher", "brace", "treble",
+  "opener", "clincher", "treble",
 ]);
 
 /** Player or team actions. The word before one of these is a name slot, not a vocabulary slot. */
@@ -1061,6 +1062,20 @@ function isTitleCaseWord(raw: string): boolean {
   return TITLE_CASE_WORD.test(raw);
 }
 
+let englishWords: Set<string> | undefined;
+
+/** Ordinary English words (MIT word list). Never authorises a name slot, and excludes surname-like words. */
+function isDictionaryWord(lower: string): boolean {
+  if (NAME_LIKE_WORDS.has(lower)) return false;
+  englishWords ??= new Set(createRequire(import.meta.url)("an-array-of-english-words") as string[]);
+  return englishWords.has(lower);
+}
+
+/** Sentence case: the text has a lowercase content word mid-clause, so Title Case tolerance does not apply. */
+function isSentenceCase(words: DraftWord[]): boolean {
+  return words.some((word) => !word.clauseStart && /^[a-z]/u.test(word.raw) && !GRAMMAR_WORDS.has(word.lower));
+}
+
 /**
  * Name slot: subject before Scores/Levels/Wins/Equalises/Strikes/Nets, object of
  * for/by/against/from/v/vs, or a non-vocabulary token beside another capitalised name.
@@ -1074,25 +1089,33 @@ function nameSlot(words: DraftWord[], index: number): "preposition" | "subject" 
   if (previous && NAME_PREPOSITIONS.has(previous.lower)) return "preposition";
   if (next && NAME_VERBS.has(next.lower)) return "subject";
   const nonVocabName = (candidate: DraftWord | undefined) =>
-    candidate !== undefined && isTitleCaseWord(candidate.raw) && !isSafeHeadlineWord(candidate.lower);
-  if (!isSafeHeadlineWord(word.lower) && (nonVocabName(previous) || nonVocabName(next))) return "cluster";
+    candidate !== undefined && isTitleCaseWord(candidate.raw) && !isSafeHeadlineWord(candidate.lower) && !isDictionaryWord(candidate.lower);
+  if (!isSafeHeadlineWord(word.lower) && ((!word.clauseStart && nonVocabName(previous)) || (next !== undefined && !next.clauseStart && nonVocabName(next)))) return "cluster";
   return undefined;
 }
 
 /**
  * A capitalised token must be a known name or an exact claim token.
  * Stemming is not used: "hoped" does not authorise "Hope", and "stoned" does not authorise "Stone".
- * A closed headline list may authorise Title Case verbs and nouns, but not a token in a name slot.
+ * Vocabulary and ordinary English words may be capitalised outside a name slot (Title Case, clause starts);
+ * in sentence-case text a mid-clause capital must be a name, a claim token or closed headline vocabulary.
  */
 function unsupportedTitleCaseName(text: string, claimTexts: string[], knownNames: Set<string>): string | undefined {
   const claimWords = exactWordSet(claimTexts);
   const knownWords = exactWordSet(knownNames);
   const words = wordsOf(text);
+  const sentenceCase = isSentenceCase(words);
+  const isKnown = (word: DraftWord | undefined) => word !== undefined && (claimWords.has(word.lower) || knownWords.has(word.lower));
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
     if (!isTitleCaseWord(word.raw)) continue;
-    const knownEntity = claimWords.has(word.lower) || knownWords.has(word.lower);
-    const slot = nameSlot(words, index);
+    const knownEntity = isKnown(word);
+    const previous = words[index - 1];
+    let slot = nameSlot(words, index);
+    // "Arden Levels Score": a verb straight after a known name is the predicate, not a new subject.
+    if (slot === "subject" && !word.clauseStart && HEADLINE_FORMS.has(word.lower) && previous && isTitleCaseWord(previous.raw) && isKnown(previous)) {
+      slot = undefined;
+    }
     if (slot === "preposition" || slot === "cluster") {
       if (slot === "preposition" && GRAMMAR_WORDS.has(word.lower)) continue;
       if (!knownEntity) return `Unsupported proper name: ${word.raw}`;
@@ -1100,13 +1123,13 @@ function unsupportedTitleCaseName(text: string, claimTexts: string[], knownNames
     }
     if (slot === "subject") {
       // A bare noun opening a clause before a scoring verb reads as a name ("Brace Scores"); require a modifier ("Late Goal Wins").
-      const previous = words[index - 1];
       const modified = previous !== undefined && !word.clauseStart && !GRAMMAR_WORDS.has(previous.lower) && !NAME_VERBS.has(previous.lower)
-        && (isSafeHeadlineWord(previous.lower) || claimWords.has(previous.lower) || knownWords.has(previous.lower));
+        && (isSafeHeadlineWord(previous.lower) || isKnown(previous));
       if (knownEntity || GRAMMAR_WORDS.has(word.lower) || (modified && HEADLINE_SUBJECT_NOUNS.has(word.lower) && !NAME_LIKE_WORDS.has(word.lower))) continue;
       return `Unsupported proper name: ${word.raw}`;
     }
     if (knownEntity || isSafeHeadlineWord(word.lower)) continue;
+    if ((word.clauseStart || !sentenceCase) && isDictionaryWord(word.lower)) continue;
     return `Unsupported proper name: ${word.raw}`;
   }
   return undefined;
