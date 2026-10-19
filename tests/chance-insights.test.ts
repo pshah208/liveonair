@@ -276,6 +276,8 @@ test("production storyline headlines pass and sentence case is strict mid-clause
   assert.match(guardDraftText("Arden Levels Young Scores", claims, names) ?? "", /Unsupported proper name: Young/u);
   assert.match(guardDraftText("Brace Levels for Rivergate FC", claims, names) ?? "", /Unsupported proper name: Brace/u);
   assert.match(guardDraftText("Late Winner Scores for Northbridge", ["Fiske scored for Northbridge."], names) ?? "", /Unsupported proper name: Winner/u);
+  assert.equal(guardDraftText("Nico Hale scores his 49th in the 17th minute", ["17' Nico Hale scored.", "Nico Hale now has 49 documented career goals."], new Set(["Nico Hale"])), undefined);
+  assert.match(guardDraftText("Nico Hale scores his 50th", ["Nico Hale now has 49 documented career goals."], new Set(["Nico Hale"])) ?? "", /Unsupported number token: 50th/u);
 });
 
 test("verifier accepts a computed chance claim and rejects a mismatched number", () => {

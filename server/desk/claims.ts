@@ -1138,7 +1138,9 @@ function unsupportedTitleCaseName(text: string, claimTexts: string[], knownNames
 export function guardDraftText(text: string, claimTexts: string[], knownNames: Set<string>): string | undefined {
   const allowedNumbers = new Set(claimTexts.flatMap(completeNumericTokens));
   for (const token of completeNumericTokens(text)) {
-    if (!allowedNumbers.has(token)) {
+    // "17th minute" / "49th goal" restate a claimed 17' or 49; the reverse (72nd -> 72) stays strict.
+    const ordinalBase = /^(\d+)(?:st|nd|rd|th)$/u.exec(token)?.[1];
+    if (!allowedNumbers.has(token) && !(ordinalBase && allowedNumbers.has(ordinalBase))) {
       return `Unsupported number token: ${token}`;
     }
   }
