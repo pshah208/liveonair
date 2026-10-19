@@ -30,8 +30,8 @@ The app has three desks, switched at the top of the page:
 
 * **Studio Desk**: the producer studio described below, with four tabs (Live desk, Recap and
   highlights, Video lab, Player cam).
-* **Fan View**: a read-only, personalised audience view of the same live match. See **Fan View**
-  below.
+* **Fan View**: a read-only, personalised audience view of the same live match, with the same
+  **Live board** (pitch and live stats) as the Studio Desk. See **Fan View** below.
 * **VAR Desk** (next phase): a design preview of an assistant for VAR reviews. See `VAR Desk
   (next phase)`_.
 
@@ -139,7 +139,12 @@ with live health.
   *View as* persona toggle and **Follow one player** mode were removed, and any stored
   ``persona`` / ``followPlayer`` keys are ignored. A saved favourite who is not in this match is
   shown as "not in this match"; no one is substituted.
-* **Player card** (headline card, top of the page): a shareable ranking card for your favourite
+* **Live board** (top left): the same board as the Studio Desk (shared ``LiveBoardPanel``): the
+  animated pitch, period selector and live stats for the match, scoped to your Fan View period.
+  The **Player card** sits directly below it. On the right, **Social Media Posts** come first, then the
+  Big moment and Player of the match cards. On narrow screens the order is Live board, Social Media
+  Posts, Player card, then the rest.
+* **Player card** (below the Live board): a shareable ranking card for your favourite
   player. Each row shows stat, a ranking pill (1st, T-2nd for a joint rank, in EN/ES/FR/PT) and the
   value. Ranks are competition ranks (1, 2, 2, 4) among the players with at least one logged
   action in the match ("among the N players in this match"). Rows follow the player's position
@@ -153,9 +158,6 @@ with live health.
   offers the top three by impact to pick from; if your player isn't playing it shows a labelled
   *Spotlight instead* card. **Save as picture** draws the card to a canvas and shares or downloads
   ``playercard_<playerId>_<matchId>_<minute>.png``.
-* **Match in numbers**: two-team head-to-head bars for goals, shots, shots on target, passes
-  completed, team pass accuracy, corners, fouls and cards. Empty rows show "—"; equal rows say
-  "Level". No possession figure (the feed cannot measure it).
 * **Big moment**: one producer-approved, non-retracted story: goals first, then red cards, then the
   latest, with a mini-map of the linked event. If the shown story is later withdrawn the card says
   "This moment was updated".
@@ -170,17 +172,23 @@ with live health.
 * **My match** (key moments): your club's and player's moments first, while every goal, ruled-out
   goal and red card for both sides is always shown. A favourite club only reorders and marks
   moments; it never changes statistics or facts.
-* **Press box** (side rail beside *My match*): a wall of *synthetic* posts from six **fictional**
-  journalists, labelled "Synthetic posts · fictional journalists" with a "Synthetic" tag on every
-  card so a saved screenshot stays labelled. No real names, handles or logos, and no links. Text is
-  built only from the fixture's team and player names. Posts: kickoff, half-time and full-time with the
-  score, every goal (with game-state wording and own goals), red cards (straight or second yellow),
-  big chances (xG >= 0.30; "golden" from 0.50), big saves (merged with the shot), yellows only for a
-  second yellow or from 80', substitutions from 60' (grouped), a dominant spell and a quick double.
-  A ruled-out goal keeps its post (struck through) and gets a quoted correction from the same
-  persona. Newest first, at most 12; counts and wording are seeded from the fixture, so they are
-  reproducible. With a favourite club, an *All / My team* filter appears. New posts are announced
-  politely, one at a time. Engine: ``shared/pressBox.ts``.
+* **Social Media Posts** (top right, beside the Live board): a stream of *synthetic* posts from 14
+  **fictional** accounts (fan creators, stats, rival fans, pundit-style, memes, local news,
+  fanzines; invented handles, some "verified"). Labelled "Synthetic posts · fictional accounts" (a
+  "Synthetic" chip with that tooltip) so a saved screenshot stays labelled. No real names, handles
+  or logos, and no links. The stream follows the match clock: pre-match chatter and team news are
+  there at kickoff, then the match unfolds with kickoff, half-time and full-time, every goal (with
+  game-state wording and own goals), red cards, big chances (xG >= 0.30; "golden" from 0.50), big
+  saves, yellows only for a second yellow or from 80', substitutions from 60' (grouped), dominant
+  spells and quick doubles, plus reactions 20-90 s after goals, cards and big chances, rival-fan
+  banter, hot takes, stat nuggets and form notes. Stats use only events up to the post's own
+  second; xG is always labelled "illustrative". A ruled-out goal keeps its post (struck through) and
+  gets a quoted correction from the same account once the correction is published. Each post shows
+  replies, reposts, likes and views, seeded from the fixture and scaled by account reach and event
+  weight, so they are reproducible. **Top** orders the posts already visible by popularity (never
+  future ones); **Latest** is newest first. At most 20 posts in a scrollable list. With a favourite
+  club, an *All / My team* filter appears. New posts slide in (not with reduced-motion) and are
+  announced politely, one at a time. Engine: ``shared/pressBox.ts``.
 * **Approved stories** (localised, with English fallback flagged), **What changed since you last
   looked** (new goals, cards, corrections and approved stories since you left the view), in-app
   favourite-player alerts (deduplicated; no push notifications) and **My match summary** (an *AI

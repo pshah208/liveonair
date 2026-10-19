@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ballRoute, buildBallPath, placeEvent, type BallPoint, type BallSegment } from "../shared/ballPath.js";
 import { difficultyBand, metricOptions, passDifficulty, shotSpeedKmh } from "../shared/metrics.js";
 import { latestRevisions } from "../shared/highlights.js";
@@ -71,6 +71,10 @@ function segmentStyle(segment: BallSegment, age: number, difficulty?: number) {
 const DIFFICULTY_COLOUR = { easy: "var(--cp-success)", medium: "var(--cp-warning)", hard: "var(--cp-danger)" } as const;
 
 export function Pitch({ fixture, events, highlightIds }: PitchProps) {
+  // Studio and Fan can both mount a Pitch, so SVG ids are namespaced per instance. useId yields colons, which break url(#...).
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const arrowId = (key: string) => `ball-arrow-${uid}-${key}`;
+  const glowId = `ball-glow-${uid}`;
   const [mode, setMode] = useState<Mode>("ball");
   const shown = useMemo(() => {
     if (highlightIds && highlightIds.length > 0) {
@@ -143,16 +147,16 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
       <svg viewBox="0 0 100 68" className="pitch" role="img" aria-label={`${fixture.title} ${mode === "ball" ? "ball movement" : "action areas"}`}>
         <defs>
           {(["home", "away"] as const).map((team) => (
-            <marker key={team} id={`ball-arrow-${team}`} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
+            <marker key={team} id={arrowId(team)} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
               <path d="M0 0 6 3 0 6z" fill={teamTint(team)} />
             </marker>
           ))}
           {(["easy", "medium", "hard"] as const).map((band) => (
-            <marker key={band} id={`ball-arrow-${band}`} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
+            <marker key={band} id={arrowId(band)} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
               <path d="M0 0 6 3 0 6z" fill={DIFFICULTY_COLOUR[band]} />
             </marker>
           ))}
-          <radialGradient id="ball-glow">
+          <radialGradient id={glowId}>
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.55" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
@@ -173,7 +177,7 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
             {path.segments.map((segment, index) => {
               const difficulty = segment.kind === "pass" && !segment.inferred ? metrics.difficulty.get(segment.eventId) : undefined;
               const style = segmentStyle(segment, (index + 1) / path.segments.length, difficulty);
-              const arrow = segment.inferred ? undefined : difficulty !== undefined ? `url(#ball-arrow-${difficultyBand(difficulty)})` : `url(#ball-arrow-${segment.teamId})`;
+              const arrow = segment.inferred ? undefined : difficulty !== undefined ? `url(#${arrowId(difficultyBand(difficulty))})` : `url(#${arrowId(segment.teamId)})`;
               return (
                 <line key={`${segment.eventId}-${segment.kind}-${index}`} x1={segment.from.x} y1={toY(segment.from.y)} x2={segment.to.x} y2={toY(segment.to.y)}
                   stroke={style.stroke} strokeWidth={style.width} strokeDasharray={style.dash} strokeLinecap="round" opacity={style.opacity} markerEnd={arrow}>
@@ -202,7 +206,7 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
             )}
             {ball && (
               <g className="pitch-ball" transform={`translate(${ball.x} ${toY(ball.y)})`}>
-                <circle r="3" fill="url(#ball-glow)" />
+                <circle r="3" fill={`url(#${glowId})`} />
                 <circle r="1.15" fill="#ffffff" stroke="#111114" strokeWidth="0.35" />
                 <path d="M-0.45 -0.2 0 -0.55 0.45 -0.2 0.28 0.38 -0.28 0.38z" fill="#111114" />
               </g>

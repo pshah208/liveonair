@@ -4,12 +4,13 @@ import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type { ArchiveSummary, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline, VerifiedFact } from "../shared/platform.js";
 import { PERIOD_LABEL, periodBoundary } from "../shared/periods.js";
 import { api } from "./api.js";
-import { BroadcastBar, EventFeed, FactTicker, LiveStats, MatchIntelligence, OverlayPreview, Panel, Pitch, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
+import { BroadcastBar, EventFeed, FactTicker, MatchIntelligence, OverlayPreview, Panel, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
 import { HighlightReelPanel } from "./HighlightReel.js";
 import { PostMatchStorylines } from "./PostMatchStorylines.js";
 import { useLiveStream } from "./hooks/useLiveStream.js";
 import { InfrastructurePanel, type DeskHealth } from "./InfrastructurePanel.js";
-import { PeriodSelector, periodScopeMessage, scopedTitle } from "./PeriodSelector.js";
+import { LiveBoardPanel } from "./LiveBoardPanel.js";
+import { periodScopeMessage, scopedTitle } from "./PeriodSelector.js";
 import { VideoLab, type VideoFootage } from "./VideoLab.js";
 import type { ActiveMatchContext } from "./liveContext.js";
 import { LabHighlightReel, type LabHighlights } from "./LabHighlightReel.js";
@@ -398,24 +399,8 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
           </div>
 
           <div className="desk-col">
-            <Panel eyebrow={scopedTitle("Live board", period)} title={fixture?.title ?? "No match running"} aside={selectedInsight && <button type="button" className="link-button" onClick={() => setSelectedInsightId(null)}>Clear evidence</button>}>
-              {fixture ? (
-                <>
-                  <PeriodSelector value={period} onChange={setPeriod} halvesUnavailable={halvesUnavailable} className="period-toggle" />
-                  {halvesUnavailable && <p className="subtle-text">Halves are unavailable for this match: clip-derived footage has no reliable half-time marker.</p>}
-                  {scopeMessage ? (
-                    <div className="empty-state" role="status"><strong>{scopedSnapshot?.scope?.reason === "not_started" ? "Not started" : "Period unavailable"}</strong> · {scopeMessage}</div>
-                  ) : (
-                    <>
-                      <Pitch fixture={fixture} events={scopedSnapshot?.recentEvents ?? (period === "full" ? fixture.events : [])} highlightIds={selectedInsight?.evidenceIds} />
-                      {period !== "full" && scopedSnapshot?.periodScore && <p className="subtle-text">Goals in the {PERIOD_LABEL[period]}: {fixture.home.shortName} {scopedSnapshot.periodScore.home}–{scopedSnapshot.periodScore.away} {fixture.away.shortName} · match score {score.home}–{score.away}</p>}
-                      <span className="eyebrow">{scopedTitle("Live stats", period)}</span>
-                      <LiveStats snapshot={scopedSnapshot} fixture={fixture} />
-                    </>
-                  )}
-                </>
-              ) : <div className="empty-state">The pitch, live stats and story cards appear once a match starts.</div>}
-            </Panel>
+            <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={setPeriod} halvesUnavailable={halvesUnavailable} score={score} highlightIds={selectedInsight?.evidenceIds}
+              aside={selectedInsight && <button type="button" className="link-button" onClick={() => setSelectedInsightId(null)}>Clear evidence</button>} />
             <Panel eyebrow={scopedTitle("Deterministic engine", period)} title={scopedTitle("Match intelligence", period)} aside={scopedSnapshot?.scope?.available !== false && scopedSnapshot && <span className="tag">{Math.round(scopedSnapshot.evidenceCoverage)}% evidence coverage</span>}>
               {scopeMessage ? <div className="empty-state">{scopeMessage}</div> : <MatchIntelligence stories={scopedSnapshot?.stories ?? []} selectedId={selectedInsightId} onSelect={setSelectedInsightId} />}
             </Panel>

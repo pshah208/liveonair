@@ -314,66 +314,6 @@ export function shirtStyle(teamId: TeamId, fill: string = TEAM_KIT[teamId]): Shi
   return { fill, number: best, outline: Math.max(light, dark) < 4.5 };
 }
 
-// ---------------------------------------------------------------- match in numbers
-
-export interface HeadToHeadRow {
-  key: string;
-  label: string;
-  home: number | null;
-  away: number | null;
-  homeDisplay: string;
-  awayDisplay: string;
-  /** Bar fill 0..1 for each side; both 0 for an empty track. */
-  homeBar: number;
-  awayBar: number;
-  leader: TeamId | "level" | "none";
-}
-
-function headToHead(key: string, label: string, home: number | null, away: number | null, format: (value: number) => string, percent = false): HeadToHeadRow {
-  const bar = (value: number | null, other: number | null): number => {
-    if (value === null || value <= 0) return 0;
-    if (percent) return Math.min(1, value / 100);
-    const top = Math.max(value, other ?? 0);
-    return top > 0 ? value / top : 0;
-  };
-  const empty = (home === null || home === 0) && (away === null || away === 0);
-  const leader: HeadToHeadRow["leader"] = home === null && away === null ? "none"
-    : empty && !percent ? "none"
-    : (home ?? -1) === (away ?? -1) ? "level"
-    : (home ?? -1) > (away ?? -1) ? "home" : "away";
-  return {
-    key, label, home, away,
-    homeDisplay: home === null || (empty && !percent) ? "—" : format(home),
-    awayDisplay: away === null || (empty && !percent) ? "—" : format(away),
-    homeBar: bar(home, away),
-    awayBar: bar(away, home),
-    leader,
-  };
-}
-
-/** Team totals as head-to-head rows. No possession (no data); no xG (shown only if a card labels it "Illustrative xG"). */
-export function buildMatchInNumbers(fixture: MatchFixture, uptoSecond = Number.POSITIVE_INFINITY): HeadToHeadRow[] {
-  const analyses = analysePlayers(fixture, uptoSecond, "full");
-  const sum = (teamId: TeamId, pick: (entry: PlayerAnalysis) => number) => analyses.filter((entry) => entry.teamId === teamId).reduce((total, entry) => total + pick(entry), 0);
-  const both = (pick: (entry: PlayerAnalysis) => number): [number, number] => [sum("home", pick), sum("away", pick)];
-  const rows: HeadToHeadRow[] = [];
-  const add = (key: string, label: string, pick: (entry: PlayerAnalysis) => number) => {
-    const [h, a] = both(pick);
-    rows.push(headToHead(key, label, h, a, int));
-  };
-  add("goals", "Goals", (e) => e.goals);
-  add("shots", "Shots", (e) => e.shots);
-  add("shotsOnTarget", "On target", (e) => e.shotsOnTarget);
-  add("passesCompleted", "Passes completed", (e) => e.passesCompleted);
-  const [hp, ap] = both((e) => e.passes);
-  const [hc, ac] = both((e) => e.passesCompleted);
-  rows.push(headToHead("passAccuracy", "Pass accuracy", hp > 0 ? Math.round((hc / hp) * 100) : null, ap > 0 ? Math.round((ac / ap) * 100) : null, (v) => `${v}%`, true));
-  add("corners", "Corners", (e) => e.crossesAndCorners);
-  add("fouls", "Fouls", (e) => e.fouls);
-  add("cards", "Cards", (e) => e.yellowCards + e.redCards);
-  return rows;
-}
-
 // ---------------------------------------------------------------- big moment
 
 export interface MiniMapPoint { x: number; y: number; endX?: number; endY?: number }

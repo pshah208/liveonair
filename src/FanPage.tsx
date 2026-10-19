@@ -29,7 +29,7 @@ import { FactTicker, Panel } from "./components.js";
 import type { ChanceInsight } from "../shared/chanceSequence.js";
 import { BigMomentCard } from "./fan/BigMoment.js";
 import { ChanceBuildUpCard } from "./fan/ChanceBuildUpCard.js";
-import { MatchInNumbers } from "./fan/MatchInNumbers.js";
+import { LiveBoardPanel } from "./LiveBoardPanel.js";
 import { PlayerCardSection } from "./fan/PlayerCardSection.js";
 import { PotmVote } from "./fan/PotmVote.js";
 import { PressBoxSection } from "./fan/PressBoxSection.js";
@@ -310,14 +310,26 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         </Panel>
       )}
 
-      <div className="fan-cards">
-        <PlayerCardSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} finished={finished} matchId={matchId!}
-          favorite={favoritePlayer} hasFavorite={Boolean(prefs.favoritePlayer)} savedName={prefs.favoritePlayer?.name} language={prefs.language}
-          onPickFavorite={(player) => updatePrefs({ favoritePlayer: favoritePlayerOf(player) })} />
-        <div className="fan-cards__side">
-          <MatchInNumbers fixture={fixture} uptoSecond={uptoSecond} />
-          <BigMomentCard fixture={fixture} storylines={storylines} language={prefs.language} />
-          <PotmVote fixture={fixture} matchId={matchId!} uptoSecond={uptoSecond} clockSecond={clockSecond} finished={finished} />
+      <div className="fan-top">
+        <div className="fan-top__col fan-top__col--left">
+          <div className="fan-top__board">
+            <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={(next) => updatePrefs({ period: next })}
+              halvesUnavailable={halvesUnavailable} score={score} title="Live board" />
+          </div>
+          <div className="fan-top__player">
+            <PlayerCardSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} finished={finished} matchId={matchId!}
+              favorite={favoritePlayer} hasFavorite={Boolean(prefs.favoritePlayer)} savedName={prefs.favoritePlayer?.name} language={prefs.language}
+              onPickFavorite={(player) => updatePrefs({ favoritePlayer: favoritePlayerOf(player) })} />
+          </div>
+        </div>
+        <div className="fan-top__col fan-top__col--right">
+          <div className="fan-top__social">
+            <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
+          </div>
+          <div className="fan-top__rest">
+            <BigMomentCard fixture={fixture} storylines={storylines} language={prefs.language} />
+            <PotmVote fixture={fixture} matchId={matchId!} uptoSecond={uptoSecond} clockSecond={clockSecond} finished={finished} />
+          </div>
         </div>
       </div>
 
@@ -329,7 +341,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         <PostMatchStorylines variant="fan" matchId={matchId} language={prefs.language} favouriteClubId={streamClubId} favouritePlayerId={favoritePlayer.player?.id} />
       </section>
 
-      <div className="fan-grid fan-grid--press">
+      <div className="fan-grid">
         <div className="desk-col">
           <Panel eyebrow={scopedTitle("My match", period)} title={focus.playerId || focus.teamId ? "Your moments first" : "Key moments"}>
             <FanFeed fixture={fixture} focus={focus} period={period} players={players} />
@@ -378,7 +390,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
             )}
           </Panel>
         </div>
-        <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
       </div>
 
       <p className="subtle-text fan-footnote">Fan View is a read-only view of the match on the Studio Desk. It only shows producer-approved stories; the agents' drafts and traces stay in the studio.</p>

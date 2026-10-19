@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildPressPosts, compactCount, PRESS_BOX_LABEL, relativeTime, type PressPost } from "../../shared/pressBox.js";
+import { buildAllPressPosts, compactCount, postTimeLabel, PRESS_BOX_LABEL, selectPressPosts, type PressOrder, type PressPost } from "../../shared/pressBox.js";
 import type { MatchFixture, TeamId } from "../../shared/types.js";
 
 interface PressBoxProps {
@@ -12,12 +12,13 @@ interface PressBoxProps {
 
 type Scope = "all" | "mine";
 
-/** Side rail of synthetic posts from fictional journalists. Always labelled; never real people or a real platform. */
+/** Social Media Posts: synthetic posts from fictional accounts, streamed with the match clock. Always labelled. */
 export function PressBoxSection({ fixture, uptoSecond, clockSecond, focusTeamId }: PressBoxProps) {
   const [scope, setScope] = useState<Scope>("all");
+  const [order, setOrder] = useState<PressOrder>("top");
   const effective: Scope = focusTeamId ? scope : "all";
-  const all = useMemo(() => buildPressPosts(fixture, uptoSecond), [fixture, uptoSecond]);
-  const posts = useMemo(() => (effective === "mine" && focusTeamId ? all.filter((post) => post.teamId === undefined || post.teamId === focusTeamId) : all), [all, effective, focusTeamId]);
+  const all = useMemo(() => buildAllPressPosts(fixture, uptoSecond), [fixture, uptoSecond]);
+  const posts = useMemo(() => selectPressPosts(fixture, uptoSecond, order, effective === "mine" ? focusTeamId : undefined), [fixture, uptoSecond, order, effective, focusTeamId]);
 
   // Announce only the newest post, never the whole list. The first render is silent.
   const seen = useRef<Set<string> | null>(null);
@@ -37,26 +38,34 @@ export function PressBoxSection({ fixture, uptoSecond, clockSecond, focusTeamId 
   }, [all]);
 
   return (
-    <section className="press-box" aria-label="Press box">
+    <section className="press-box fan-card" aria-label="Social Media Posts">
       <header className="press-box__head">
-        <div>
-          <p className="eyebrow">Press box</p>
-          <p className="press-box__label"><strong>{PRESS_BOX_LABEL}</strong></p>
+        <div className="press-box__title">
+          <p className="eyebrow">Social</p>
+          <h2 className="press-box__heading">Social Media Posts <span className="press-box__synthetic" title={PRESS_BOX_LABEL}>Synthetic</span></h2>
         </div>
-        {focusTeamId && (
-          <div className="press-box__filter" role="group" aria-label="Filter posts">
-            <button type="button" className="press-box__chip" aria-pressed={effective === "all"} onClick={() => setScope("all")}>All</button>
-            <button type="button" className="press-box__chip" aria-pressed={effective === "mine"} onClick={() => setScope("mine")}>My team</button>
+        <div className="press-box__controls">
+          <div className="press-box__filter" role="group" aria-label="Order posts">
+            <button type="button" className="press-box__chip" aria-pressed={order === "top"} onClick={() => setOrder("top")}>Top</button>
+            <button type="button" className="press-box__chip" aria-pressed={order === "latest"} onClick={() => setOrder("latest")}>Latest</button>
           </div>
-        )}
+          {focusTeamId && (
+            <div className="press-box__filter" role="group" aria-label="Filter posts">
+              <button type="button" className="press-box__chip" aria-pressed={effective === "all"} onClick={() => setScope("all")}>All</button>
+              <button type="button" className="press-box__chip" aria-pressed={effective === "mine"} onClick={() => setScope("mine")}>My team</button>
+            </div>
+          )}
+        </div>
       </header>
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
       {posts.length === 0 ? (
         <div className="empty-state">Posts appear here as the match unfolds.</div>
       ) : (
-        <ul className="press-list">
-          {posts.map((post) => <PressCard key={post.id} post={post} clockSecond={clockSecond} isNew={fresh.has(post.id)} />)}
-        </ul>
+        <div className="press-scroll" tabIndex={0} role="region" aria-label="Social media posts, scrollable">
+          <ul className="press-list">
+            {posts.map((post) => <PressCard key={post.id} post={post} clockSecond={clockSecond} isNew={fresh.has(post.id)} />)}
+          </ul>
+        </div>
       )}
     </section>
   );
@@ -68,7 +77,7 @@ function Icon({ d }: { d: string }) {
 
 function PressCard({ post, clockSecond, isNew }: { post: PressPost; clockSecond: number; isNew: boolean }) {
   const { persona } = post;
-  const age = relativeTime(post.second, clockSecond);
+  const age = postTimeLabel(post.second, clockSecond);
   return (
     <li className={`press-card${post.ruledOut ? " is-ruled-out" : ""}${isNew ? " is-new" : ""}`}>
       <div className="press-card__head">
@@ -83,11 +92,9 @@ function PressCard({ post, clockSecond, isNew }: { post: PressPost; clockSecond:
               </svg>
             )}
           </span>
-          <span className="press-card__meta">{persona.handle} · <time>{age === "now" ? "now" : age}</time> · <span className="mono">{post.minute}'</span></span>
+          <span className="press-card__meta">{persona.handle} · <time>{age}</time></span>
         </div>
-        <span className="press-card__synthetic">Synthetic</span>
       </div>
-      <p className="press-card__outlet">{persona.role}, {persona.outlet}</p>
       <p className="press-card__text">{post.text}</p>
       {post.ruledOut && <p className="press-card__flag">Ruled out</p>}
       {post.quoted && (
@@ -96,10 +103,11 @@ function PressCard({ post, clockSecond, isNew }: { post: PressPost; clockSecond:
           <span>{post.quoted.text}</span>
         </blockquote>
       )}
-      <ul className="press-card__stats" aria-label={`${post.replies} replies, ${post.reposts} reposts, ${post.likes} likes`}>
+      <ul className="press-card__stats" aria-label={`${post.replies} replies, ${post.reposts} reposts, ${post.likes} likes, ${post.views} views`}>
         <li><Icon d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" /><span aria-hidden="true">{compactCount(post.replies)}</span></li>
         <li><Icon d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3" /><span aria-hidden="true">{compactCount(post.reposts)}</span></li>
         <li><Icon d="M12 21s-8-5.3-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 5.7-8 11-8 11z" /><span aria-hidden="true">{compactCount(post.likes)}</span></li>
+        <li><Icon d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" /><span aria-hidden="true">{compactCount(post.views)}</span></li>
       </ul>
     </li>
   );

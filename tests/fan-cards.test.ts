@@ -5,7 +5,6 @@ import {
   buildChanceCard,
   chanceHeadline,
   territoryPhrase,
-  buildMatchInNumbers,
   buildPlayerCard,
   castVote,
   cardPhase,
@@ -264,29 +263,6 @@ test("headlines truncate at a word boundary", () => {
   assert.ok(out.endsWith("…"));
   assert.ok(!out.slice(0, -1).endsWith(" "));
   assert.equal(truncateHeadline("Short one"), "Short one");
-});
-
-test("match in numbers: totals, level rows, empty tracks and team pass accuracy", () => {
-  assert.ok(buildMatchInNumbers(fixture([])).every((r) => r.homeDisplay === "—" && r.homeBar === 0 && r.awayBar === 0 || r.key === "passAccuracy"));
-  const events = [
-    ...passes("home", "hcm", 6, 2),
-    ...passes("away", "ast", 3, 1),
-    ev({ type: "goal", teamId: "home", playerId: "hst", minute: 10 }),
-    ev({ type: "goal", teamId: "away", playerId: "ast", minute: 12 }),
-    ev({ type: "shot", teamId: "home", playerId: "hst", minute: 15, outcome: "miss" }),
-    ev({ type: "yellow_card", teamId: "away", playerId: "ast", minute: 20, outcome: "none" }),
-  ];
-  const rows = Object.fromEntries(buildMatchInNumbers(fixture(events)).map((r) => [r.key, r]));
-  assert.equal(rows.goals!.leader, "level");
-  assert.deepEqual([rows.shots!.home, rows.shots!.away, rows.shots!.leader], [2, 1, "home"]);
-  assert.equal(rows.passAccuracy!.home, 75);
-  assert.equal(rows.passAccuracy!.away, 75);
-  assert.equal(rows.corners!.homeDisplay, "—");
-  assert.equal(rows.corners!.leader, "none");
-  assert.deepEqual([rows.cards!.home, rows.cards!.away, rows.cards!.leader], [0, 1, "away"]);
-  assert.equal(rows.shots!.homeBar, 1);
-  assert.equal(rows.shots!.awayBar, 0.5);
-  assert.ok(!("possession" in rows) && !("xg" in rows));
 });
 
 test("shirt colours keep the number legible (>= 4.5:1) or fall back with an outline", () => {
