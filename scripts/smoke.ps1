@@ -1,6 +1,11 @@
 param(
   [Parameter(Mandatory)] [uri] $BaseUrl,
-  [switch] $IncludeAI
+  [switch] $IncludeAI,
+  # Starts a scripted live match on the target and checks the Studio storyline queue.
+  # This changes the shared live state, so it is opt-in and refuses to interrupt a running match.
+  [switch] $IncludeStorylines,
+  [ValidateRange(0.0, 1.0)] [double] $MaxStorylineFailureRatio = 0.5,
+  [ValidateRange(60, 1800)] [int] $StorylineTimeoutSeconds = 420
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,6 +71,36 @@ if ($IncludeAI) {
   Assert-True ($narrative.trace.Count -ge 3) 'Narration workflow trace is incomplete'
   Assert-True (![string]::IsNullOrWhiteSpace($narrative.script)) 'Narration has no script'
   Write-Output "Foundry recap: $($narrative.title)"
+}
+
+if ($IncludeStorylines) {
+  # Regression guard for v0.13.0-v0.14.0, when every storyline failed the producer guard and nothing reached air.
+  Assert-True ($health.ai.configured -eq $true) 'AI is not configured; the storyline desk cannot run'
+  $liveStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
+  Assert-True ($liveStatus.state -ne 'running') 'A live match is already running; refusing to interrupt it'
+  $startBody = @{ fixtureId = $fixtures[0].id; speed = 60 } | ConvertTo-Json
+  $null = Invoke-RestMethod -Uri "$base/api/live/start" -Method Post -ContentType 'application/json' -Body $startBody -TimeoutSec 30
+  $inFlight = @('researching', 'checking', 'drafting')
+  $deadline = (Get-Date).AddSeconds($StorylineTimeoutSeconds)
+  $storylines = @()
+  do {
+    Start-Sleep -Seconds 10
+    $liveStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
+    # -NoEnumerate keeps the JSON array intact; @(Invoke-RestMethod ...) would wrap it as one element.
+    $storylines = (Invoke-WebRequest -Uri "$base/api/studio/storylines" -TimeoutSec 30).Content | ConvertFrom-Json -NoEnumerate
+    $pending = @($storylines | Where-Object { $_.status -in $inFlight }).Count
+    $settled = $liveStatus.state -ne 'running' -and $storylines.Count -gt 0 -and $pending -eq 0
+  } until ($settled -or (Get-Date) -gt $deadline)
+  Assert-True $settled "Storyline queue did not settle within $StorylineTimeoutSeconds s"
+  $failed = @($storylines | Where-Object { $_.status -eq 'failed' })
+  $produced = $storylines.Count - $failed.Count
+  Write-Output "Storylines: $($storylines.Count) total, $produced drafted, $($failed.Count) failed"
+  foreach ($story in $failed) {
+    Write-Output "  failed at $($story.triggerMinute)': $($story.failureReason)"
+  }
+  Assert-True ($produced -gt 0) 'Every storyline failed; nothing can reach air'
+  Assert-True (($failed.Count / $storylines.Count) -le $MaxStorylineFailureRatio) `
+    "Storyline failure ratio $($failed.Count)/$($storylines.Count) exceeds $MaxStorylineFailureRatio"
 }
 
 Write-Output "Live on Air smoke exercise passed for $base"
