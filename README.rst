@@ -46,8 +46,9 @@ with live health.
 * Start a seeded fixtureor generate a new match (comeback, red card, set piece, late winner,
   goal fest) at up to 60x speed. Events flow through Fabric Eventstream with the measured lag
   shown in the broadcast bar.
-* Follow the scorebug, animated pitch, live stats, notable-event feed and match-intelligence
-  cards. Selecting a card highlights its evidence on the pitch.
+* Follow the scorebug, animated pitch, live stats and notable-event feed. **Chance insights**
+  sits under the live board: each shot or goal shows its inferred build-up and event-derived
+  territory as events arrive.
 * The live board has two views. **Ball movement** (default) animates the ball through the latest
   events on one pitch frame (home attacks left to right, away coordinates mirrored): solid arrows
   for passes, crosses and shots, dotted lines for the inferred route between logged events, shots

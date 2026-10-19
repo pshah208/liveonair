@@ -1,11 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ballRoute, buildBallPath, placeEvent, type BallPoint, type BallSegment } from "../shared/ballPath.js";
 import { difficultyBand, metricOptions, passDifficulty, shotSpeedKmh } from "../shared/metrics.js";
-import { latestRevisions } from "../shared/highlights.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
 import { labelize, teamTint } from "./utils.js";
 
-type PitchProps = { fixture: MatchFixture; events: MatchEvent[]; highlightIds?: string[] };
+type PitchProps = { fixture: MatchFixture; events: MatchEvent[] };
 type Mode = "ball" | "areas";
 
 const PITCH_H = 68;
@@ -70,21 +69,13 @@ function segmentStyle(segment: BallSegment, age: number, difficulty?: number) {
 
 const DIFFICULTY_COLOUR = { easy: "var(--cp-success)", medium: "var(--cp-warning)", hard: "var(--cp-danger)" } as const;
 
-export function Pitch({ fixture, events, highlightIds }: PitchProps) {
+export function Pitch({ fixture, events }: PitchProps) {
   // Studio and Fan can both mount a Pitch, so SVG ids are namespaced per instance. useId yields colons, which break url(#...).
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const arrowId = (key: string) => `ball-arrow-${uid}-${key}`;
   const glowId = `ball-glow-${uid}`;
   const [mode, setMode] = useState<Mode>("ball");
-  const shown = useMemo(() => {
-    if (highlightIds && highlightIds.length > 0) {
-      const ids = new Set(highlightIds);
-      const linked = latestRevisions(fixture.events).filter((event) => ids.has(event.id));
-      if (linked.length > 0) return linked.slice(-10);
-    }
-    return events;
-  }, [events, fixture.events, highlightIds]);
-  const evidenceMode = Boolean(highlightIds?.length) && shown !== events;
+  const shown = events;
   // Difficulty and speed come from each event's own data; pressure context is whatever the shown feed contains.
   const metrics = useMemo(() => {
     const options = metricOptions(fixture);
@@ -101,7 +92,7 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
     }
     return { difficulty, speed };
   }, [fixture, shown]);
-  const path = useMemo(() => buildBallPath(fixture, shown, { limit: evidenceMode ? 10 : 9 }), [fixture, shown, evidenceMode]);
+  const path = useMemo(() => buildBallPath(fixture, shown, { limit: 9 }), [fixture, shown]);
   const route = useMemo(() => ballRoute(path), [path]);
   const areaEvents = useMemo(() => shown.slice(-8).slice().sort((a, b) => a.minute * 60 + a.second - (b.minute * 60 + b.second)), [shown]);
   const latestTouch = path.touches[path.touches.length - 1];
@@ -116,8 +107,8 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
     const fresh = path.segments.filter((segment) => !sameMatch || segment.second > previous!.second);
     lastAnimated.current = { fixtureId: fixture.id, second: latestTouch?.second ?? -1 };
     if (!path.ball) { motion.stop(); motion.setPosition(null); return; }
-    if (!sameMatch || evidenceMode || fresh.length === 0) {
-      if (!motion.positionRef.current || !sameMatch || evidenceMode) motion.animate([path.ball]);
+    if (!sameMatch || fresh.length === 0) {
+      if (!motion.positionRef.current || !sameMatch) motion.animate([path.ball]);
       else if (motion.positionRef.current.x !== path.ball.x || motion.positionRef.current.y !== path.ball.y) motion.animate([motion.positionRef.current, path.ball]);
       return;
     }
@@ -126,7 +117,7 @@ export function Pitch({ fixture, events, highlightIds }: PitchProps) {
     points.push(path.ball);
     motion.animate(points);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, fixture.id, evidenceMode]);
+  }, [path, fixture.id]);
 
   const replay = () => motion.animate([...route, ...(path.ball ? [path.ball] : [])], HOP_MS + 80);
   const camera = path.frame === "camera";

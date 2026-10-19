@@ -45,6 +45,7 @@ import {
   guardDraftText,
   guardLocalization,
   hashStateVersion,
+  HEADLINE_COMPLETE_MAX,
   knownNamesForGuard,
   outputWordCount,
   scoreFromEvents,
@@ -192,6 +193,18 @@ function introChapter(fixture: MatchFixture, endSecond: number): RecapChapter {
 
 // Producer drafts get feedback from the deterministic guard between attempts.
 const PRODUCER_ATTEMPTS = 3;
+// Prompt asks for 60. Allow a small buffer so a slightly long complete phrase still airs.
+// Beyond this, retry with the rejected headline and its length. Never trim: a prefix can drop a qualifier and reverse the meaning.
+const HEADLINE_REJECT_OVER = 70;
+
+function isHeadlineLengthError(error: string): boolean {
+  return /^Headline is \d+ characters; rewrite it as a complete phrase of at most \d+ characters$/u.test(error);
+}
+
+function producerRetryFeedback(guardError: string, draft: ProducerDraft): string {
+  if (!isHeadlineLengthError(guardError)) return guardError;
+  return `${guardError}. Previous headline (${draft.headline.length} characters): ${draft.headline}`;
+}
 
 export class DefaultStorylineDesk implements StorylineDesk {
   private readonly archiveIndexes;
@@ -737,11 +750,12 @@ export class DefaultStorylineDesk implements StorylineDesk {
     const started = this.now();
     const { draft, guardErrors, agentError } = await this.runProducerWithGuard(workspace);
     if (!draft) {
+      const lengthExhausted = guardErrors.length > 0 && guardErrors.every(isHeadlineLengthError);
       this.updateStoryline(workspace.storylineId, (current) => {
         current.status = "failed";
         current.failureReason = agentError
           ? `Producer unavailable (${agentError.errorClass}): ${agentError.message}`
-          : `Producer output failed deterministic guard: ${guardErrors.join("; ")}`;
+          : `Producer output failed deterministic guard: ${guardErrors.join("; ")}${lengthExhausted ? " Headline was not shortened." : ""}`;
         current.trace.push(makeTrace("producer", "rejected", current.failureReason, started, this.now));
       });
       return true;
@@ -886,7 +900,7 @@ export class DefaultStorylineDesk implements StorylineDesk {
     for (let attempt = 0; attempt < PRODUCER_ATTEMPTS; attempt += 1) {
       let draft: ProducerDraft;
       try {
-        const currentFeedback = feedback;
+        const currentFeedback = feedback === undefined ? undefined : [...feedback];
         draft = await this.callAgent(workspace, "producer", () => this.runner.produce({ claims: claimTexts, feedback: currentFeedback }));
       } catch (error) {
         const errorClass = classifyError(error);
@@ -924,14 +938,14 @@ export class DefaultStorylineDesk implements StorylineDesk {
           errorClass: "guard_reject",
         });
       }
-      feedback = [...(feedback ?? []), guardError];
+      feedback = [...(feedback ?? []), producerRetryFeedback(guardError, draft)];
     }
     return { guardErrors, agentError };
   }
 
   private guardProducerDraft(draft: ProducerDraft, claimTexts: string[], knownNames: Set<string>): string | undefined {
-    if (draft.headline.length > 70) {
-      return `Headline is ${draft.headline.length} characters; rewrite it as a complete phrase of at most 60 characters`;
+    if (draft.headline.length > HEADLINE_REJECT_OVER) {
+      return `Headline is ${draft.headline.length} characters; rewrite it as a complete phrase of at most ${HEADLINE_COMPLETE_MAX} characters`;
     }
     if (draft.overlay.length > 60) {
       return `Overlay is ${draft.overlay.length} characters; rewrite it as a complete phrase of at most 50 characters`;

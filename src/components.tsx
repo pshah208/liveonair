@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Language, MatchEvent, MatchFixture, MatchSnapshot, NarrativeResponse, StoryCard, TeamStats } from "../shared/types.js";
+import type { Language, MatchEvent, MatchFixture, MatchSnapshot, NarrativeResponse, TeamStats } from "../shared/types.js";
 import type { RecapStoryboard, ReviewStorylineRequest, Storyline, StorylineHandoff, StorylineStatus, VerifiedFact } from "../shared/platform.js";
 import { latestRevisions } from "../shared/highlights.js";
 import {
@@ -9,7 +9,6 @@ import {
   factText,
   formatClaimSource,
   formatClock,
-  formatMinuteLabel,
   hasActiveSpinner,
   labelize,
   localizeText,
@@ -129,7 +128,7 @@ export function Scorebug({ home, away, score, clock }: { home: string; away: str
 
 export { Pitch } from "./LivePitch.js";
 
-// ------------------------------------------------------------------ stats + intelligence
+// ------------------------------------------------------------------ stats
 
 const STAT_ROWS: { label: string; hint?: string; get: (stats: TeamStats) => number | null | undefined; format?: (value: number) => string; bar?: boolean }[] = [
   { label: "Shots", get: (stats) => stats.shots },
@@ -175,25 +174,6 @@ export function LiveStats({ snapshot, fixture }: { snapshot: MatchSnapshot | nul
         })}
       </tbody>
     </table>
-  );
-}
-
-type MatchIntelligenceProps = { stories: StoryCard[]; selectedId: string | null; onSelect: (id: string | null) => void };
-export function MatchIntelligence({ stories, selectedId, onSelect }: MatchIntelligenceProps) {
-  if (stories.length === 0) return <div className="empty-state">Story cards appear once the feed has attacking evidence.</div>;
-  return (
-    <ul className="insight-list">
-      {stories.slice(0, 4).map((story) => (
-        <li key={story.id}>
-          <button type="button" className={`insight${selectedId === story.id ? " is-active" : ""}`} onClick={() => onSelect(selectedId === story.id ? null : story.id)} aria-pressed={selectedId === story.id}>
-            <span className="insight__meta"><span>{labelize(story.kind)}</span><span className="mono">{formatMinuteLabel(story.windowStart)}–{formatMinuteLabel(story.windowEnd)}</span></span>
-            <strong>{story.title}</strong>
-            <span className="insight__summary">{story.summary}</span>
-            <span className="insight__foot">{story.evidenceIds.length} linked events · {story.confidence === "observed" ? "observed" : "inferred"}{selectedId === story.id ? " · shown on pitch" : ""}</span>
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 

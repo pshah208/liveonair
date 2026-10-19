@@ -366,6 +366,57 @@ test("producer guard rejection is retried with feedback and recorded", async () 
   assert.ok(storyline.trace.some((step) => step.role === "producer" && step.status === "rejected"));
 });
 
+const longHeadline = "Stone Scores Late Winner to Level for Blue FC Tonight Again Now Equaliser";
+
+test("73-character headline is retried with feedback and a short rewrite recovers", async () => {
+  assert.equal(longHeadline.length, 73);
+  const recovered = "Stone scores a late winner for Blue FC tonight";
+  assert.ok(recovered.length <= 60);
+  const seen: Array<string[] | undefined> = [];
+  const { impl, calls } = runner({ produces: [{ ...goodDraft, headline: longHeadline }, { ...goodDraft, headline: recovered }] });
+  const original = impl.produce.bind(impl);
+  impl.produce = async (input) => {
+    seen.push(input.feedback);
+    return original(input);
+  };
+  const storyline = await runStoryline(impl);
+  assert.equal(calls.produce, 2);
+  assert.equal(seen[0], undefined);
+  assert.match(seen[1]?.join(" ") ?? "", /Headline is 73 characters/u);
+  assert.match(seen[1]?.join(" ") ?? "", /at most 60 characters/u);
+  assert.match(seen[1]?.join(" ") ?? "", /Previous headline \(73 characters\): Stone Scores Late Winner/u);
+  assert.equal(storyline.status, "needs_review");
+  assert.equal(storyline.headline.en, recovered);
+  assert.ok(storyline.headline.en.length <= 60);
+});
+
+test("three overlong headlines stay failed and are not trimmed", async () => {
+  const reversing = `${longHeadline} But Goal Is Disallowed`;
+  assert.ok(reversing.length > 70);
+  assert.ok(reversing.includes("Disallowed"));
+  const longDraft = { ...goodDraft, headline: reversing };
+  const seen: Array<string[] | undefined> = [];
+  const { impl, calls } = runner({ produces: [longDraft, longDraft, longDraft] });
+  const original = impl.produce.bind(impl);
+  impl.produce = async (input) => {
+    seen.push(input.feedback);
+    return original(input);
+  };
+  const storyline = await runStoryline(impl);
+  assert.equal(calls.produce, 3);
+  assert.match(seen[1]?.join(" ") ?? "", /Headline is \d+ characters/u);
+  assert.match(seen[1]?.join(" ") ?? "", /Previous headline \(\d+ characters\): /u);
+  assert.match(seen[2]?.join(" ") ?? "", /But Goal Is Disallowed/u);
+  assert.equal(storyline.status, "failed");
+  assert.equal(storyline.headline.en, "");
+  assert.equal(storyline.headline.en.includes("Disallowed"), false);
+  assert.notEqual(storyline.headline.en, reversing.slice(0, 60));
+  assert.match(storyline.failureReason ?? "", /Producer output failed deterministic guard/u);
+  assert.match(storyline.failureReason ?? "", /characters/u);
+  assert.match(storyline.failureReason ?? "", /not shortened/u);
+  assert.equal(storyline.trace.some((step) => /trimmed/u.test(step.detail)), false);
+});
+
 test("producer outage fails the storyline with a classified reason", async () => {
   const outage = Object.assign(new Error("Service Unavailable"), { status: 503 });
   const { impl, calls } = runner({ produces: [outage] });

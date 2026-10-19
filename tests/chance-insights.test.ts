@@ -227,6 +227,40 @@ test("guard accepts chance-sequence numbers only when the verified claim lists t
   assert.equal(guardDraftText("The move started in January for Home FC.", ["Home FC scored"], new Set(["Home FC"])), undefined);
 });
 
+test("title-case headlines allow listed football words and reject invented names", () => {
+  const claims = ["Fiske scored for Northbridge."];
+  const names = new Set(["Fiske", "Northbridge"]);
+  assert.equal(guardDraftText("Fiske Scores to Level for Northbridge", claims, names), undefined);
+  assert.equal(guardDraftText("Fiske Levels the Match", claims, names), undefined);
+  assert.equal(guardDraftText("Fiske Matches Northbridge", claims, names), undefined);
+  assert.equal(guardDraftText("Fiske Equalises for Northbridge", claims, names), undefined);
+  assert.equal(guardDraftText("Late Winner from Fiske", claims, names), undefined);
+  assert.equal(guardDraftText("Late Goal Wins it for Fiske", claims, names), undefined);
+  assert.equal(guardDraftText("Late Winner Matches Northbridge Comeback", claims, names), undefined);
+  assert.equal(guardDraftText("Fiske Screamer", ["Fiske hit a screamer"], names), undefined);
+  assert.match(guardDraftText("Fiske Thunders", ["Fiske thundered the ball"], names) ?? "", /Unsupported proper name: Thunders/u);
+  assert.match(guardDraftText("Fiske Screamer", claims, names) ?? "", /Unsupported proper name: Screamer/u);
+  assert.match(guardDraftText("Young Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Young/u);
+  assert.match(guardDraftText("Hope Scores for Northbridge", ["Fiske hoped for Northbridge"], names) ?? "", /Unsupported proper name: Hope/u);
+  assert.match(guardDraftText("Stone Scores for Northbridge", ["Fiske stoned for Northbridge"], names) ?? "", /Unsupported proper name: Stone/u);
+  assert.match(guardDraftText("Cross Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Cross/u);
+  assert.match(guardDraftText("Swift Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Swift/u);
+  assert.match(guardDraftText("Fiske Scores for United", claims, names) ?? "", /Unsupported proper name: United/u);
+  assert.match(guardDraftText("Arsenal Scores", claims, names) ?? "", /Unsupported proper name: Arsenal/u);
+  assert.match(guardDraftText("Fiske Scores for Liverpool", claims, names) ?? "", /Unsupported proper name: Liverpool/u);
+  assert.match(guardDraftText("Brace Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Brace/u);
+  assert.match(guardDraftText("Winner Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Winner/u);
+  assert.match(guardDraftText("The Header Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Header/u);
+  assert.match(guardDraftText("Fiske Scores: Brace Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Brace/u);
+  assert.match(guardDraftText("Fiske Scores. Winner Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Winner/u);
+  assert.match(guardDraftText("Fiske Scores Brace Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: Brace/u);
+  assert.match(guardDraftText("Fiske - Winner Scores", claims, names) ?? "", /Unsupported proper name: Winner/u);
+  assert.match(guardDraftText("Zara Quinn Scores Late Winner", claims, names) ?? "", /Unsupported proper name: Zara/u);
+  assert.match(guardDraftText("Zara Quinn scored", ["Ada Home scored"], new Set(["Ada Home", "Home FC"])) ?? "", /Unsupported proper name: Zara/u);
+  assert.equal(guardDraftText("The move started in January for Home FC.", ["Home FC scored"], new Set(["Home FC"])), undefined);
+  assert.match(guardDraftText("May Scores for Northbridge", claims, names) ?? "", /Unsupported proper name: May/u);
+});
+
 test("verifier accepts a computed chance claim and rejects a mismatched number", () => {
   const shot = event({ id: "shot-1", minute: 8, second: 5, type: "shot", teamId: "home", playerId: "home-p9", outcome: "saved", x: 84, y: 40 });
   const events = [

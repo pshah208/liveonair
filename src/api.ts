@@ -19,8 +19,7 @@ import type {
   RecapStoryboard,
   ReviewStorylineRequest,
   StartLiveRequest,
-  Storyline,
-  VerifiedFact
+  Storyline
 } from "../shared/platform.js";
 import { MAX_UPLOAD_BYTES, type ManualTagInput, type VideoJob, type VideoJobRequest, type VideoJobSummary } from "../shared/video.js";
 import type { HighlightCommentary, HighlightCommentaryRequest } from "../shared/highlights.js";
@@ -101,7 +100,6 @@ export const api = {
   sendCorrection(eventId: string, signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/correction", { method: "POST", body: { eventId }, signal }); },
   getStudioStorylines(signal?: AbortSignal) { return requestJson<Storyline[]>("/api/studio/storylines", { signal }); },
   reviewStoryline(id: string, body: ReviewStorylineRequest, signal?: AbortSignal) { return requestJson<Storyline>(`/api/studio/storylines/${id}/review`, { method: "POST", body, signal }); },
-  getStudioFacts(signal?: AbortSignal) { return requestJson<VerifiedFact[]>("/api/studio/facts", { signal }); },
   getStudioStoryboard(signal?: AbortSignal) { return requestJson<RecapStoryboard>("/api/studio/storyboard", { signal, allowNotFound: true }); },
   getStudioHealth(signal?: AbortSignal) { return requestJson<{ mode: "foundry-agents" | "unconfigured"; agents: string[]; retrieval: string }>("/api/studio/health", { signal }); },
   getVideoHealth(signal?: AbortSignal) { return requestJson<VideoHealth>("/api/video/health", { signal }); },

@@ -328,14 +328,6 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .stat-bar__home { display: block; height: 100%; background: var(--team-home); }
 .stat-bar--empty, .stat-bar--empty .stat-bar__home { background: var(--cp-border); }
 
-.insight-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.insight { width: 100%; text-align: left; display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--radius-control); border: 1px solid var(--cp-border); background: var(--cp-surface-soft); }
-.insight:hover { border-color: var(--cp-border-strong); }
-.insight.is-active { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
-.insight__meta { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cp-text-soft); }
-.insight__summary { font-size: 14px; color: var(--cp-text-muted); }
-.insight__foot { font-size: 12px; color: var(--cp-text-soft); }
-
 .event-feed { display: grid; gap: 8px; }
 .event-list { list-style: none; margin: 0; padding: 0; display: grid; max-height: 520px; overflow-y: auto; }
 .event-row { display: grid; grid-template-columns: 48px 4px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--cp-border); font-size: 14px; }
@@ -809,6 +801,9 @@ a.storyline-chip:hover { text-decoration: underline; }
 
 /* chance insights */
 .chance-list { display: grid; gap: 10px; }
+/* Keeps the Studio middle column close to the height of its neighbours; the list scrolls instead. */
+.chance-list--scroll { max-height: 720px; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.chance-list--scroll:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
 .chance-card { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--cp-border); border-radius: var(--radius-control); background: var(--cp-surface-soft); }
 .chance-card--withdrawn { opacity: 0.72; }
 .chance-card--fan { background: transparent; }

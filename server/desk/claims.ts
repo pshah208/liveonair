@@ -825,39 +825,289 @@ export function numberTokens(text: string): string[] {
 
 /** Integer, decimal, percent or ordinal as one token. `12` is not a token of `123` or `12.5`. */
 const COMPLETE_NUMBER = /\b\d+(?:\.\d+)?%|\b\d+(?:st|nd|rd|th)\b|\b\d+(?:\.\d+)?\b/giu;
-const TITLE_CASE_TOKEN = /\b[A-Z][a-z]+(?:['’-][A-Z][a-z]+)?\b/gu;
+/** Broadcast headline cap. Overlong headlines are rejected and retried, never trimmed. */
+export const HEADLINE_COMPLETE_MAX = 60;
 
-/**
- * Words that are capitalised because they start a sentence, name a month or a weekday.
- * Team and player names are not listed here: they pass only as known entities or verified-claim tokens.
- */
-const PROPER_NAME_STOPLIST = new Set([
+const TITLE_CASE_WORD = /^[A-Z][a-z]+(?:['\u2019-][A-Z][a-z]+)?$/u;
+
+/** Articles, conjunctions, prepositions and pronouns. Not names, including in a name slot. */
+const GRAMMAR_WORDS = new Set([
   "a", "an", "the", "and", "but", "or", "nor", "so", "yet",
   "in", "on", "at", "to", "for", "from", "with", "of", "by", "as",
   "after", "before", "during", "against", "into", "over", "under", "between",
+  "vs", "versus", "v", "via", "per", "than", "if",
   "his", "her", "their", "its", "this", "that", "these", "those",
   "he", "she", "they", "it", "we", "i",
-  "january", "february", "march", "april", "may", "june",
+  "when", "what", "who", "which", "not", "no", "up", "out", "off", "down",
+  "now", "then", "here", "there", "too", "also", "just", "only",
+]);
+
+/**
+ * Months and weekdays, except May (a common surname). Authorises "in January",
+ * not a name slot such as "June Scores".
+ */
+const CALENDAR_WORDS = new Set([
+  "january", "february", "march", "april", "june",
   "july", "august", "september", "october", "november", "december",
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ]);
+
+/**
+ * Plausible personal names and club suffixes. Vocabulary must never authorise these.
+ * A capitalised token still passes when it is a known fixture name or an exact claim token.
+ */
+const NAME_LIKE_WORDS = new Set([
+  "young", "hope", "rich", "stone", "best", "king", "black", "white", "green", "brown",
+  "rose", "may", "bright", "hill", "wood", "hart", "cole", "long", "little", "moore",
+  "hall", "field", "park", "city", "united", "town", "rovers", "athletic",
+  "wanderers", "rangers", "albion", "county",
+]);
+
+/**
+ * Closed football and headline spellings. Inflections are listed here; nothing is stemmed.
+ * Scores/Scored, Levels/Levelled, Equalises, Wins/Winner, Matches, Goal, Late, Header, Penalty.
+ */
+const HEADLINE_FORMS = new Set([
+  "goal", "goals", "winner", "winners",
+  "equaliser", "equalisers", "equalizer", "equalizers",
+  "leveller", "levellers", "leveler", "levelers",
+  "header", "headers", "volley", "volleys",
+  "penalty", "penalties",
+  "shot", "shots", "save", "saves", "saved",
+  "assist", "assists", "chance", "chances",
+  "match", "matches", "matched",
+  "game", "games", "fixture", "fixtures", "derby",
+  "final", "finals",
+  "score", "scores", "scored", "scoreline", "scorelines",
+  "lead", "leads", "led",
+  "level", "levels", "levelled", "leveled",
+  "draw", "draws", "drawn",
+  "win", "wins", "won",
+  "loss", "losses", "defeat", "defeats",
+  "comeback", "comebacks", "fightback", "fightbacks", "turnaround",
+  "brace", "treble",
+  "kick", "kicks", "kicked",
+  "strike", "strikes", "struck",
+  "net", "nets", "netted",
+  "box", "half", "minute", "minutes",
+  "stoppage", "injury", "added", "extra", "full", "time",
+  "whistle", "offside", "corner", "corners",
+  "counter", "attack", "attacks",
+  "defence", "defense", "midfield",
+  "press", "pressure", "line", "block",
+  "possession", "territory", "sequence",
+  "build", "buildup", "move", "moves",
+  "pass", "passes", "passed",
+  "cross", "crosses", "crossed",
+  "dribble", "tackle", "clearance",
+  "keeper", "goalkeeper",
+  "striker", "forward", "winger", "midfielder", "defender",
+  "captain", "skipper", "substitute", "bench", "squad",
+  "side", "team", "club", "home", "away",
+  "host", "hosts", "visitor", "visitors", "rival", "rivals",
+  "opener", "clincher", "finish", "finishes", "finished",
+  "moment", "night", "drama",
+  "cup", "season", "history", "career", "milestone",
+  "honour", "honor", "title", "trophy",
+  "champion", "champions",
+  "card", "cards", "booking", "dismissal", "rebound", "spot",
+  "hat-trick", "hattrick",
+  "extra-time", "full-time", "half-time", "stoppage-time", "injury-time", "added-time",
+  "equalise", "equalises", "equalised", "equalize", "equalizes", "equalized",
+  "miss", "misses", "missed",
+  "hit", "hits",
+  "convert", "converts", "converted",
+  "slot", "slots", "slotted",
+  "fire", "fires", "fired",
+  "head", "heads", "headed",
+  "create", "creates", "created",
+  "force", "forces", "forced",
+  "earn", "earns", "earned",
+  "claim", "claims", "claimed",
+  "secure", "secures", "secured",
+  "restore", "restores", "restored",
+  "extend", "extends", "extended",
+  "double", "doubles", "doubled",
+  "complete", "completes", "completed",
+  "open", "opens", "opened",
+  "break", "breaks", "broke", "broken",
+  "rescue", "rescues", "rescued",
+  "deny", "denies", "denied",
+  "stop", "stops", "stopped",
+  "keep", "keeps", "kept",
+  "hold", "holds", "held",
+  "grab", "grabs", "grabbed",
+  "take", "takes", "took", "taken",
+  "make", "makes", "made",
+  "give", "gives", "gave", "given",
+  "find", "finds", "found",
+  "put", "puts",
+  "see", "sees", "saw", "seen",
+  "come", "comes", "came",
+  "go", "goes", "went", "gone",
+  "get", "gets", "got",
+  "have", "has", "had",
+  "need", "needs", "needed",
+  "look", "looks", "looked",
+  "stay", "stays", "stayed",
+  "remain", "remains", "remained",
+  "trail", "trails", "trailed",
+  "seal", "seals", "sealed",
+  "snatch", "snatches", "snatched",
+  "spark", "sparks", "sparked",
+  "lift", "lifts", "lifted",
+  "send", "sends", "sent",
+  "pull", "pulls", "pulled",
+  "push", "pushes", "pushed",
+  "turn", "turns", "turned",
+  "edge", "edges", "edged",
+  "bundle", "bundles", "bundled",
+  "nod", "nods", "nodded",
+  "tap", "taps", "tapped",
+  "drill", "drills", "drilled",
+  "smash", "smashes", "smashed",
+  "curl", "curls", "curled",
+  "place", "places", "placed",
+  "bury", "buries", "buried",
+  "poke", "pokes", "poked",
+  "guide", "guides", "guided",
+  "hammer", "hammers", "hammered",
+  "rifle", "rifles", "rifled",
+  "blast", "blasts", "blasted",
+  "power", "powers", "powered",
+  "echo", "echoes", "echoed",
+  "link", "links", "linked",
+  "arrive", "arrives", "arrived",
+  "settle", "settles", "settled",
+  "reduce", "reduces", "reduced",
+  "start", "starts", "started",
+  "end", "ends", "ended",
+  "begin", "begins", "began",
+  "follow", "follows", "followed",
+  "let", "lets",
+  "help", "helps", "helped",
+  "do", "does", "did", "done",
+  "can", "will", "would", "could", "should", "might", "must",
+  "was", "were", "been", "are", "is",
+  "late", "early", "dramatic", "stunning", "crucial", "vital", "decisive", "clinical",
+  "instant", "rapid", "swift", "quick",
+  "brilliant", "superb", "historic", "former",
+  "opening", "closing", "another", "further",
+  "back", "ahead", "behind", "deep", "wide", "closer",
+  "short", "high", "low", "big", "huge", "massive", "great",
+  "poor", "remarkable", "famous",
+  "last", "first", "second", "third", "fourth",
+  "own", "both", "each", "every", "some", "any",
+  "still", "again", "today", "tonight",
+  "already", "even", "very", "all",
+  "never", "always", "more", "most", "less", "least",
+  "yellow", "red",
+]);
+
+/** Nouns that may sit immediately before a headline verb ("Goal Wins", "Header Levels"). Not names. */
+const HEADLINE_SUBJECT_NOUNS = new Set([
+  "goal", "goals", "winner", "winners",
+  "header", "headers", "penalty", "penalties",
+  "equaliser", "equalisers", "equalizer", "equalizers",
+  "leveller", "levellers", "leveler", "levelers",
+  "shot", "shots", "strike", "strikes", "save", "saves",
+  "volley", "volleys", "comeback", "comebacks",
+  "opener", "clincher", "brace", "treble",
+]);
+
+/** Player or team actions. The word before one of these is a name slot, not a vocabulary slot. */
+const NAME_VERBS = new Set([
+  "score", "scores", "scored",
+  "level", "levels", "levelled", "leveled",
+  "equalise", "equalises", "equalised", "equalize", "equalizes", "equalized",
+  "win", "wins", "won",
+  "strike", "strikes", "struck",
+  "net", "nets", "netted",
+]);
+
+const NAME_PREPOSITIONS = new Set(["for", "by", "against", "from", "v", "vs", "versus"]);
+
+type DraftWord = { raw: string; lower: string; clauseStart: boolean };
 
 export function completeNumericTokens(text: string): string[] {
   return [...text.matchAll(COMPLETE_NUMBER)].map((match) => match[0].toLowerCase());
 }
 
-function containsCompleteToken(haystack: string, token: string): boolean {
-  return new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\b`, "iu").test(haystack);
+function wordsOf(text: string): DraftWord[] {
+  let lastEnd = 0;
+  return [...text.matchAll(/[A-Za-z]+(?:['\u2019-][A-Za-z]+)*/gu)].map((match) => {
+    const start = match.index ?? 0;
+    // Any non-space separator (":", ".", "-", "|", quotes...) or the start of the text opens a new clause.
+    const clauseStart = start === 0 || lastEnd === 0 || /[^\s]/u.test(text.slice(lastEnd, start));
+    lastEnd = start + match[0].length;
+    return { raw: match[0], lower: match[0].toLowerCase(), clauseStart };
+  });
 }
 
+function exactWordSet(texts: Iterable<string>): Set<string> {
+  const words = new Set<string>();
+  for (const text of texts) {
+    for (const word of wordsOf(text)) words.add(word.lower);
+  }
+  return words;
+}
+
+function isSafeHeadlineWord(lower: string): boolean {
+  if (NAME_LIKE_WORDS.has(lower)) return false;
+  return GRAMMAR_WORDS.has(lower) || CALENDAR_WORDS.has(lower) || HEADLINE_FORMS.has(lower);
+}
+
+function isTitleCaseWord(raw: string): boolean {
+  return TITLE_CASE_WORD.test(raw);
+}
+
+/**
+ * Name slot: subject before Scores/Levels/Wins/Equalises/Strikes/Nets, object of
+ * for/by/against/from/v/vs, or a non-vocabulary token beside another capitalised name.
+ * Vocabulary cannot fill these slots, except a closed headline noun before a verb ("Goal Wins").
+ */
+function nameSlot(words: DraftWord[], index: number): "preposition" | "subject" | "cluster" | undefined {
+  const word = words[index];
+  if (!word || !isTitleCaseWord(word.raw)) return undefined;
+  const previous = words[index - 1];
+  const next = words[index + 1];
+  if (previous && NAME_PREPOSITIONS.has(previous.lower)) return "preposition";
+  if (next && NAME_VERBS.has(next.lower)) return "subject";
+  const nonVocabName = (candidate: DraftWord | undefined) =>
+    candidate !== undefined && isTitleCaseWord(candidate.raw) && !isSafeHeadlineWord(candidate.lower);
+  if (!isSafeHeadlineWord(word.lower) && (nonVocabName(previous) || nonVocabName(next))) return "cluster";
+  return undefined;
+}
+
+/**
+ * A capitalised token must be a known name or an exact claim token.
+ * Stemming is not used: "hoped" does not authorise "Hope", and "stoned" does not authorise "Stone".
+ * A closed headline list may authorise Title Case verbs and nouns, but not a token in a name slot.
+ */
 function unsupportedTitleCaseName(text: string, claimTexts: string[], knownNames: Set<string>): string | undefined {
-  const claims = claimTexts.join("\n");
-  const entities = [...knownNames].join("\n");
-  for (const match of text.matchAll(TITLE_CASE_TOKEN)) {
-    const token = match[0];
-    if (PROPER_NAME_STOPLIST.has(token.toLowerCase())) continue;
-    if (containsCompleteToken(claims, token) || containsCompleteToken(entities, token)) continue;
-    return `Unsupported proper name: ${token}`;
+  const claimWords = exactWordSet(claimTexts);
+  const knownWords = exactWordSet(knownNames);
+  const words = wordsOf(text);
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    if (!isTitleCaseWord(word.raw)) continue;
+    const knownEntity = claimWords.has(word.lower) || knownWords.has(word.lower);
+    const slot = nameSlot(words, index);
+    if (slot === "preposition" || slot === "cluster") {
+      if (slot === "preposition" && GRAMMAR_WORDS.has(word.lower)) continue;
+      if (!knownEntity) return `Unsupported proper name: ${word.raw}`;
+      continue;
+    }
+    if (slot === "subject") {
+      // A bare noun opening a clause before a scoring verb reads as a name ("Brace Scores"); require a modifier ("Late Goal Wins").
+      const previous = words[index - 1];
+      const modified = previous !== undefined && !word.clauseStart && !GRAMMAR_WORDS.has(previous.lower) && !NAME_VERBS.has(previous.lower)
+        && (isSafeHeadlineWord(previous.lower) || claimWords.has(previous.lower) || knownWords.has(previous.lower));
+      if (knownEntity || GRAMMAR_WORDS.has(word.lower) || (modified && HEADLINE_SUBJECT_NOUNS.has(word.lower) && !NAME_LIKE_WORDS.has(word.lower))) continue;
+      return `Unsupported proper name: ${word.raw}`;
+    }
+    if (knownEntity || isSafeHeadlineWord(word.lower)) continue;
+    return `Unsupported proper name: ${word.raw}`;
   }
   return undefined;
 }

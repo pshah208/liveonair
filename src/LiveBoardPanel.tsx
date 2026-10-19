@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { PERIOD_LABEL } from "../shared/periods.js";
 import type { MatchFixture, MatchPeriod, MatchSnapshot } from "../shared/types.js";
 import { LiveStats, Panel, Pitch } from "./components.js";
@@ -14,16 +13,14 @@ export type LiveBoardPanelProps = {
   score: { home: number; away: number };
   /** Panel heading. Defaults to the fixture title. */
   title?: string;
-  highlightIds?: string[];
-  aside?: ReactNode;
   className?: string;
 };
 
 /** The pitch, period selector and live stats shared by the Studio Desk and Fan View. */
-export function LiveBoardPanel({ fixture, snapshot, period, onPeriodChange, halvesUnavailable, score, title, highlightIds, aside, className }: LiveBoardPanelProps) {
+export function LiveBoardPanel({ fixture, snapshot, period, onPeriodChange, halvesUnavailable, score, title, className }: LiveBoardPanelProps) {
   const scopeMessage = periodScopeMessage(snapshot?.scope);
   return (
-    <Panel eyebrow={scopedTitle("Live board", period)} title={title ?? fixture?.title ?? "No match running"} aside={aside} className={className}>
+    <Panel eyebrow={scopedTitle("Live board", period)} title={title ?? fixture?.title ?? "No match running"} className={className}>
       {fixture ? (
         <>
           <PeriodSelector value={period} onChange={onPeriodChange} halvesUnavailable={halvesUnavailable} className="period-toggle" />
@@ -32,14 +29,14 @@ export function LiveBoardPanel({ fixture, snapshot, period, onPeriodChange, halv
             <div className="empty-state" role="status"><strong>{snapshot?.scope?.reason === "not_started" ? "Not started" : "Period unavailable"}</strong> · {scopeMessage}</div>
           ) : (
             <>
-              <Pitch fixture={fixture} events={snapshot?.recentEvents ?? (period === "full" ? fixture.events : [])} highlightIds={highlightIds} />
+              <Pitch fixture={fixture} events={snapshot?.recentEvents ?? (period === "full" ? fixture.events : [])} />
               {period !== "full" && snapshot?.periodScore && <p className="subtle-text">Goals in the {PERIOD_LABEL[period]}: {fixture.home.shortName} {snapshot.periodScore.home}–{snapshot.periodScore.away} {fixture.away.shortName} · match score {score.home}–{score.away}</p>}
               <span className="eyebrow">{scopedTitle("Live stats", period)}</span>
               <LiveStats snapshot={snapshot} fixture={fixture} />
             </>
           )}
         </>
-      ) : <div className="empty-state">The pitch, live stats and story cards appear once a match starts.</div>}
+      ) : <div className="empty-state">The pitch and live stats appear once a match starts.</div>}
     </Panel>
   );
 }
