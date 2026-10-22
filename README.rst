@@ -49,8 +49,9 @@ with live health.
   shown in the broadcast bar.
 * Follow the scorebug, animated pitch, live stats and notable-event feed. The broadcast bar shows
   the transport (``eventstream`` or ``local``) and source reported by ``/api/live/status``.
-* When the server requires a producer token (``GET /api/studio/auth-required``), the Studio Desk
-  shows a token field. The token is kept in ``localStorage`` (``liveonair.studioToken``) and sent
+* The Studio Desk is open by default. A producer token (``STUDIO_TOKEN``) is optional hardening.
+  When the server requires one (``GET /api/studio/auth-required``), the Studio Desk shows a token
+  field. The token is kept in ``localStorage`` (``liveonair.studioToken``) and sent
   as a bearer token on Studio writes. Fan View never asks for one.
 * The live board has two views. **Ball movement** (default) animates the ball through the latest
   events on one pitch frame (home attacks left to right, away coordinates mirrored): solid arrows

@@ -13,7 +13,8 @@ param(
   # 'fabric-eventstream' is the v0.14.x name. Both are accepted for either value, so a rollback still passes.
   # Any value other than 'local' also requires transportConfigured = true.
   [ValidateSet('', 'eventstream', 'fabric-eventstream', 'local')] [string] $ExpectTransport = '',
-  # Fail unless the app enforces Studio auth (STUDIO_TOKEN is set). Use for every judging deploy.
+  # Optional hardening check: fail unless the app enforces Studio auth (STUDIO_TOKEN is set).
+  # Studio is open by default, so omit this unless the deploy supplied a studio token.
   [switch] $ExpectStudioAuth
 )
 
@@ -72,6 +73,10 @@ if ($studioAuth.required -eq $true) {
     $authorized = Invoke-WebRequest -Uri "$base/api/studio/health" -Headers $studioHeaders -TimeoutSec 30 -SkipHttpErrorCheck
     Assert-True ($authorized.StatusCode -eq 200) "Authenticated /api/studio/health returned $($authorized.StatusCode); the token does not match the app"
   }
+} else {
+  # Open mode (default): Studio must be reachable without any token.
+  $open = Invoke-WebRequest -Uri "$base/api/studio/health" -TimeoutSec 30 -SkipHttpErrorCheck
+  Assert-True ($open.StatusCode -eq 200) "Studio auth is off but unauthenticated /api/studio/health returned $($open.StatusCode), expected 200"
 }
 
 foreach ($summary in $fixtures) {

@@ -12,7 +12,7 @@ judging window 2026-10-27 to 2026-11-10. All match data is synthetic.
 C4Context
   title Live on Air: system context
   Person(fan, "Fan", "Fan View on a phone or browser")
-  Person(producer, "Producer / judge", "Studio Desk; state-changing calls need STUDIO_TOKEN")
+  Person(producer, "Producer / judge", "Studio Desk; open by default, optional STUDIO_TOKEN bearer")
   Person(dev, "Developer agent", "VS Code / Copilot via MCP")
   System(loa, "Live on Air", "Synthetic live football broadcast with a multi-agent storyline desk")
   System_Ext(foundry, "Azure AI Foundry", "gpt-4.1-mini deployment and Foundry Agents")
@@ -61,7 +61,7 @@ Design constraints:
   previous image (see the runbook); activating an old revision is not enough.
 - **Secretless where Azure allows it.** Foundry, Search and ACR use the managed identity. The only
   secrets are the Eventstream connection strings, the App Insights connection string and
-  `STUDIO_TOKEN`, all held as Container Apps secrets and supplied only at deploy time.
+  the optional `STUDIO_TOKEN` (unset by default, so Studio is open), all held as Container Apps secrets and supplied only at deploy time.
 
 ## Storyline desk: agent handoffs
 
@@ -141,4 +141,4 @@ message). Re-verify them against `server/` before judging.
 | Bad deploy | Smoke test fails | None (Single revision mode) | Runbook: redeploy the previous image tag with `-SkipBuild` |
 | Telemetry dropped | Log Analytics `OverQuota` | None | Daily cap raised to 1 GB; check what is driving the volume |
 | Cost runaway | Budget 80% actual / 100% forecast | Notification only | Check the Foundry and Search spend |
-| Producer endpoints abused † | 401s without the token | `STUDIO_TOKEN` bearer on state-changing endpoints; rate limiters | Rotate the token: redeploy with a new `STUDIO_TOKEN` |
+| Producer endpoints abused † | Unexpected starts/stops/corrections (Studio is open by default since 2026-10-22, by product decision) | Rate limiters; optional `STUDIO_TOKEN` bearer on producer endpoints | Turn auth on: add the `studio-token` secret and `STUDIO_TOKEN` env (runbook section 4) |

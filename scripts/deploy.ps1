@@ -21,7 +21,10 @@ param(
   # Deploy without Fabric Eventstream secrets. The app then runs on its in-process local bus, and any
   # Eventstream secrets already on the container app are REMOVED by the deployment.
   [switch] $AllowLocalTransport,
-  # Deploy without STUDIO_TOKEN. Producer endpoints are then unauthenticated. Not for judging.
+  # Studio is open by default: without a token, STUDIO_TOKEN and the studio-token secret are omitted (and
+  # removed if present). Pass -RequireStudioToken to fail fast when no token is supplied (optional hardening).
+  [switch] $RequireStudioToken,
+  # Deprecated no-op, kept so older command lines still parse. Deploying without a token is now the default.
   [switch] $AllowNoStudioToken
 )
 
@@ -91,11 +94,14 @@ try {
   if (-not $StudioToken -and $env:STUDIO_TOKEN) {
     $StudioToken = ConvertTo-SecureString $env:STUDIO_TOKEN -AsPlainText -Force
   }
+  if ($AllowNoStudioToken) {
+    Write-Warning '-AllowNoStudioToken is deprecated and ignored: deploying without a studio token is now the default.'
+  }
   if (-not $StudioToken -and -not $ProvisionOnly) {
-    if (-not $AllowNoStudioToken) {
-      throw 'STUDIO_TOKEN is missing. Pass -StudioToken (SecureString) or set $env:STUDIO_TOKEN, or -AllowNoStudioToken for a non-judging deploy.'
+    if ($RequireStudioToken) {
+      throw 'STUDIO_TOKEN is missing and -RequireStudioToken was passed. Pass -StudioToken (SecureString) or set $env:STUDIO_TOKEN.'
     }
-    Write-Warning 'Deploying WITHOUT STUDIO_TOKEN: producer endpoints are unauthenticated (-AllowNoStudioToken).'
+    Write-Output 'Studio Desk is open (no studio token supplied); STUDIO_TOKEN and the studio-token secret will be absent.'
   }
 
   if ($PSBoundParameters.ContainsKey('NarrativeWebSearch') -and $NarrativeWebSearch -notin @('on', 'off')) {
@@ -240,7 +246,7 @@ try {
     exit 2
   }
   if (-not $fabricReady) { Write-Warning 'Eventstream secrets not required (-AllowLocalTransport): the app runs on the local bus.' }
-  if (-not $StudioToken) { Write-Warning 'studio-token not required (-AllowNoStudioToken): producer endpoints are open.' }
+  if (-not $StudioToken) { Write-Output 'studio-token not required: Studio Desk is open (default). Use -StudioToken to harden.' }
 
   [pscustomobject]@{
     resourceGroup = $ResourceGroup

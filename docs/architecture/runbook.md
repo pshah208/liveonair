@@ -9,9 +9,12 @@ $App = 'liveonair'
 $Url = 'https://liveonair.whiteisland-f5b236ef.eastus2.azurecontainerapps.io'
 ```
 
-Secrets: `STUDIO_TOKEN` comes from a password manager into `$env:STUDIO_TOKEN` for the current shell
-only. Never put it in the repo, in shell history files or in chat. The Fabric connection strings live
-only in `fabric/.secrets.local.json` (gitignored).
+Studio access: **the Studio Desk is open by default** (no `STUDIO_TOKEN`; `/api/studio/auth-required`
+returns `{"required":false}`). A studio token is optional hardening. If you want it, it comes from a
+password manager into `$env:STUDIO_TOKEN` for the current shell only. Never put it in the repo, in
+shell history files or in chat. `deploy.ps1` falls back to `$env:STUDIO_TOKEN`, so make sure it is
+**unset** (`Remove-Item Env:STUDIO_TOKEN -ErrorAction SilentlyContinue`) unless you mean to turn auth on.
+The Fabric connection strings live only in `fabric/.secrets.local.json` (gitignored).
 
 ## 0. Before any change
 
@@ -62,15 +65,17 @@ is absent.
 ## 2. Deploy a new app version
 
 ```powershell
-$env:STUDIO_TOKEN = '<from password manager>'
-$Tag = 'v0-15-0-' + (git rev-parse --short HEAD)
+# Studio stays open unless a token is supplied. Clear any leftover token so it is not re-added by accident.
+Remove-Item Env:STUDIO_TOKEN -ErrorAction SilentlyContinue
+$Tag =  'v0-15-0-' + (git rev-parse --short HEAD)
 
 # Preview (no build, no change). Prints a redacted what-if. Informational only; see the go/no-go below.
 pwsh scripts/deploy.ps1 -SubscriptionId $S -ResourceGroup $G -UseExistingInfrastructure -PreviewOnly -ImageTag $Tag
 
 # Build in ACR (az acr build) and deploy infra/app.bicep. Refuses if:
 # - the Fabric secrets are missing (unless -AllowLocalTransport);
-# - STUDIO_TOKEN is missing (unless -AllowNoStudioToken);
+# - STUDIO_TOKEN is missing AND -RequireStudioToken was passed (optional hardening; off by default;
+#   -AllowNoStudioToken is accepted as a deprecated no-op);
 # - App Insights is missing;
 # - the tag already exists.
 # After the deployment it reads the secret NAMES on the container app. If a required secret is missing,
@@ -80,12 +85,13 @@ pwsh scripts/deploy.ps1 -SubscriptionId $S -ResourceGroup $G -UseExistingInfrast
 
 **The go/no-go is the post-deploy secret gate in `deploy.ps1`, not the preview.** What-if shows secret
 values as redacted whether they are kept or lost, so it can't prove that `eventstream-source`,
-`eventstream-destination`, `appinsights-connection` and `studio-token` survived. On a judging deploy the gate
-requires all four. It skips the Eventstream pair only with `-AllowLocalTransport`, and `studio-token` only
-with `-AllowNoStudioToken`. A non-zero exit means roll back now (section 4), then run section 3 again.
+`eventstream-destination` and `appinsights-connection` survived. The gate always requires
+`appinsights-connection`, and requires the Eventstream pair unless `-AllowLocalTransport` is passed. It
+requires `studio-token` only when a studio token was supplied. A non-zero exit means roll back now
+(section 4), then run section 3 again.
 
-Expected what-if for the container app: **Modify** only (FQDN unchanged), cpu 0.5 → 1.0,
-memory 1Gi → 2Gi, a new `studio-token` secret, `DEMO_WATCHDOG_MINUTES` and `STUDIO_TOKEN` env, and tags.
+Expected what-if for the container app (open Studio, the default): **Modify** only (FQDN unchanged), with no
+`studio-token` secret and no `STUDIO_TOKEN` env. If a token is supplied, expect those two to be added.
 The `Delete` lines for `ingress.exposedPort`, `ingress.traffic` and `runningStatus`, and the reordered
 probes, are server-default noise. **Stop before deploying if** the app shows `Delete` or `Replace`.
 Secret loss isn't visible here; the post-deploy gate catches it.
@@ -96,12 +102,12 @@ Secret loss isn't visible here; the post-deploy gate catches it.
 az containerapp show --subscription $S --resource-group $G --name $App `
   --query "{image:properties.template.containers[0].image,res:properties.template.containers[0].resources,scale:properties.template.scale,secrets:properties.configuration.secrets[].name}" -o json
 # v0.15+ reports 'eventstream' ('local' after a fallback). The v0.14.x name 'fabric-eventstream' is also
-# accepted, so this still works after a rollback. The smoke also asserts transportConfigured = true, and that
-# /api/studio/* returns 401 without the token and 200 with it. The token comes from $env:STUDIO_TOKEN.
-pwsh scripts/smoke.ps1 -BaseUrl $Url -ExpectTransport eventstream -ExpectStudioAuth
-# Full smoke: starts a scripted match, refuses if one is running, and needs the token.
-# Don't run it during a judge's session.
-pwsh scripts/smoke.ps1 -BaseUrl $Url -ExpectTransport eventstream -ExpectStudioAuth -IncludeAI -IncludeStorylines
+# accepted, so this still works after a rollback. The smoke also asserts transportConfigured = true. With
+# Studio open (default) it asserts /api/studio/health returns 200 without a token; with auth on, 401 without
+# the token and 200 with it ($env:STUDIO_TOKEN). Add -ExpectStudioAuth only if you deployed a studio token.
+pwsh scripts/smoke.ps1 -BaseUrl $Url -ExpectTransport eventstream
+# Full smoke: starts a scripted match and refuses if one is running. Don't run it during a judge's session.
+pwsh scripts/smoke.ps1 -BaseUrl $Url -ExpectTransport eventstream -IncludeAI -IncludeStorylines
 ```
 
 ## 4. Roll back
@@ -119,6 +125,23 @@ az containerapp update --subscription $S --resource-group $G --name $App `
 ```
 
 Then run section 3 again. Last known good before wave 2: `matchlens:v0-14-3-15c88b1` (revision `liveonair--0000014`).
+
+### Studio auth on/off (config only, no rebuild)
+
+Studio has been open since 2026-10-22 (revision `liveonair--0000016`). To turn auth back on, add the secret
+first, then the env var that references it. Put the value in `$env:STUDIO_TOKEN` from a password manager;
+never type it into a committed file or chat:
+
+```powershell
+az containerapp secret set --subscription $S --resource-group $G --name $App --secrets "studio-token=$env:STUDIO_TOKEN"
+az containerapp update --subscription $S --resource-group $G --name $App --set-env-vars STUDIO_TOKEN=secretref:studio-token
+```
+
+To turn it off, remove the env var first, then the secret:
+`az containerapp update ... --remove-env-vars STUDIO_TOKEN`, then
+`az containerapp secret remove ... --secret-names studio-token`. Afterwards, run section 3 (with or without
+`-ExpectStudioAuth` to match) and keep `$env:STUDIO_TOKEN` set or unset for the next `deploy.ps1` run so the
+setting doesn't drift.
 
 ## 5. Alerts
 
