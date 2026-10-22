@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { api, ApiError, applyStudioAuth, getStudioToken, PRODUCER_TOKEN_REQUIRED, setStudioToken, STUDIO_TOKEN_KEY } from "../src/api.js";
+import { api, ApiError, applyStudioAuth, getStudioToken, isStudioReadPath, PRODUCER_TOKEN_REQUIRED, setStudioToken, STUDIO_TOKEN_KEY, withStudioStreamToken } from "../src/api.js";
 import { clipTitle, BIG_CHANCE_LABEL } from "../src/highlightRenderer.js";
 import { scenarioLabel, SYNTHETIC_BADGE_TEXT, transportBadge } from "../src/utils.js";
 
@@ -135,27 +135,56 @@ async function withEnv<T>(fetchImpl: typeof fetch, run: (calls: Request[]) => Pr
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-test("non-GET requests carry the stored producer token; GET requests never do", async () => {
+test("mutations and studio reads carry the stored producer token; public GETs do not", async () => {
   await withEnv(async () => json({ state: "idle" }), async (calls) => {
     setStudioToken("  secret-token  ");
     assert.equal(getStudioToken(), "secret-token");
     assert.equal(globalThis.localStorage.getItem(STUDIO_TOKEN_KEY), "secret-token");
     await api.getLiveStatus();
     await api.stopLive();
+    await api.getStudioAuthRequired();
+    await api.getStudioStorylines();
     assert.equal(calls[0].headers.get("Authorization"), null);
     assert.equal(calls[1].method, "POST");
+    assert.equal(calls[2].headers.get("Authorization"), null);
+    assert.equal(new URL(calls[2].url).pathname, "/api/studio/auth-required");
+    assert.equal(calls[3].headers.get("Authorization")?.startsWith("Bearer "), true);
+    assert.equal(calls[3].headers.get("Authorization")?.endsWith("secret-token"), true);
     assert.equal(calls[1].headers.get("Authorization"), "Bearer secret-token");
     setStudioToken("");
     assert.equal(globalThis.localStorage.getItem(STUDIO_TOKEN_KEY), null);
   });
 });
 
-test("applyStudioAuth skips GET/HEAD and requests without a token", () => {
+test("applyStudioAuth skips public GET/HEAD and requests without a token", () => {
   const headers = new Headers();
   applyStudioAuth(headers, "POST");
   assert.equal(headers.get("Authorization"), null, "no storage in Node means no token");
   applyStudioAuth(headers, "GET");
   assert.equal(headers.get("Authorization"), null);
+  applyStudioAuth(headers, "GET", "/api/studio/storylines");
+  assert.equal(headers.get("Authorization"), null);
+  assert.equal(isStudioReadPath("/api/studio/auth-required"), false);
+  assert.equal(isStudioReadPath("/API/STUDIO/STORYLINES/"), true);
+  const params = new URLSearchParams({ role: "fan", persona: "casual", language: "en" });
+  withStudioStreamToken(params, "fan");
+  assert.equal(params.has("token"), false);
+  withStudioStreamToken(params, "studio");
+  assert.equal(params.has("token"), false);
+});
+
+test("studio EventSource params include the saved producer token", async () => {
+  await withEnv(async () => json({}), async () => {
+    setStudioToken("secret-token");
+    const studio = new URLSearchParams({ role: "studio", persona: "analyst", language: "en" });
+    withStudioStreamToken(studio, "studio");
+    assert.equal(studio.get("token"), "secret-token");
+    const fan = new URLSearchParams({ role: "fan" });
+    withStudioStreamToken(fan, "fan");
+    assert.equal(fan.has("token"), false);
+    assert.match(read("src/hooks/useLiveStream.ts"), /withStudioStreamToken/);
+    assert.match(read("src/StudioNotices.tsx"), /setStudioToken\(value\)/);
+  });
 });
 
 test("a 401 surfaces a clear Producer token required error", async () => {

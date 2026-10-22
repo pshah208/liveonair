@@ -8,6 +8,7 @@ import type { AnalysisRequest, MatchFixture, MatchSnapshot } from "../../shared/
 import type { AnalyzeFixture, LiveMatchView, LiveService, StorylineDesk } from "../contracts.js";
 import { isPublicStoryline } from "../agentAccess.js";
 import { type TickSource } from "../live/service.js";
+import { requireStudioToken, studioAccessGranted } from "./studioAuth.js";
 import { HttpError, assertKnownFavoritePlayer, isHttpError } from "../validation.js";
 
 type ChanceInsightFeed = {
@@ -22,6 +23,8 @@ type CreateLiveRouterOptions = {
   /** Optional so existing test routers keep working. Fan and studio both receive issued, revised and withdrawn insights. */
   insights?: ChanceInsightFeed;
   maxStreams?: number;
+  /** When set, a studio-role stream without this token is projected as fan. Writes on this router require it. */
+  studioToken?: string;
 };
 
 type StreamState = {
@@ -169,6 +172,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
   });
   const maxStreams = options.maxStreams ?? 200;
   const streams = new Set<StreamState>();
+  const guard = requireStudioToken(options.studioToken);
 
   router.get("/api/live/status", (_request, response) => {
     response.json(options.live.status());
@@ -193,7 +197,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     response.json(current.fixture);
   });
 
-  router.post("/api/live/start", startLimiter, async (request, response, next) => {
+  router.post("/api/live/start", guard, startLimiter, async (request, response, next) => {
     try {
       const parsed = parseStrict(startLiveRequestSchema, request.body);
       const status = await options.live.start(parsed);
@@ -203,7 +207,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     }
   });
 
-  router.post("/api/live/stop", async (_request, response, next) => {
+  router.post("/api/live/stop", guard, async (_request, response, next) => {
     try {
       response.json(await options.live.stop());
     } catch (error) {
@@ -211,7 +215,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     }
   });
 
-  router.post("/api/live/correction", async (request, response, next) => {
+  router.post("/api/live/correction", guard, async (request, response, next) => {
     try {
       const parsed = parseStrict(correctionSchema, request.body);
       await options.live.publishCorrection(parsed.eventId);
@@ -228,7 +232,13 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
         return;
       }
 
-      const query = parseStrict(streamQuerySchema, request.query);
+      const rawQuery = request.query as Record<string, unknown>;
+      const providedToken = rawQuery.token;
+      const queryWithoutToken = { ...rawQuery };
+      delete queryWithoutToken.token;
+      const parsed = parseStrict(streamQuerySchema, queryWithoutToken);
+      const studioGranted = parsed.role !== "studio" || studioAccessGranted(request.header("authorization"), providedToken, options.studioToken);
+      const query: LiveStreamQuery = studioGranted ? parsed : { ...parsed, role: "fan" };
       const current = safeCurrent(options.live);
       validateFavoritePlayer(query.role, current?.fixture, query.favoritePlayerId);
 

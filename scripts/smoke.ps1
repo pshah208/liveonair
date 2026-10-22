@@ -6,11 +6,15 @@ param(
   [switch] $IncludeStorylines,
   [ValidateRange(0.0, 1.0)] [double] $MaxStorylineFailureRatio = 0.5,
   [ValidateRange(60, 1800)] [int] $StorylineTimeoutSeconds = 420,
-  # Bearer token for state-changing Studio endpoints (needed by -IncludeStorylines once STUDIO_TOKEN is set).
-  # Falls back to $env:STUDIO_TOKEN. Never printed.
+  # Bearer token for the Studio endpoints. When STUDIO_TOKEN is set on the app, every /api/studio/* route
+  # (GET included) and the live start/stop/correction writes require it. Falls back to $env:STUDIO_TOKEN. Never printed.
   [securestring] $StudioToken,
-  # Fail unless /api/live/status reports this transport ('fabric-eventstream' or 'local').
-  [ValidateSet('', 'fabric-eventstream', 'local')] [string] $ExpectTransport = ''
+  # Fail unless /api/live/status reports this transport. 'eventstream' is the current name (v0.15+);
+  # 'fabric-eventstream' is the v0.14.x name. Both are accepted for either value, so a rollback still passes.
+  # Any value other than 'local' also requires transportConfigured = true.
+  [ValidateSet('', 'eventstream', 'fabric-eventstream', 'local')] [string] $ExpectTransport = '',
+  # Fail unless the app enforces Studio auth (STUDIO_TOKEN is set). Use for every judging deploy.
+  [switch] $ExpectStudioAuth
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +50,28 @@ Assert-True ($fixtures.Count -eq 3) 'Expected three synthetic fixtures'
 $transportStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
 Write-Output "Version: $($health.version)  Live transport: $($transportStatus.transport) (configured: $($transportStatus.transportConfigured))"
 if ($ExpectTransport) {
-  Assert-True ($transportStatus.transport -eq $ExpectTransport) "Expected transport '$ExpectTransport' but got '$($transportStatus.transport)'"
+  $eventstreamNames = @('eventstream', 'fabric-eventstream')
+  $accepted = if ($ExpectTransport -eq 'local') { @('local') } else { $eventstreamNames }
+  Assert-True ($transportStatus.transport -in $accepted) "Expected transport '$ExpectTransport' but got '$($transportStatus.transport)'"
+  if ($ExpectTransport -ne 'local') {
+    # 'eventstream' with configured=false would mean the secrets are gone; the fallback wrapper reports 'local' once it trips.
+    Assert-True ($transportStatus.transportConfigured -eq $true) 'Eventstream transport is not configured (Eventstream secrets missing?)'
+  }
+}
+
+# Studio auth. /api/studio/auth-required is public; everything else under /api/studio needs the bearer when it is on.
+$studioAuth = Invoke-RestMethod -Uri "$base/api/studio/auth-required" -TimeoutSec 30
+Write-Output "Studio auth required: $($studioAuth.required)"
+if ($ExpectStudioAuth) {
+  Assert-True ($studioAuth.required -eq $true) 'Studio auth is not enforced (STUDIO_TOKEN missing on the app?)'
+}
+if ($studioAuth.required -eq $true) {
+  $anonymous = Invoke-WebRequest -Uri "$base/api/studio/health" -TimeoutSec 30 -SkipHttpErrorCheck
+  Assert-True ($anonymous.StatusCode -eq 401) "Unauthenticated /api/studio/health returned $($anonymous.StatusCode), expected 401"
+  if ($studioHeaders.Count -gt 0) {
+    $authorized = Invoke-WebRequest -Uri "$base/api/studio/health" -Headers $studioHeaders -TimeoutSec 30 -SkipHttpErrorCheck
+    Assert-True ($authorized.StatusCode -eq 200) "Authenticated /api/studio/health returned $($authorized.StatusCode); the token does not match the app"
+  }
 }
 
 foreach ($summary in $fixtures) {
@@ -91,6 +116,8 @@ if ($IncludeAI) {
 
 if ($IncludeStorylines) {
   # Regression guard for v0.13.0-v0.14.0, when every storyline failed the producer guard and nothing reached air.
+  Assert-True ($studioAuth.required -ne $true -or $studioHeaders.Count -gt 0) `
+    'Studio auth is on: pass -StudioToken (or set $env:STUDIO_TOKEN) to run -IncludeStorylines'
   Assert-True ($health.ai.configured -eq $true) 'AI is not configured; the storyline desk cannot run'
   $liveStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
   Assert-True ($liveStatus.state -ne 'running') 'A live match is already running; refusing to interrupt it'
@@ -103,7 +130,7 @@ if ($IncludeStorylines) {
     Start-Sleep -Seconds 10
     $liveStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
     # -NoEnumerate keeps the JSON array intact; @(Invoke-RestMethod ...) would wrap it as one element.
-    $storylines = (Invoke-WebRequest -Uri "$base/api/studio/storylines" -TimeoutSec 30).Content | ConvertFrom-Json -NoEnumerate
+    $storylines = (Invoke-WebRequest -Uri "$base/api/studio/storylines" -Headers $studioHeaders -TimeoutSec 30).Content | ConvertFrom-Json -NoEnumerate
     $pending = @($storylines | Where-Object { $_.status -in $inFlight }).Count
     $settled = $liveStatus.state -ne 'running' -and $storylines.Count -gt 0 -and $pending -eq 0
   } until ($settled -or (Get-Date) -gt $deadline)

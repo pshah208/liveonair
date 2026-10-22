@@ -1,7 +1,7 @@
 // Monitoring for the Live on Air container app during judging (Oct 27 - Nov 10, 2026).
 // Adopts the existing Application Insights component (no recreate) and adds:
 // - a standard availability test on /api/health from three locations every 5 minutes;
-// - alerts for availability, container restarts, zero replicas and memory pressure;
+// - alerts for availability, container restarts (log-based) and memory pressure;
 // - an action group (email receivers optional) and a resource group consumption budget.
 targetScope = 'resourceGroup'
 
@@ -37,6 +37,15 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = { nam
 resource app 'Microsoft.App/containerApps@2024-03-01' existing = { name: containerAppName }
 
 var healthUrl = 'https://${app.properties.configuration.ingress.fqdn}${healthPath}'
+
+// Multi-line strings do not interpolate, hence replace(). Reason values are from the Container Apps docs and
+// community query packs; confirm against live rows (runbook section 1) before relying on the alert.
+var restartQuery = replace('''
+ContainerAppSystemLogs_CL
+| where ContainerAppName_s == '__APP__'
+| where Reason_s in~ ('ContainerRestart', 'ContainerTerminated', 'ContainerCrashing', 'BackOff')
+    or Log_s has_any ('restarting', 'OOMKilled')
+''', '__APP__', containerAppName)
 
 resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
   name: 'ag-liveonair'
@@ -107,65 +116,42 @@ resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
   }
 }
 
-resource restartAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+// Log-based restart alert. The RestartCount metric is a cumulative per-replica gauge, so a metric threshold
+// stays fired after one restart. This counts restart-type system events in the last 15 minutes instead, so
+// it fires on a new restart and auto-resolves once 15 minutes pass without another.
+// The environment ships logs with destination 'log-analytics', which writes the legacy custom table
+// ContainerAppSystemLogs_CL (not the diagnostic-settings table ContainerAppSystemLogs).
+resource restartAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = {
   name: 'liveonair-restarts'
-  location: 'global'
+  location: location
   tags: tags
   properties: {
-    description: 'A liveonair replica restarted (RestartCount is a per-replica cumulative gauge).'
+    displayName: 'liveonair-restarts'
+    description: 'liveonair logged a container restart, crash or termination in the last 15 minutes.'
     severity: 2
     enabled: true
-    scopes: [ app.id ]
+    scopes: [ appInsights.properties.WorkspaceResourceId ]
     evaluationFrequency: 'PT5M'
     windowSize: 'PT15M'
     autoMitigate: true
     criteria: {
-      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [
         {
-          criterionType: 'StaticThresholdCriterion'
-          name: 'restarts'
-          metricNamespace: 'Microsoft.App/containerApps'
-          metricName: 'RestartCount'
+          query: restartQuery
+          timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0
-          timeAggregation: 'Maximum'
+          failingPeriods: { numberOfEvaluationPeriods: 1, minFailingPeriodsToAlert: 1 }
         }
       ]
     }
-    actions: [ { actionGroupId: actionGroup.id } ]
+    actions: { actionGroups: [ actionGroup.id ] }
   }
 }
 
-resource noReplicaAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
-  name: 'liveonair-no-replicas'
-  location: 'global'
-  tags: tags
-  properties: {
-    description: 'liveonair has no running replica (minReplicas is 1, so this means it is down or stuck provisioning).'
-    severity: 1
-    enabled: true
-    scopes: [ app.id ]
-    evaluationFrequency: 'PT5M'
-    windowSize: 'PT5M'
-    autoMitigate: true
-    criteria: {
-      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
-      allOf: [
-        {
-          criterionType: 'StaticThresholdCriterion'
-          name: 'replicas'
-          metricNamespace: 'Microsoft.App/containerApps'
-          metricName: 'Replicas'
-          operator: 'LessThan'
-          threshold: 1
-          timeAggregation: 'Maximum'
-        }
-      ]
-    }
-    actions: [ { actionGroupId: actionGroup.id } ]
-  }
-}
+// No zero-replica metric alert: a metric alert does not evaluate when the Replicas series stops reporting
+// (the app-down case), and metric alerts have no "missing data = breaching" option. The availability
+// test above covers app-down.
 
 resource memoryAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
   name: 'liveonair-memory'

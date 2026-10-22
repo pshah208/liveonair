@@ -57,7 +57,10 @@ const round = (value: number, digits = 1) => Math.round(value * 10 ** digits) / 
 const metresBetween = (dxUnits: number, dyUnits: number) => Math.hypot((dxUnits / 100) * PITCH_LENGTH_M, (dyUnits / 100) * PITCH_WIDTH_M);
 
 function pressureDistanceM(pass: MatchEvent, pressure: MatchEvent): number {
-  return metresBetween(pass.x - pressure.x, pass.y - pressure.y);
+  const pressurePoint = pressure.teamId === pass.teamId
+    ? { x: pressure.x, y: pressure.y }
+    : { x: 100 - pressure.x, y: 100 - pressure.y };
+  return metresBetween(pass.x - pressurePoint.x, pass.y - pressurePoint.y);
 }
 
 export function isMatchedPressureEvent(pass: MatchEvent, pressure: MatchEvent): boolean {
@@ -70,11 +73,12 @@ export function isMatchedPressureEvent(pass: MatchEvent, pressure: MatchEvent): 
   return pressureDistanceM(pass, pressure) <= PRESSURE_MAX_DISTANCE_M;
 }
 
-/** Opta-style illustrative rule: completed pass that ends at least 25% closer to the goal centre than it started. */
+/** Common illustrative rule: completed pass that ends at least 25% closer to goal centre than it started. */
 export function isProgressivePass(event: MatchEvent): boolean {
   if (event.type !== "pass" || event.outcome !== "complete" || event.endX === undefined || event.endY === undefined) return false;
-  const start = Math.hypot(100 - event.x, 50 - event.y);
-  const end = Math.hypot(100 - event.endX, 50 - event.endY);
+  const toGoalDistanceM = (x: number, y: number) => Math.hypot(((100 - x) / 100) * PITCH_LENGTH_M, ((50 - y) / 100) * PITCH_WIDTH_M);
+  const start = toGoalDistanceM(event.x, event.y);
+  const end = toGoalDistanceM(event.endX, event.endY);
   return end <= start * 0.75;
 }
 

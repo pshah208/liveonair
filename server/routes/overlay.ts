@@ -4,6 +4,7 @@ import type { Storyline } from "../../shared/platform.js";
 import type { MatchEvent, MatchFixture } from "../../shared/types.js";
 import type { LiveService, StorylineDesk } from "../contracts.js";
 import { type TickSource } from "../live/service.js";
+import { createSseGate, streamCap } from "../live/sse.js";
 
 /** How long an approved lower third stays on the graphic after its trigger minute. */
 export const OVERLAY_HOLD_SECONDS = 20;
@@ -115,14 +116,28 @@ function tickSource(live: LiveService): TickSource | undefined {
   return undefined;
 }
 
-export function createOverlayRouter(deps: { live: LiveService; desk: StorylineDesk }): express.Router {
+export function createOverlayRouter(deps: { live: LiveService; desk: StorylineDesk; maxStreams?: number }): express.Router {
   const router = express.Router();
+  const maxStreams = streamCap(deps.maxStreams, process.env.OVERLAY_STREAM_MAX);
+  let active = 0;
 
   router.get("/api/overlay/current", (_request, response) => {
     response.json(buildTimedOverlay(deps.live, deps.desk));
   });
 
   router.get("/api/overlay/stream", (request, response) => {
+    if (active >= maxStreams) {
+      response.status(503).json({ error: "Overlay stream capacity reached" });
+      return;
+    }
+    active += 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      active -= 1;
+    };
+
     response.status(200);
     response.setHeader("Content-Type", "text/event-stream");
     response.setHeader("Cache-Control", "no-cache, no-transform");
@@ -131,12 +146,13 @@ export function createOverlayRouter(deps: { live: LiveService; desk: StorylineDe
     response.flushHeaders();
 
     let closed = false;
+    const gate = createSseGate((chunk) => response.write(chunk));
     const send = () => {
       if (closed) return;
-      response.write(`data: ${JSON.stringify(buildTimedOverlay(deps.live, deps.desk))}\n\n`);
+      gate.write(`data: ${JSON.stringify(buildTimedOverlay(deps.live, deps.desk))}\n\n`);
     };
     const heartbeat = setInterval(() => {
-      if (!closed) response.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+      if (!closed && !gate.blocked) gate.write(`: heartbeat ${new Date().toISOString()}\n\n`);
     }, 15_000);
     heartbeat.unref?.();
     const unsubscribeDesk = deps.desk.subscribe(() => send());
@@ -153,9 +169,13 @@ export function createOverlayRouter(deps: { live: LiveService; desk: StorylineDe
       unsubscribeDesk();
       unsubscribeLive();
       unsubscribeTick();
+      release();
       response.end();
     };
     response.on("close", close);
+    response.on("drain", () => {
+      if (!closed) gate.drain();
+    });
     request.on("close", close);
     send();
   });

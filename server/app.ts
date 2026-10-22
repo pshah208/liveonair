@@ -300,7 +300,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch }));
   const platform = options.platform ?? createPlatform();
 
   // Recap of the current live match, narrated from the live view so every correction applies.
@@ -484,9 +483,11 @@ export function createApp(options: CreateAppOptions = {}) {
 
   const studioToken = options.studioToken ?? process.env.STUDIO_TOKEN;
   app.use(createStudioAuth(studioToken));
-  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights }));
+  // Archive used to mount above this guard, so matchlab generate skipped the token check.
+  app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch, studioToken }));
+  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights, studioToken }));
   app.use(createTrackingRouter({ live: platform.live }));
-  app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken) }));
+  app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken), studioToken }));
   app.use(createOverlayRouter({ live: platform.live, desk: platform.desk }));
   app.use(createFanMomentsRouter({ live: platform.live, desk: platform.desk }));
   app.use(createMcpRouter({

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppHealth, FixtureSummary, Language, MatchFixture, MatchPeriod, MatchSnapshot, NarrativeResponse } from "../shared/types.js";
 import type { ArchiveSummary, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline } from "../shared/platform.js";
 import { periodBoundary } from "../shared/periods.js";
-import { api, ApiError } from "./api.js";
+import { api, ApiError, getStudioToken } from "./api.js";
 import { StudioMobileNotice, StudioTokenEntry } from "./StudioNotices.js";
 import { BroadcastBar, EventFeed, OverlayPreview, Panel, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
 import { HighlightReelPanel } from "./HighlightReel.js";
@@ -54,6 +54,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
   const [storylines, setStorylines] = useState<Storyline[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
   const [authRejected, setAuthRejected] = useState(false);
+  const [tokenEpoch, setTokenEpoch] = useState(0);
   const [storyboard, setStoryboard] = useState<RecapStoryboard | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
 
@@ -104,10 +105,17 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
       api.getStudioStoryboard(signal).then(setStoryboard)
     ]).then((results) => {
       const failed = results.find((result) => result.status === "rejected");
-      if (failed && failed.status === "rejected" && !signal.aborted) setPageError(getErrorMessage(failed.reason));
+      if (failed && failed.status === "rejected" && !signal.aborted) {
+        if (failed.reason instanceof ApiError && failed.reason.status === 401) {
+          setAuthRequired(true);
+          setAuthRejected(Boolean(getStudioToken()));
+          if (!getStudioToken()) return;
+        }
+        setPageError(getErrorMessage(failed.reason));
+      }
     });
     return () => controller.abort();
-  }, []);
+  }, [tokenEpoch]);
 
   function resetMatchState() {
     setStorylines([]);
@@ -312,7 +320,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
   return (
     <main className="page">
       <StudioMobileNotice onOpenFan={onOpenFan} />
-      {authRequired && <StudioTokenEntry rejected={authRejected} onSaved={() => { setAuthRejected(false); setPageError(null); }} />}
+      {authRequired && <StudioTokenEntry rejected={authRejected} onSaved={() => { setAuthRejected(false); setPageError(null); setTokenEpoch((value) => value + 1); }} />}
       <InfrastructurePanel open={infraOpen} onToggle={onToggleInfra} health={health} desk={desk} live={status} />
 
       {tab !== "video" && <BroadcastBar fixture={fixture} score={score} clockSecond={analyzedSecond} state={state} transport={transport} status={status} lagMs={status?.lagMs} eventsReceived={status?.eventsReceived ?? 0} />}

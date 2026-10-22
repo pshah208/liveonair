@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { ReviewStorylineRequest } from "../../shared/platform.js";
 import type { LiveService, StorylineDesk } from "../contracts.js";
 import { HttpError } from "../validation.js";
+import { requireStudioToken } from "./studioAuth.js";
 
 const reviewSchema = z.object({
   decision: z.enum(["approve", "reject", "edit"]),
@@ -30,7 +31,7 @@ function parseReviewRequest(payload: unknown): ReviewStorylineRequest {
   return result.data;
 }
 
-export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveService; authRequired?: boolean }): Router {
+export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveService; authRequired?: boolean; studioToken?: string }): Router {
   const router = express.Router();
   const reviewLimiter = rateLimit({
     windowMs: 60_000,
@@ -43,6 +44,9 @@ export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveServic
   router.get("/api/studio/auth-required", (_request, response) => {
     response.json({ required: Boolean(deps.authRequired) });
   });
+
+  // After the public probe so Express's case-insensitive match, not a path string, is what requires the token.
+  router.use("/api/studio", requireStudioToken(deps.studioToken));
 
   router.get("/api/studio/storylines", (_request, response) => {
     const current = deps.live.current();

@@ -142,6 +142,10 @@ function shiftWithinMetres(rand: () => number, from: Point, metresMax: number): 
   };
 }
 
+function mirrorPoint(point: Point): Point {
+  return { x: clampCoord(100 - point.x), y: clampCoord(100 - point.y) };
+}
+
 function choosePlayer(team: Team, rand: () => number, group: "defenders" | "midfield" | "attackers" | "any"): string {
   const selectors: Record<typeof group, string[]> = {
     defenders: ["RB", "LB", "CB"],
@@ -379,8 +383,9 @@ function generatePossessionEvents(fixtureId: string, seed: number, home: Team, a
       // Matched pressure is an opponent pressure event within 0–2 seconds and within 5 metres of the pass start.
       if (passSecond > PRESSURE_WINDOW_SECONDS + 1 && rand() < 0.20) {
         const pressureAt = passSecond - randomInt(rand, 0, PRESSURE_WINDOW_SECONDS);
-        const pressurePoint = shiftWithinMetres(rand, position, PRESSURE_MAX_DISTANCE_M);
-        if (metresBetween(pressurePoint, position) <= PRESSURE_MAX_DISTANCE_M) {
+        const pressureInPassFrame = shiftWithinMetres(rand, position, PRESSURE_MAX_DISTANCE_M);
+        if (metresBetween(pressureInPassFrame, position) <= PRESSURE_MAX_DISTANCE_M) {
+          const pressureInPressingFrame = mirrorPoint(pressureInPassFrame);
           events.push(createEvent({
             id: `${fixtureId}-pressure-${sequence++}`,
             atSecond: pressureAt,
@@ -388,8 +393,8 @@ function generatePossessionEvents(fixtureId: string, seed: number, home: Team, a
             teamId: otherTeam(teamId),
             playerId: choosePlayer(opponents, rand, "defenders"),
             outcome: "success",
-            x: pressurePoint.x,
-            y: pressurePoint.y,
+            x: pressureInPressingFrame.x,
+            y: pressureInPressingFrame.y,
             relatedEventId: `${fixtureId}-pass-${sequence}`,
           }));
         }

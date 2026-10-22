@@ -7,6 +7,7 @@ import express from "express";
 import type { LiveStatus } from "../shared/platform.js";
 import type { MatchFixture } from "../shared/types.js";
 import type { LiveService } from "../server/contracts.js";
+import { streamCap } from "../server/live/sse.js";
 import { createTrackingRouter } from "../server/routes/tracking.js";
 import type { TrackingScheduler } from "../server/live/tracking.js";
 
@@ -23,6 +24,10 @@ class FakeScheduler implements TrackingScheduler {
 
   clearInterval(handle: unknown): void {
     this.tasks.delete(handle as number);
+  }
+
+  pending(): number {
+    return this.tasks.size;
   }
 
   async advance(ms: number): Promise<void> {
@@ -123,6 +128,57 @@ test("tracking SSE stream closes when the match ends", async () => {
     }
     assert.equal(done, true, "stream should end once fixture duration is reached");
   } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("tracking stream cap is 200 unless overridden", () => {
+  assert.equal(streamCap(undefined, undefined), 200);
+  assert.equal(streamCap(undefined, "4"), 4);
+  assert.equal(streamCap(undefined, "0"), 200);
+  assert.equal(streamCap(2, "9"), 2);
+});
+
+test("tracking SSE rejects at the cap and clears both timers when the client leaves", async () => {
+  const scheduler = new FakeScheduler();
+  const app = express();
+  app.use(createTrackingRouter({ live: createLive(scheduler), scheduler, now: () => scheduler.now, maxStreams: 1 }));
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  try {
+    const first = await fetch(`${base}/api/live/tracking/stream`, { signal: firstController.signal });
+    assert.equal(first.status, 200);
+    assert.equal(scheduler.pending(), 2, "frame and heartbeat timers");
+
+    const capped = await fetch(`${base}/api/live/tracking/stream`);
+    assert.equal(capped.status, 503);
+    assert.equal((await capped.json()).error, "Tracking stream capacity reached");
+    assert.equal(scheduler.pending(), 2, "a rejected connection must not start timers");
+
+    firstController.abort();
+    let released = false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const again = await fetch(`${base}/api/live/tracking/stream`, { signal: secondController.signal });
+      if (again.status === 200) {
+        released = true;
+        break;
+      }
+      await again.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(released, true, "closing the client frees the slot");
+    secondController.abort();
+    for (let attempt = 0; attempt < 20 && scheduler.pending() !== 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(scheduler.pending(), 0, "both timers are cleared on close");
+  } finally {
+    firstController.abort();
+    secondController.abort();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

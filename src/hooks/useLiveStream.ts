@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Language, MatchPeriod, Persona } from "../../shared/types.js";
 import type { LiveMessage } from "../../shared/platform.js";
+import { STUDIO_TOKEN_EVENT, withStudioStreamToken } from "../api.js";
 import { isLiveMessage } from "../liveMessage.js";
 
 export type LiveStreamState = {
@@ -25,11 +26,19 @@ type LiveStreamOptions = {
 
 export function useLiveStream({ enabled, role, persona, language, favoritePlayerId, favoriteClubId, period, onMessage }: LiveStreamOptions): LiveStreamState {
   const [state, setState] = useState<LiveStreamState>({ phase: enabled ? "connecting" : "idle", reconnectAttempt: 0 });
+  const [tokenVersion, setTokenVersion] = useState(0);
   const handlerRef = useRef(onMessage);
   const sourceRef = useRef<EventSource | null>(null);
   const timerRef = useRef<number | null>(null);
 
   handlerRef.current = onMessage;
+
+  useEffect(() => {
+    if (role !== "studio") return;
+    const onToken = () => setTokenVersion((value) => value + 1);
+    window.addEventListener(STUDIO_TOKEN_EVENT, onToken);
+    return () => window.removeEventListener(STUDIO_TOKEN_EVENT, onToken);
+  }, [role]);
 
   useEffect(() => {
     if (!enabled) {
@@ -52,6 +61,7 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
       if (favoritePlayerId) params.set("favoritePlayerId", favoritePlayerId);
       if (favoriteClubId) params.set("favoriteClubId", favoriteClubId);
       if (period && period !== "full") params.set("period", period);
+      withStudioStreamToken(params, role);
       setState((current) => ({
         phase: attempt === 0 ? "connecting" : "reconnecting",
         reconnectAttempt: attempt,
@@ -110,7 +120,7 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
       sourceRef.current = null;
       setState((current) => ({ ...current, phase: "closed" }));
     };
-  }, [enabled, favoriteClubId, favoritePlayerId, language, period, persona, role]);
+  }, [enabled, favoriteClubId, favoritePlayerId, language, period, persona, role, tokenVersion]);
 
   return state;
 }

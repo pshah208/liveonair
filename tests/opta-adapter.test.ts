@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { generateMatch } from "../server/matchlab/generator.js";
 import { OPTA_MAPPING, OPTA_STYLE_LABEL } from "../server/ingest/opta/mapping.js";
+import { isMatchedPressureEvent } from "../shared/metrics.js";
 import {
   adaptOptaEvent,
   canonicalEventToOpta,
@@ -45,6 +46,19 @@ function opta(input: Record<string, unknown>) {
     qualifiers: [],
     ...input,
   };
+}
+
+function pressureMatchSummary(events: MatchEvent[]): { total: number; matched: number; rate: number } {
+  const latest = new Map<string, MatchEvent>();
+  for (const event of events) {
+    const previous = latest.get(event.id);
+    if (!previous || event.revision >= previous.revision) latest.set(event.id, event);
+  }
+  const active = [...latest.values()].filter((event) => !event.rescinded);
+  const passes = active.filter((event) => event.type === "pass");
+  const pressures = active.filter((event) => event.type === "pressure");
+  const matched = pressures.filter((pressure) => passes.some((pass) => isMatchedPressureEvent(pass, pressure))).length;
+  return { total: pressures.length, matched, rate: pressures.length ? matched / pressures.length : 0 };
 }
 
 test("community type ids and qualifiers map onto canonical events", () => {
@@ -152,6 +166,24 @@ test("generator output round-trips through the synthetic Opta-style adapter", ()
     }
   }
   assert.equal(OPTA_STYLE_LABEL, "Opta-style format, synthetic data");
+});
+
+test("pressure matching survives the Opta round-trip and stays stable across five seeds", () => {
+  const seeds = [1, 7, 42, 99, 20261027];
+  for (const seed of seeds) {
+    const fixture = generateMatch({ scenario: seed % 2 === 0 ? "late_winner" : "comeback", seed });
+    const roundTripped = fixture.events.flatMap((original) => {
+      const adapted = roundTripCanonicalEvent(original);
+      return adapted.kind === "event" ? [adapted.event] : [];
+    });
+    const direct = pressureMatchSummary(fixture.events);
+    const viaOpta = pressureMatchSummary(roundTripped);
+    assert.ok(direct.total > 0, `seed ${seed} has pressure events`);
+    assert.ok(viaOpta.total > 0, `seed ${seed} keeps pressure events after adapter`);
+    assert.ok(direct.rate >= 0.95, `seed ${seed} direct pressure-match rate remains high`);
+    assert.ok(viaOpta.rate >= 0.95, `seed ${seed} Opta round-trip pressure-match rate remains high`);
+    assert.ok(Math.abs(direct.rate - viaOpta.rate) <= 0.02, `seed ${seed} round-trip rate stays similar`);
+  }
 });
 
 class FakeScheduler implements LiveScheduler {

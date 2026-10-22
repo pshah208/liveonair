@@ -7,6 +7,7 @@ import express from "express";
 import type { Storyline } from "../shared/platform.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
 import type { LiveService, StorylineDesk } from "../server/contracts.js";
+import { createSseGate, streamCap } from "../server/live/sse.js";
 import { buildTimedOverlay, createOverlayRouter, OVERLAY_SCHEMA } from "../server/routes/overlay.js";
 
 function text(value: string) {
@@ -111,6 +112,64 @@ test("GET /api/overlay/current and the SSE channel follow the contract", async (
     assert.match(textBody, /approved-high/);
     await reader.cancel();
   } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("SSE gate skips writes until drain and then flushes the latest chunk", () => {
+  const chunks: string[] = [];
+  let accept = true;
+  const gate = createSseGate((chunk) => {
+    chunks.push(chunk);
+    return accept;
+  });
+  assert.equal(gate.write("one"), true);
+  accept = false;
+  assert.equal(gate.write("two"), false);
+  assert.equal(gate.blocked, true);
+  assert.equal(gate.write("three"), false);
+  assert.equal(gate.write("four"), false);
+  assert.deepEqual(chunks, ["one", "two"]);
+  accept = true;
+  gate.drain();
+  assert.deepEqual(chunks, ["one", "two", "four"]);
+  assert.equal(gate.blocked, false);
+  assert.equal(streamCap(undefined, undefined), 200);
+});
+
+test("overlay SSE returns 503 at the cap and frees the slot on close", async () => {
+  const { live, desk } = harness(70, [storyline("approved-high", "approved", 1, 5)]);
+  const app = express();
+  app.use(createOverlayRouter({ live, desk, maxStreams: 1 }));
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  try {
+    const first = await fetch(`${baseUrl}/api/overlay/stream`, { signal: firstController.signal });
+    assert.equal(first.status, 200);
+    const capped = await fetch(`${baseUrl}/api/overlay/stream`);
+    assert.equal(capped.status, 503);
+    assert.equal((await capped.json()).error, "Overlay stream capacity reached");
+    assert.equal((await fetch(`${baseUrl}/api/overlay/current`)).status, 200);
+
+    firstController.abort();
+    let released = false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const again = await fetch(`${baseUrl}/api/overlay/stream`, { signal: secondController.signal });
+      if (again.status === 200) {
+        released = true;
+        break;
+      }
+      await again.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(released, true);
+  } finally {
+    firstController.abort();
+    secondController.abort();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

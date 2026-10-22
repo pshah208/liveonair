@@ -189,6 +189,15 @@ try {
   Write-Output ("Settings: image=matchlens:{0} fabric={1} studioToken={2} appInsights=set watchdog={3}m liveSource={4}" -f `
     $ImageTag, [bool]$fabricReady, [bool]$StudioToken, $DemoWatchdogMinutes, $(if ($LiveSource) { $LiveSource } else { '(unset)' }))
 
+  # Rollback target for the post-deploy gate. Empty on a first deploy (the app does not exist yet).
+  $previousImage = ''
+  if (-not $PreviewOnly) {
+    $previousImage = (& az containerapp show --name liveonair --resource-group $ResourceGroup --subscription $SubscriptionId `
+      --query 'properties.template.containers[0].image' --output tsv 2>$null) -join ''
+    if ($LASTEXITCODE -ne 0) { $previousImage = '' }
+    $previousImage = $previousImage.Trim()
+  }
+
   $parameterFile = Join-Path ([IO.Path]::GetTempPath()) "matchlens-app-$([guid]::NewGuid()).json"
   try {
     @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = $parameters } |
@@ -210,6 +219,29 @@ try {
     Remove-Item -LiteralPath $parameterFile -ErrorAction SilentlyContinue
   }
   $app = ($appJson -join "`n") | ConvertFrom-Json
+
+  # ---- Post-deploy gate. What-if redacts secrets either way, so this is the only reliable check that the
+  # deployment kept them. Names only; `containerapp show` never returns secret values.
+  $requiredSecrets = @('appinsights-connection')
+  if ($fabricReady) { $requiredSecrets += @('eventstream-source', 'eventstream-destination') }
+  if ($StudioToken) { $requiredSecrets += 'studio-token' }
+  $secretNames = @(Invoke-Azure @('containerapp', 'show', '--name', 'liveonair', '--resource-group', $ResourceGroup,
+    '--subscription', $SubscriptionId, '--query', 'properties.configuration.secrets[].name', '--output', 'tsv') |
+    ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $missingSecrets = @($requiredSecrets | Where-Object { $_ -notin $secretNames })
+  Write-Output ("Post-deploy secrets: present=[{0}] required=[{1}]" -f ($secretNames -join ','), ($requiredSecrets -join ','))
+  if ($missingSecrets.Count -gt 0) {
+    $previousTag = if ($previousImage) { ($previousImage -split ':')[-1] } else { '<previous-tag>' }
+    Write-Error -ErrorAction Continue ("NO-GO: container app is missing secrets: {0}." -f ($missingSecrets -join ', '))
+    Write-Output 'Roll back (from the commit that produced the last good deploy, with the same secrets available):'
+    Write-Output ("  pwsh scripts/deploy.ps1 -SubscriptionId {0} -ResourceGroup {1} -UseExistingInfrastructure -SkipBuild -ImageTag {2}" -f `
+      $SubscriptionId, $ResourceGroup, $previousTag)
+    if ($previousImage) { Write-Output "Previous image: $previousImage" }
+    exit 2
+  }
+  if (-not $fabricReady) { Write-Warning 'Eventstream secrets not required (-AllowLocalTransport): the app runs on the local bus.' }
+  if (-not $StudioToken) { Write-Warning 'studio-token not required (-AllowNoStudioToken): producer endpoints are open.' }
+
   [pscustomobject]@{
     resourceGroup = $ResourceGroup
     location = $Location

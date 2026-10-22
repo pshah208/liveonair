@@ -7,6 +7,8 @@ import {
   completionOverExpected,
   expectedCompletion,
   fastestShot,
+  isMatchedPressureEvent,
+  isProgressivePass,
   passBand,
   passDifficulty,
   passDistanceM,
@@ -77,13 +79,13 @@ test("difficulty factors follow the published formula", () => {
   assert.equal(simple.score, Math.round(6.8 * 0.75));
 
   const pass = ev({ id: "hard", type: "pass", minute: 30, second: 10, x: 60, y: 10, endX: 88, endY: 55 });
-  const pressure = ev({ id: "press", type: "pressure", teamId: "away", minute: 30, second: 8, outcome: "success", x: 60, y: 10 });
+  const pressure = ev({ id: "press", type: "pressure", teamId: "away", minute: 30, second: 8, outcome: "success", x: 40, y: 90 });
   const ownPressure = ev({ id: "own", type: "pressure", teamId: "home", minute: 30, second: 8, outcome: "success" });
   const stale = ev({ id: "stale", type: "pressure", teamId: "away", minute: 30, second: 4, outcome: "success", x: 60, y: 10 });
   const far = ev({ id: "far", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 60, y: 30 });
   const later = ev({ id: "later", type: "pressure", teamId: "away", minute: 30, second: 12, outcome: "success" });
   const rescinded = ev({ id: "resc", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 60, y: 11, rescinded: true });
-  const wrongLink = ev({ id: "wrong-link", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 60, y: 10, relatedEventId: "different-pass" });
+  const wrongLink = ev({ id: "wrong-link", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 40, y: 90, relatedEventId: "different-pass" });
   const withoutPressure = passDifficulty(pass, [ownPressure, stale, far, later, rescinded, wrongLink])!;
   assert.ok(!withoutPressure.factors.some((factor) => factor.key === "pressure"), "same-team, >2 s, >5 m, later, rescinded, and mismatched link pressures do not count");
   const result = passDifficulty(pass, [pressure])!;
@@ -107,6 +109,47 @@ test("difficulty factors follow the published formula", () => {
   assert.ok(!corner.factors.some((factor) => factor.key === "forward"));
   const backwards = passDifficulty(ev({ id: "b", type: "pass", x: 60, y: 50, endX: 40, endY: 50 }))!;
   assert.ok(!backwards.factors.some((factor) => factor.key === "forward"));
+});
+
+test("matched pressure mirrors opponent-frame coordinates before distance checks", () => {
+  const pass = ev({ id: "pass-1", type: "pass", teamId: "home", minute: 12, second: 10, x: 72, y: 28, endX: 78, endY: 31 });
+  const mirroredNear = ev({
+    id: "pressure-near",
+    type: "pressure",
+    teamId: "away",
+    minute: 12,
+    second: 9,
+    x: 28.8,
+    y: 72.8,
+    relatedEventId: "pass-1",
+    outcome: "success",
+  });
+  const mirroredFar = ev({
+    id: "pressure-far",
+    type: "pressure",
+    teamId: "away",
+    minute: 12,
+    second: 9,
+    x: 20,
+    y: 60,
+    relatedEventId: "pass-1",
+    outcome: "success",
+  });
+  assert.equal(isMatchedPressureEvent(pass, mirroredNear), true, "opponent pressure is mirrored into the passer frame");
+  assert.equal(isMatchedPressureEvent(pass, mirroredFar), false, "far pressures stay unmatched after mirroring");
+});
+
+test("progressive-pass heuristic measures 25% goal-distance reduction in metres", () => {
+  const progressiveInMetres = ev({
+    id: "prog-m",
+    type: "pass",
+    outcome: "complete",
+    x: 50,
+    y: 50,
+    endX: 82,
+    endY: 84,
+  });
+  assert.equal(isProgressivePass(progressiveInMetres), true);
 });
 
 test("expected completion and completion over expected", () => {

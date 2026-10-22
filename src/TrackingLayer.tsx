@@ -47,6 +47,8 @@ export function TrackingLayer({ fixture }: TrackingLayerProps) {
 
   useEffect(() => {
     let cancelled = false;
+    setSourceFrame(null);
+    setRenderFrame(null);
     const source = new EventSource("/api/live/tracking/stream");
     setConnected(false);
     setStatusText("Connecting synthetic tracking…");

@@ -85,8 +85,9 @@ These are synthetic/illustrative figures for hackathon demo data. They are not c
 
 ### Progressive passes
 
-- Rule used: **Opta-style 25% closer to goal** (illustrative implementation).
+- Rule used: **common 25%-closer-to-goal heuristic** (illustrative implementation).
 - Completed pass is progressive when end distance to goal centre is at least 25% lower than start distance.
+- Distance is measured in metres on a 105 × 68 m pitch.
 - Function: `isProgressivePass` in `shared/metrics.ts`.
 
 ### Pass difficulty (illustrative, uncalibrated)
@@ -104,7 +105,7 @@ These are synthetic/illustrative figures for hackathon demo data. They are not c
 - Module: `shared/momentum.ts`
 - Function: `computeMomentum(events, opts?)`
 - Per-minute home vs away threat from:
-  - completed pass/carry `ΔxT` on an illustrative 12×8 grid derived from `illustrativeXg` by cell centre
+  - completed pass/carry location-threat proxy (xG surface delta) on an illustrative 12×8 grid derived from `illustrativeXg` by cell centre
   - shots contribute their `illustrativeXg`
 - Output:
   - smoothed per-minute net (`home - away`, ~3-minute smoothing default)

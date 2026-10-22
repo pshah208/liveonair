@@ -61,8 +61,9 @@ async function readError(response: Response): Promise<string> {
   return fallback || `Request failed with ${response.status}`;
 }
 
-/** localStorage key for the optional producer token used by Studio Desk writes. */
+/** localStorage key for the optional producer token used by Studio Desk reads, writes and the studio live stream. */
 export const STUDIO_TOKEN_KEY = "liveonair.studioToken";
+export const STUDIO_TOKEN_EVENT = "liveonair-studio-token";
 export const PRODUCER_TOKEN_REQUIRED = "Producer token required";
 
 function storage(): Storage | null {
@@ -82,22 +83,55 @@ export function setStudioToken(token: string): void {
     const value = token.trim();
     if (value) storage()?.setItem(STUDIO_TOKEN_KEY, value);
     else storage()?.removeItem(STUDIO_TOKEN_KEY);
+    notifyStudioTokenChange();
   } catch { /* storage unavailable */ }
 }
 
-/** Adds the stored producer token to a non-GET request. GET/HEAD requests never carry it. */
-export function applyStudioAuth(headers: Headers, method: string | undefined): void {
+function notifyStudioTokenChange(): void {
+  const target = globalThis.window;
+  if (!target || typeof target.dispatchEvent !== "function") return;
+  target.dispatchEvent(new Event(STUDIO_TOKEN_EVENT));
+}
+
+export function requestPath(input: RequestInfo | URL | undefined): string {
+  if (!input) return "";
+  if (typeof input === "string") {
+    const path = (input.split("#")[0] ?? "").split("?")[0] ?? "";
+    if (path.startsWith("/")) return path;
+    try { return new URL(input, "http://localhost").pathname; } catch { return path; }
+  }
+  if (input instanceof URL) return input.pathname;
+  try { return new URL(input.url).pathname; } catch { return ""; }
+}
+
+/** Studio reads that return drafts or traces. The auth probe stays public so the desk can discover the requirement. */
+export function isStudioReadPath(path: string): boolean {
+  const pathname = (path.split("?")[0] ?? "").replace(/\/+$/u, "").toLowerCase() || "/";
+  if (pathname === "/api/studio/auth-required") return false;
+  return pathname === "/api/studio" || pathname.startsWith("/api/studio/");
+}
+
+/** Adds the stored producer token to mutations and to studio reads. Public GETs stay anonymous. */
+export function applyStudioAuth(headers: Headers, method: string | undefined, input?: RequestInfo | URL): void {
   const verb = (method ?? "GET").toUpperCase();
-  if (verb === "GET" || verb === "HEAD" || headers.has("Authorization")) return;
+  if (headers.has("Authorization")) return;
+  if ((verb === "GET" || verb === "HEAD") && !isStudioReadPath(requestPath(input))) return;
   const token = getStudioToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
+}
+
+/** EventSource cannot set headers, so the studio live stream carries the token as a query parameter. */
+export function withStudioStreamToken(params: URLSearchParams, role: "fan" | "studio"): void {
+  if (role !== "studio") return;
+  const token = getStudioToken();
+  if (token) params.set("token", token);
 }
 
 export async function requestJson<T>(input: RequestInfo | URL, init?: RequestOptions): Promise<T | null> {
   const headers = new Headers(init?.headers);
   const hasBody = init && Object.prototype.hasOwnProperty.call(init, "body");
   if (hasBody) headers.set("Content-Type", "application/json");
-  applyStudioAuth(headers, init?.method);
+  applyStudioAuth(headers, init?.method, input);
   const response = await fetch(input, {
     ...init,
     headers,

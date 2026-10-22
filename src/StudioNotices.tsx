@@ -32,7 +32,7 @@ type StudioTokenEntryProps = {
   onSaved: () => void;
 };
 
-/** Small producer-token entry shown only when the server requires auth for Studio writes. Stored in localStorage. */
+/** Producer-token entry. Saving stores the token used as a bearer on studio fetches and as `?token=` on the studio EventSource. */
 export function StudioTokenEntry({ rejected, onSaved }: StudioTokenEntryProps) {
   const [value, setValue] = useState(getStudioToken);
   const [saved, setSaved] = useState(() => Boolean(getStudioToken()));
@@ -50,7 +50,7 @@ export function StudioTokenEntry({ rejected, onSaved }: StudioTokenEntryProps) {
       </label>
       <button type="submit" className="button button--small">Save token</button>
       <span className="subtle-text" role="status">
-        {rejected ? "Producer token required: the server rejected this request. Check the token and try again." : saved ? "Token saved on this device." : "Studio actions need a producer token on this server."}
+        {rejected ? "Producer token required: the server rejected this request. Check the token and try again." : saved ? "Token saved on this device. Studio reads and the live desk stream will use it." : "Studio reads, the live desk stream and studio actions need a producer token on this server."}
       </span>
     </form>
   );

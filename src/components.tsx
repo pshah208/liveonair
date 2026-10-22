@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Language, MatchEvent, MatchFixture, MatchSnapshot, NarrativeResponse, TeamStats } from "../shared/types.js";
 import type { RecapStoryboard, ReviewStorylineRequest, Storyline, StorylineHandoff, StorylineStatus, VerifiedFact } from "../shared/platform.js";
 import { latestRevisions } from "../shared/highlights.js";
+import { placeEvent } from "../shared/ballPath.js";
 import {
   chapterText,
   claimText,
@@ -531,7 +532,7 @@ export function Storyboard({ storyboard, fixture, storylines, language }: Storyb
                 <div className="chips">{chapter.storylineIds.map((id) => <span className="tag" key={id}>{storylineMap.get(id) ? localizeText(storylineMap.get(id)!.headline, language).text : id}</span>)}</div>
               )}
             </div>
-            <MiniPitch events={events} />
+            <MiniPitch fixture={fixture} events={events} />
           </li>
         );
       })}
@@ -539,14 +540,17 @@ export function Storyboard({ storyboard, fixture, storylines, language }: Storyb
   );
 }
 
-function MiniPitch({ events }: { events: MatchEvent[] }) {
+function MiniPitch({ fixture, events }: { fixture: MatchFixture; events: MatchEvent[] }) {
   return (
     <svg viewBox="0 0 100 68" className="mini-pitch" role="img" aria-label="Chapter events on the pitch">
       <rect x="1" y="1" width="98" height="66" rx="3" fill="var(--cp-surface-soft)" stroke="var(--cp-border-strong)" strokeWidth="0.8" />
       <path d="M50 1v66" stroke="var(--cp-border)" strokeWidth="0.6" />
-      {events.slice(0, 14).map((event, index) => (
-        <circle key={`${event.id}-${index}`} cx={event.x} cy={(event.y / 100) * 68} r="2" fill={teamTint(event.teamId)} opacity={event.rescinded ? 0.3 : 0.9} />
-      ))}
+      {events.slice(0, 14).map((event, index) => {
+        const point = placeEvent(fixture, event);
+        return (
+          <circle key={`${event.id}-${index}`} cx={point.x} cy={(point.y / 100) * 68} r="2" fill={teamTint(event.teamId)} opacity={event.rescinded ? 0.3 : 0.9} />
+        );
+      })}
     </svg>
   );
 }
