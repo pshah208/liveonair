@@ -1,5 +1,5 @@
 import { placeEvent, isCameraFixture } from "./ballPath.js";
-import { aggregatePasses, fastestShot, passQualities, physicalMetrics, scopedTracking } from "./metrics.js";
+import { aggregatePasses, fastestShot, isProgressivePass, passQualities, physicalMetrics, scopedTracking } from "./metrics.js";
 import { filterByPeriod, periodBoundary, sameHalf, type PeriodBoundary } from "./periods.js";
 import type { MatchEvent, MatchFixture, MatchPeriod, Player, TeamId } from "./types.js";
 
@@ -32,7 +32,7 @@ export interface PlayerAnalysis {
   shots: number;
   shotsOnTarget: number;
   xg: number;
-  /** Expected assists: xG of shots created by this player's passes or corners. */
+  /** xG assisted (inferred creator): xG of shots created by this player's passes or corners. */
   xa: number;
   keyPasses: number;
   passes: number;
@@ -188,7 +188,7 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
     const xa = createdShots.reduce((sum, shot) => sum + (shot.xg ?? 0), 0);
     const passes = own.filter((event) => event.type === "pass");
     const passesCompleted = passes.filter((pass) => pass.outcome === "complete").length;
-    const progressivePasses = passes.filter((pass) => pass.outcome === "complete" && pass.endX !== undefined && pass.endX - pass.x >= 15).length;
+    const progressivePasses = passes.filter(isProgressivePass).length;
     const tackles = own.filter((event) => event.type === "tackle");
     const tacklesWon = tackles.filter((tackle) => tackle.outcome === "success" || tackle.outcome === "complete").length;
     const saves = own.filter((event) => event.type === "save");

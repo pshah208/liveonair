@@ -10,7 +10,6 @@ import type {
   NarrativeResponse,
   PostMatchStorylinesResponse
 } from "../shared/types.js";
-import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type {
   ArchivePlayerProfile,
   ArchiveSummary,
@@ -62,16 +61,50 @@ async function readError(response: Response): Promise<string> {
   return fallback || `Request failed with ${response.status}`;
 }
 
+/** localStorage key for the optional producer token used by Studio Desk writes. */
+export const STUDIO_TOKEN_KEY = "liveonair.studioToken";
+export const PRODUCER_TOKEN_REQUIRED = "Producer token required";
+
+function storage(): Storage | null {
+  try {
+    return typeof globalThis.localStorage === "undefined" ? null : globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function getStudioToken(): string {
+  try { return storage()?.getItem(STUDIO_TOKEN_KEY)?.trim() ?? ""; } catch { return ""; }
+}
+
+export function setStudioToken(token: string): void {
+  try {
+    const value = token.trim();
+    if (value) storage()?.setItem(STUDIO_TOKEN_KEY, value);
+    else storage()?.removeItem(STUDIO_TOKEN_KEY);
+  } catch { /* storage unavailable */ }
+}
+
+/** Adds the stored producer token to a non-GET request. GET/HEAD requests never carry it. */
+export function applyStudioAuth(headers: Headers, method: string | undefined): void {
+  const verb = (method ?? "GET").toUpperCase();
+  if (verb === "GET" || verb === "HEAD" || headers.has("Authorization")) return;
+  const token = getStudioToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+}
+
 export async function requestJson<T>(input: RequestInfo | URL, init?: RequestOptions): Promise<T | null> {
   const headers = new Headers(init?.headers);
   const hasBody = init && Object.prototype.hasOwnProperty.call(init, "body");
   if (hasBody) headers.set("Content-Type", "application/json");
+  applyStudioAuth(headers, init?.method);
   const response = await fetch(input, {
     ...init,
     headers,
     body: hasBody ? JSON.stringify(init?.body) : undefined
   });
   if (init?.allowNotFound && response.status === 404) return null;
+  if (response.status === 401) throw new ApiError(PRODUCER_TOKEN_REQUIRED, 401);
   if (!response.ok) throw new ApiError(await readError(response), response.status);
   if (response.status === 204) return null;
   return (await response.json()) as T;
@@ -93,7 +126,15 @@ export const api = {
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },
   getLiveStatus(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/status", { signal }); },
-  getChanceInsights(signal?: AbortSignal) { return requestJson<ChanceInsight[]>("/api/live/insights?role=studio", { signal }); },
+  /** Whether Studio Desk writes need a producer token. A missing endpoint or any error means "not required". */
+  async getStudioAuthRequired(signal?: AbortSignal): Promise<boolean> {
+    try {
+      const result = await requestJson<{ required?: unknown }>("/api/studio/auth-required", { signal, allowNotFound: true });
+      return result?.required === true;
+    } catch {
+      return false;
+    }
+  },
   getLiveFixture(signal?: AbortSignal) { return requestJson<MatchFixture>("/api/live/fixture", { signal, allowNotFound: true }); },
   startLive(body: StartLiveRequest, signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/start", { method: "POST", body, signal }); },
   stopLive(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/stop", { method: "POST", signal, allowNotFound: true }); },
@@ -132,12 +173,15 @@ function uploadFile<T>(url: string, file: File, onProgress: (fraction: number) =
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+    const token = getStudioToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
     xhr.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
     xhr.onload = () => {
       let payload: unknown = null;
       try { payload = JSON.parse(xhr.responseText); } catch { /* non-JSON error */ }
       if (xhr.status === 202) resolve(payload as T);
+      else if (xhr.status === 401) reject(new ApiError(PRODUCER_TOKEN_REQUIRED, 401));
       else reject(new Error((payload as { error?: string } | null)?.error ?? `Upload failed with ${xhr.status}`));
     };
     xhr.send(file);

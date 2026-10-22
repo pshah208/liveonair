@@ -32,6 +32,16 @@ export interface PlayerCardSectionProps {
   onPickFavorite: (player: Player) => void;
 }
 
+/** UI-only relabels for shared card rows (data keys unchanged). */
+const ROW_LABEL: Record<string, string> = {
+  topSpeed: "Top speed (synthetic peak-speed milestone)",
+  hardestPass: "Hardest pass (illustrative, uncalibrated)"
+};
+
+export function fanRowLabel(key: string, label: string): string {
+  return ROW_LABEL[key] ?? label;
+}
+
 const SAVE_MESSAGE: Record<ExportResult, string> = {
   shared: "Card shared.",
   downloaded: "Card saved as a picture.",
@@ -56,7 +66,7 @@ export function PlayerCardSection(props: PlayerCardSectionProps) {
         <p>Pick your player from the menu at the top to see their card.</p>
         {top3.length > 0 && (
           <>
-            <p className="fan-card__hint">Or start with the players having the biggest impact:</p>
+            <p className="fan-card__hint">Or start with the players with the highest illustrative activity score:</p>
             <ul className="fan-card__picks">
               {top3.map((entry) => (
                 <li key={entry.player.id}>
@@ -129,7 +139,7 @@ function PlayerCardBody({ fixture, uptoSecond, clockSecond, matchId, language, p
 
   return (
     <>
-      {spotlight && <p className="fan-card__badge" role="note">Spotlight instead: the top-impact player right now</p>}
+      {spotlight && <p className="fan-card__badge" role="note">Spotlight instead: the highest illustrative activity score right now</p>}
       <div className="fan-card__head">
         <div className="fan-card__headtext">
           <h3 className="fan-card__title">{model.title}</h3>
@@ -148,7 +158,7 @@ function PlayerCardBody({ fixture, uptoSecond, clockSecond, matchId, language, p
             <tbody>
               {model.rows.map((row) => (
                 <tr key={row.key}>
-                  <th scope="row">{row.label}{row.note && <small className="fan-card__note">{row.note}</small>}</th>
+                  <th scope="row">{fanRowLabel(row.key, row.label)}{row.note && <small className="fan-card__note">{row.note}</small>}</th>
                   <td>
                     <span className={`fan-card__pill fan-card__pill--${row.rank !== null && row.rank <= 3 ? row.rank : "n"}`} aria-label={row.rank === null ? "not ranked" : `${rankAria(row, language)} of ${row.of}`}>
                       {rankText(row, language)}

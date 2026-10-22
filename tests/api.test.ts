@@ -528,3 +528,20 @@ test("POST /api/live/narrate forwards the fan's focus and rejects half periods a
     await new Promise<void>((resolveServer) => server.close(() => resolveServer()));
   }
 });
+
+test("public studio auth probe and overlay current omit secrets and playerTags", async () => {
+  await withServer(async (baseUrl) => {
+    const authResponse = await fetch(`${baseUrl}/api/studio/auth-required`);
+    assert.equal(authResponse.status, 200);
+    const auth = await authResponse.json() as { required: boolean };
+    assert.equal(auth.required, Boolean(process.env.STUDIO_TOKEN?.trim()));
+    assert.equal(JSON.stringify(auth).includes("STUDIO_TOKEN"), false);
+
+    const overlayResponse = await fetch(`${baseUrl}/api/overlay/current`);
+    assert.equal(overlayResponse.status, 200);
+    const overlay = await overlayResponse.json() as { schema: string; match: null };
+    assert.equal(overlay.schema, "live-on-air.overlay/1");
+    assert.equal(overlay.match, null);
+    assert.equal(JSON.stringify(overlay).includes("playerTags"), false);
+  });
+});

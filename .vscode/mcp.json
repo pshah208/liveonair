@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "live-on-air": {
+      "type": "http",
+      "url": "https://liveonair.whiteisland-f5b236ef.eastus2.azurecontainerapps.io/mcp"
+    }
+  }
+}

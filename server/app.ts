@@ -28,6 +28,8 @@ import { generateMatch } from "./matchlab/generator.js";
 import { createPlatform, type Platform } from "./platform.js";
 import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
+import { createOverlayRouter } from "./routes/overlay.js";
+import { createStudioAuth, studioAuthRequired } from "./routes/studioAuth.js";
 import { createStudioRouter } from "./routes/studio.js";
 import { createA2aRouter } from "./a2a/index.js";
 import { getArchive } from "./archive/index.js";
@@ -68,6 +70,8 @@ type CreateAppOptions = {
   playerAnalyst?: PlayerAnalyst;
   engine?: EngineAdapter;
   platform?: Platform;
+  /** Undefined reads STUDIO_TOKEN. Empty string forces local-dev open mode. */
+  studioToken?: string;
   video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand; playerVision?: PlayerVisionAnalyzer; playerWorker?: PlayerCamWorker };
   staticDir?: string;
   logger?: (entry: { level: "error"; requestId: string; reason: string; path: string }) => void;
@@ -476,8 +480,11 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  const studioToken = options.studioToken ?? process.env.STUDIO_TOKEN;
+  app.use(createStudioAuth(studioToken));
   app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights }));
-  app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
+  app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken) }));
+  app.use(createOverlayRouter({ live: platform.live, desk: platform.desk }));
   app.use(createMcpRouter({
     live: platform.live, desk: platform.desk, analyzeFixture, archive: getArchive(),
     retrieval: createArchiveRetrievalFromEnv(), version, token: process.env.MCP_TOKEN || undefined,

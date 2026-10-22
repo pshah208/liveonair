@@ -1,6 +1,7 @@
 import type { MatchEvent, MatchFixture } from "../../shared/types.js";
 import type {
   LiveEnvelope,
+  LiveFeedSource,
   LiveStatus,
   StartLiveRequest,
 } from "../../shared/platform.js";
@@ -13,12 +14,13 @@ import type {
   LiveService,
   LiveTransportClient,
 } from "../contracts.js";
+import { roundTripCanonicalEvent } from "../ingest/opta/adapter.js";
 import { HttpError } from "../validation.js";
 
 type SchedulerHandle = unknown;
 
 export interface LiveScheduler {
-  setTimeout(callback: () => void, delayMs: number): SchedulerHandle;
+  setTimeout(callback: () => void, delayMs: number, options?: { unref?: boolean }): SchedulerHandle;
   clearTimeout(handle: SchedulerHandle): void;
   setInterval(callback: () => void, intervalMs: number): SchedulerHandle;
   clearInterval(handle: SchedulerHandle): void;
@@ -35,12 +37,21 @@ type CreateLiveServiceOptions = {
   buildFeedPlan: BuildFeedPlan;
   now?: () => number;
   scheduler?: LiveScheduler;
+  /** Default keeps the current canonical publish path. */
+  liveSource?: "canonical" | "opta-format";
+  /** Idle minutes before a synthetic demo starts. 0 disables. Defaults to 0 so tests do not auto-start. */
+  watchdogMinutes?: number;
 };
+
+const DEMO_SPEED = 20;
+const DEMO_SEED = 20261027;
 
 function defaultScheduler(): LiveScheduler {
   return {
-    setTimeout(callback, delayMs) {
-      return globalThis.setTimeout(callback, delayMs);
+    setTimeout(callback, delayMs, options) {
+      const handle = globalThis.setTimeout(callback, delayMs);
+      if (options?.unref && typeof handle.unref === "function") handle.unref();
+      return handle;
     },
     clearTimeout(handle) {
       clearTimeout(handle as NodeJS.Timeout);
@@ -104,6 +115,8 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   const buildFeedPlan = options.buildFeedPlan;
   const now = options.now ?? Date.now;
   const scheduler = options.scheduler ?? defaultScheduler();
+  const liveSource = options.liveSource ?? "canonical";
+  const watchdogMinutes = options.watchdogMinutes ?? 0;
 
   let state: LiveStatus["state"] = "idle";
   let activeFixture: MatchFixture | undefined;
@@ -132,6 +145,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   const tickListeners = new Set<(view: LiveMatchView | undefined) => void>();
   const scheduledPublishes = new Set<SchedulerHandle>();
   let tickerHandle: SchedulerHandle | undefined;
+  let watchdogHandle: SchedulerHandle | undefined;
   let stopConsumerPromise: Promise<() => Promise<void>> | undefined;
 
   const ensureSubscribed = () => {
@@ -218,11 +232,25 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     };
   }
 
+  function activeSource(): LiveFeedSource {
+    if (progressive) return "video-vision";
+    if (liveSource === "opta-format") return "opta-format-synthetic";
+    return "synthetic";
+  }
+
+  function readFallbackReason(): string | null {
+    return typeof transport.fallbackReason === "string" && transport.fallbackReason.length > 0
+      ? transport.fallbackReason
+      : null;
+  }
+
   function makeStatus(): LiveStatus {
     return {
       state,
       transport: transport.name,
       transportConfigured: transport.configured,
+      fallbackReason: readFallbackReason(),
+      source: activeSource(),
       ...currentFixtureStatus(),
       clockSecond: currentView?.clockSecond ?? computeClock(0),
       speed: currentSpeed,
@@ -234,7 +262,42 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     };
   }
 
-  async function publishEnvelope(kind: LiveEnvelope["kind"], extra: Omit<LiveEnvelope, "kind" | "matchId" | "sequence" | "publishedAt"> = {}) {
+  function clearWatchdog(): void {
+    if (watchdogHandle !== undefined) {
+      scheduler.clearTimeout(watchdogHandle);
+      watchdogHandle = undefined;
+    }
+  }
+
+  function armWatchdog(): void {
+    clearWatchdog();
+    if (watchdogMinutes <= 0) return;
+    watchdogHandle = scheduler.setTimeout(() => {
+      watchdogHandle = undefined;
+      void serialize(async () => {
+        if (state === "running") return;
+        try {
+          console.info(JSON.stringify({
+            level: "info",
+            event: "demo_watchdog",
+            reason: "No live match; starting synthetic demo",
+            idleMinutes: watchdogMinutes,
+          }));
+          await startBody({ generate: { scenario: "late_winner", seed: DEMO_SEED }, speed: DEMO_SPEED });
+        } catch (error) {
+          console.error(JSON.stringify({
+            level: "error",
+            event: "demo_watchdog",
+            reason: "Synthetic demo failed to start",
+            message: error instanceof Error ? error.message : "Unknown error",
+          }));
+          armWatchdog();
+        }
+      });
+    }, watchdogMinutes * 60_000, { unref: true });
+  }
+
+  async function publishEnvelope(kind: LiveEnvelope["kind"], extra: Omit<LiveEnvelope, "kind" | "matchId" | "sequence" | "publishedAt" | "source"> = {}) {
     if (!currentMatchId) {
       throw new HttpError(409, "No live match is active");
     }
@@ -244,9 +307,56 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       sequence,
       publishedAt: new Date(now()).toISOString(),
       ...extra,
+      source: activeSource(),
     };
     sequence += 1;
     await transport.publish(envelope);
+  }
+
+  async function publishRescission(eventId: string): Promise<void> {
+    const known = [
+      ...(activeFixture?.events ?? []),
+      ...(currentView?.fixture.events ?? []),
+      ...publishedEvents.values(),
+    ].filter((event) => event.id === eventId);
+    const latest = known.sort((left, right) => right.revision - left.revision)[0];
+    if (!latest) {
+      console.warn(JSON.stringify({
+        level: "warn",
+        component: "opta-adapter",
+        reason: "Deleted event did not match a published event",
+        eventId,
+      }));
+      return;
+    }
+    const correction = latest.rescinded
+      ? latest
+      : { ...latest, revision: latest.revision + 1, rescinded: true };
+    const key = `${correction.id}@${correction.revision}`;
+    if (publishedEvents.has(key) || acceptedRevisions.has(key)) return;
+    await publishEnvelope("match_event", { event: correction });
+  }
+
+  async function publishFeedEvent(event: MatchEvent): Promise<void> {
+    if (liveSource !== "opta-format") {
+      await publishEnvelope("match_event", { event });
+      return;
+    }
+    const adapted = roundTripCanonicalEvent(event);
+    if (adapted.kind === "correction") {
+      await publishRescission(adapted.eventId);
+      return;
+    }
+    if (adapted.kind === "ignored") {
+      console.warn(JSON.stringify({
+        level: "warn",
+        component: "opta-adapter",
+        reason: adapted.reason,
+        typeId: adapted.typeId,
+      }));
+      return;
+    }
+    await publishEnvelope("match_event", { event: adapted.event });
   }
 
   async function finishActiveMatch(complete = false): Promise<void> {
@@ -270,6 +380,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         currentView.clockSecond = computeClock();
       }
       notifyTick();
+      armWatchdog();
     } catch (error) {
       progressiveCompleted = false;
       analyzedThrough = previousWatermark;
@@ -392,6 +503,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     currentMatchId = `${fixture.id}-${now()}-${++generation}`;
     currentSpeed = speed;
     currentStress = stress;
+    clearWatchdog();
     progressive = isProgressive;
     analyzedThrough = 0;
     progressiveCompleted = false;
@@ -429,9 +541,73 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       currentMatchId = undefined;
       activeFixture = undefined;
       pendingEnvelopes.length = 0;
+      armWatchdog();
       throw error;
     }
   }
+
+  async function startBody(request: StartLiveRequest): Promise<LiveStatus> {
+    await ensureSubscribed();
+
+    if (state === "running") {
+      throw new HttpError(409, "Live match already running");
+    }
+
+    const speed = Math.floor(request.speed);
+    if (!Number.isInteger(speed) || speed < 1 || speed > 60) {
+      throw new HttpError(400, "speed must be an integer between 1 and 60");
+    }
+
+    const fixture = request.fixtureId
+      ? (() => {
+        try {
+          return registry.getFixture(request.fixtureId as string);
+        } catch (error) {
+          if (error instanceof RangeError) {
+            throw new HttpError(404, "Fixture not found");
+          }
+          throw error;
+        }
+      })()
+      : (() => {
+        if (!request.generate) {
+          throw new HttpError(400, "Exactly one of fixtureId or generate is required");
+        }
+        const generated = generateMatch(request.generate);
+        registry.registerFixture(generated);
+        return generated;
+      })();
+
+    clearWatchdog();
+    await startFixture(fixture, speed, Boolean(request.stress), false);
+
+    const matchId = currentMatchId;
+    for (const item of buildFeedPlan(fixture, Boolean(request.stress))) {
+      const timeoutHandle = scheduler.setTimeout(() => {
+        scheduledPublishes.delete(timeoutHandle);
+        void serialize(async () => {
+          if (state === "running" && currentMatchId === matchId) {
+            await publishFeedEvent(item.event);
+          }
+        });
+      }, Math.max(0, Math.floor((item.publishAtSecond * 1_000) / speed)));
+      scheduledPublishes.add(timeoutHandle);
+    }
+
+    const endHandle = scheduler.setTimeout(() => {
+      scheduledPublishes.delete(endHandle);
+      void serialize(async () => {
+        if (state === "running" && currentMatchId === matchId) {
+          await finishActiveMatch();
+        }
+      });
+    }, Math.max(0, Math.floor((fixture.durationSeconds * 1_000) / speed)));
+    scheduledPublishes.add(endHandle);
+
+    return makeStatus();
+  }
+
+  armWatchdog();
 
   return {
     status() {
@@ -441,65 +617,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       return currentView ? cloneView(currentView) : undefined;
     },
     start(request) {
-      return serialize(async () => {
-        await ensureSubscribed();
-
-        if (state === "running") {
-          throw new HttpError(409, "Live match already running");
-        }
-
-        const speed = Math.floor(request.speed);
-        if (!Number.isInteger(speed) || speed < 1 || speed > 60) {
-          throw new HttpError(400, "speed must be an integer between 1 and 60");
-        }
-
-        const fixture = request.fixtureId
-          ? (() => {
-            try {
-              return registry.getFixture(request.fixtureId as string);
-            } catch (error) {
-              if (error instanceof RangeError) {
-                throw new HttpError(404, "Fixture not found");
-              }
-              throw error;
-            }
-          })()
-          : (() => {
-            if (!request.generate) {
-              throw new HttpError(400, "Exactly one of fixtureId or generate is required");
-            }
-            const generated = generateMatch(request.generate);
-            registry.registerFixture(generated);
-            return generated;
-          })();
-
-        await startFixture(fixture, speed, Boolean(request.stress), false);
-
-        const matchId = currentMatchId;
-        for (const item of buildFeedPlan(fixture, Boolean(request.stress))) {
-          const timeoutHandle = scheduler.setTimeout(() => {
-            scheduledPublishes.delete(timeoutHandle);
-            void serialize(async () => {
-              if (state === "running" && currentMatchId === matchId) {
-                await publishEnvelope("match_event", { event: item.event });
-              }
-            });
-          }, Math.max(0, Math.floor((item.publishAtSecond * 1_000) / speed)));
-          scheduledPublishes.add(timeoutHandle);
-        }
-
-        const endHandle = scheduler.setTimeout(() => {
-          scheduledPublishes.delete(endHandle);
-          void serialize(async () => {
-            if (state === "running" && currentMatchId === matchId) {
-              await finishActiveMatch();
-            }
-          });
-        }, Math.max(0, Math.floor((fixture.durationSeconds * 1_000) / speed)));
-        scheduledPublishes.add(endHandle);
-
-        return makeStatus();
-      });
+      return serialize(() => startBody(request));
     },
     startProgressive(fixture) {
       const supplied = cloneFixture(fixture);
@@ -616,6 +734,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     },
     close() {
       return serialize(async () => {
+        clearWatchdog();
         clearPublishTimers();
         stopTicker();
         state = "finished";

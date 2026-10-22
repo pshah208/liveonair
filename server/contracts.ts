@@ -34,8 +34,10 @@ export type GetArchive = () => ArchiveSnapshot;
 
 // ---- live (owner: live) ------------------------------------------------------------
 export interface LiveTransportClient {
-  readonly name: "fabric-eventstream" | "local";
+  readonly name: "fabric-eventstream" | "eventstream" | "local";
   readonly configured: boolean;
+  /** Set by the resilient Eventstream wrapper after it switches to the local bus. */
+  readonly fallbackReason?: string | null;
   publish(envelope: LiveEnvelope): Promise<void>;
   /** Starts consuming; returns a stop function. */
   subscribe(onEnvelope: (envelope: LiveEnvelope, receivedAt: number) => void): Promise<() => Promise<void>>;

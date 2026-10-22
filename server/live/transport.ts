@@ -83,6 +83,7 @@ const liveEnvelopeBaseSchema = z.object({
   matchId: z.string().trim().min(1),
   sequence: z.number().int().min(1),
   publishedAt: z.string().datetime({ offset: true }),
+  source: z.enum(["synthetic", "opta-format-synthetic", "video-vision"]).optional(),
 }).strict();
 
 export const liveEnvelopeSchema = z.discriminatedUnion("kind", [
@@ -234,6 +235,102 @@ export function createEventstreamTransport(options: EventstreamTransportOptions)
   };
 }
 
+function sanitizeTransportError(error: unknown): string {
+  const message = error instanceof Error && error.message.trim() ? error.message : "Eventstream publish failed";
+  return message
+    .replace(/SharedAccessKey=[^;\s]+/giu, "SharedAccessKey=[redacted]")
+    .replace(/Endpoint=sb:\/\/[^;\s]+/giu, "Endpoint=[redacted]")
+    .slice(0, 240);
+}
+
+/**
+ * Publishes to Eventstream until a publish fails, then stays on the local bus.
+ * Subscribers are attached to both, so the failed event is delivered locally and
+ * any envelope already accepted by Eventstream can still arrive. The switch is logged once.
+ */
+export function createFallbackTransport(
+  primary: ClosableTransport,
+  fallback: ClosableTransport = createLocalTransport(),
+  log: (entry: Record<string, unknown>) => void = (entry) => console.warn(JSON.stringify(entry)),
+): ClosableTransport {
+  let usingFallback = false;
+  let fallbackReason: string | null = null;
+  const subscribers = new Set<(envelope: LiveEnvelope, receivedAt: number) => void>();
+  let primaryStop: (() => Promise<void>) | undefined;
+  let fallbackStop: (() => Promise<void>) | undefined;
+  let subscribePromise: Promise<void> | undefined;
+
+  const fanOut = (envelope: LiveEnvelope, receivedAt: number) => {
+    for (const subscriber of subscribers) {
+      try {
+        subscriber(cloneEnvelope(envelope), receivedAt);
+      } catch (error) {
+        console.error(JSON.stringify({
+          level: "error",
+          transport: usingFallback ? "local" : "eventstream",
+          reason: "Live subscriber failed",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }));
+      }
+    }
+  };
+
+  const ensureSubscribed = () => {
+    subscribePromise ??= (async () => {
+      primaryStop = await primary.subscribe(fanOut);
+      fallbackStop = await fallback.subscribe(fanOut);
+    })();
+    return subscribePromise;
+  };
+
+  return {
+    get name() {
+      return usingFallback ? "local" as const : "eventstream" as const;
+    },
+    get configured() {
+      return primary.configured;
+    },
+    get fallbackReason() {
+      return fallbackReason;
+    },
+    async publish(envelope) {
+      await ensureSubscribed();
+      if (!usingFallback) {
+        try {
+          await primary.publish(envelope);
+          return;
+        } catch (error) {
+          const reason = sanitizeTransportError(error);
+          await fallback.publish(envelope);
+          usingFallback = true;
+          fallbackReason = reason;
+          log({
+            level: "warn",
+            transport: "eventstream",
+            reason: "Eventstream publish failed; switching to local bus",
+            fallbackReason: reason,
+          });
+          return;
+        }
+      }
+      await fallback.publish(envelope);
+    },
+    async subscribe(onEnvelope) {
+      await ensureSubscribed();
+      subscribers.add(onEnvelope);
+      return async () => {
+        subscribers.delete(onEnvelope);
+      };
+    },
+    async close() {
+      subscribers.clear();
+      if (primaryStop) await primaryStop();
+      if (fallbackStop) await fallbackStop();
+      await Promise.all([primary.close(), fallback.close()]);
+    },
+  };
+}
+
 export function createTransportFromEnv(env: NodeJS.ProcessEnv): ClosableTransport {
   const sourceConnectionString = env.EVENTSTREAM_SOURCE_CONNECTION_STRING?.trim();
   const destinationConnectionString = env.EVENTSTREAM_DESTINATION_CONNECTION_STRING?.trim();
@@ -242,9 +339,9 @@ export function createTransportFromEnv(env: NodeJS.ProcessEnv): ClosableTranspor
     return createLocalTransport();
   }
 
-  return createEventstreamTransport({
+  return createFallbackTransport(createEventstreamTransport({
     sourceConnectionString,
     destinationConnectionString,
     consumerGroup: env.EVENTSTREAM_CONSUMER_GROUP?.trim() || "$Default",
-  });
+  }));
 }

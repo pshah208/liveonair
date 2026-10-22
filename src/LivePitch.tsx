@@ -172,7 +172,7 @@ export function Pitch({ fixture, events }: PitchProps) {
               return (
                 <line key={`${segment.eventId}-${segment.kind}-${index}`} x1={segment.from.x} y1={toY(segment.from.y)} x2={segment.to.x} y2={toY(segment.to.y)}
                   stroke={style.stroke} strokeWidth={style.width} strokeDasharray={style.dash} strokeLinecap="round" opacity={style.opacity} markerEnd={arrow}>
-                  {difficulty !== undefined && <title>{`Pass difficulty ${difficulty}/100`}</title>}
+                  {difficulty !== undefined && <title>{`Pass difficulty ${difficulty}/100 (illustrative, uncalibrated)`}</title>}
                 </line>
               );
             })}
@@ -224,8 +224,8 @@ export function Pitch({ fixture, events }: PitchProps) {
         <span><i className="swatch swatch--home" />{camera ? fixture.home.shortName : `${fixture.home.shortName} attacks →`}</span>
         {mode === "ball" && <span className="subtle-text">{camera ? "Camera-view positions · route between events inferred" : "Solid: pass / shot · dotted: inferred route between logged events"}</span>}
         {mode === "ball" && !camera && metrics.difficulty.size > 0 && (
-          <span className="subtle-text pitch-difficulty-legend" title="Pass difficulty 0–100 from distance, forward progress, destination, pressure, switch and cross">
-            Pass difficulty: <i className="swatch" style={{ background: DIFFICULTY_COLOUR.easy }} />easy <i className="swatch" style={{ background: DIFFICULTY_COLOUR.medium }} />medium <i className="swatch" style={{ background: DIFFICULTY_COLOUR.hard }} />hard
+          <span className="subtle-text pitch-difficulty-legend">
+                      Pass difficulty (illustrative, uncalibrated heuristic): <i className="swatch" style={{ background: DIFFICULTY_COLOUR.easy }} />easy <i className="swatch" style={{ background: DIFFICULTY_COLOUR.medium }} />medium <i className="swatch" style={{ background: DIFFICULTY_COLOUR.hard }} />hard
           </span>
         )}
         <span>{camera ? fixture.away.shortName : `← ${fixture.away.shortName}`} <i className="swatch swatch--away" /></span>

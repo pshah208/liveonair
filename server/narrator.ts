@@ -225,7 +225,7 @@ type BudgetLease = {
 
 const DEFAULT_CACHE_TTL_MS = 30_000;
 const DEFAULT_CACHE_MAX = 128;
-const DEFAULT_HOURLY_LIMIT = 60;
+export const DEFAULT_HOURLY_LIMIT = 120;
 const DEFAULT_CONCURRENT = 2;
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_FACTS = 5;
@@ -427,7 +427,7 @@ export function createBudget(maxRequestsPerHour: number, maxConcurrent: number, 
       }
 
       if (issuedAt.length >= maxRequestsPerHour) {
-        throw new HttpError(429, "AI hourly request quota reached");
+        throw new HttpError(429, `AI request limit reached: ${maxRequestsPerHour} per hour. Try again later.`);
       }
       if (inFlight >= maxConcurrent) {
         throw new HttpError(429, "AI concurrency limit reached");

@@ -15,6 +15,8 @@ const server = app.listen(port, "0.0.0.0", () => {
     port,
     liveTransport: transport.transport,
     liveTransportConfigured: transport.transportConfigured,
+    liveSource: transport.source,
+    fallbackReason: transport.fallbackReason ?? null,
     desk: platform.desk.health(),
   }));
 });

@@ -5,11 +5,21 @@ param(
   # This changes the shared live state, so it is opt-in and refuses to interrupt a running match.
   [switch] $IncludeStorylines,
   [ValidateRange(0.0, 1.0)] [double] $MaxStorylineFailureRatio = 0.5,
-  [ValidateRange(60, 1800)] [int] $StorylineTimeoutSeconds = 420
+  [ValidateRange(60, 1800)] [int] $StorylineTimeoutSeconds = 420,
+  # Bearer token for state-changing Studio endpoints (needed by -IncludeStorylines once STUDIO_TOKEN is set).
+  # Falls back to $env:STUDIO_TOKEN. Never printed.
+  [securestring] $StudioToken,
+  # Fail unless /api/live/status reports this transport ('fabric-eventstream' or 'local').
+  [ValidateSet('', 'fabric-eventstream', 'local')] [string] $ExpectTransport = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $base = $BaseUrl.AbsoluteUri.TrimEnd('/')
+$studioHeaders = @{}
+if (-not $StudioToken -and $env:STUDIO_TOKEN) { $StudioToken = ConvertTo-SecureString $env:STUDIO_TOKEN -AsPlainText -Force }
+if ($StudioToken) {
+  $studioHeaders.Authorization = 'Bearer ' + [Net.NetworkCredential]::new('', $StudioToken).Password
+}
 
 function Assert-True {
   param([bool] $Condition, [string] $Message)
@@ -32,6 +42,12 @@ $health = Invoke-RestMethod -Uri "$base/api/health" -TimeoutSec 30
 Assert-True ($health.status -eq 'ok') 'Application is not healthy'
 $fixtures = Invoke-RestMethod -Uri "$base/api/fixtures" -TimeoutSec 30
 Assert-True ($fixtures.Count -eq 3) 'Expected three synthetic fixtures'
+
+$transportStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
+Write-Output "Version: $($health.version)  Live transport: $($transportStatus.transport) (configured: $($transportStatus.transportConfigured))"
+if ($ExpectTransport) {
+  Assert-True ($transportStatus.transport -eq $ExpectTransport) "Expected transport '$ExpectTransport' but got '$($transportStatus.transport)'"
+}
 
 foreach ($summary in $fixtures) {
   $fixture = Invoke-RestMethod -Uri "$base/api/fixtures/$($summary.id)" -TimeoutSec 30
@@ -79,7 +95,7 @@ if ($IncludeStorylines) {
   $liveStatus = Invoke-RestMethod -Uri "$base/api/live/status" -TimeoutSec 30
   Assert-True ($liveStatus.state -ne 'running') 'A live match is already running; refusing to interrupt it'
   $startBody = @{ fixtureId = $fixtures[0].id; speed = 60 } | ConvertTo-Json
-  $null = Invoke-RestMethod -Uri "$base/api/live/start" -Method Post -ContentType 'application/json' -Body $startBody -TimeoutSec 30
+  $null = Invoke-RestMethod -Uri "$base/api/live/start" -Method Post -ContentType 'application/json' -Body $startBody -Headers $studioHeaders -TimeoutSec 30
   $inFlight = @('researching', 'checking', 'drafting')
   $deadline = (Get-Date).AddSeconds($StorylineTimeoutSeconds)
   $storylines = @()

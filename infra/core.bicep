@@ -17,7 +17,12 @@ var speechUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefin
 var searchIndexReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1407120a-92aa-4202-b7e9-c0e197c71c8f')
 var searchIndexContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a00-799e-43f5-93ac-243d3dce84a7')
 var searchServiceContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')
-var tags = { application: 'MatchLens', purpose: 'synthetic-football-hackathon' }
+var tags = {
+  application: 'MatchLens'
+  purpose: 'synthetic-football-hackathon'
+  project: 'pied-piper-soccer'
+  'managed-by': 'copilot-agents'
+}
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${prefix}-app-${suffix}'
@@ -40,7 +45,8 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   properties: {
     sku: { name: 'PerGB2018' }
     retentionInDays: 30
-    workspaceCapping: { dailyQuotaGb: json('0.1') }
+    // 1 GB/day: App Insights is workspace-based on this workspace; 0.1 GB went OverQuota and dropped telemetry.
+    workspaceCapping: { dailyQuotaGb: json('1') }
   }
 }
 

@@ -16,16 +16,20 @@ test("Studio live desk no longer renders Match intelligence or the Fact desk", (
   }
 });
 
-test("Chance insights sits directly under the Live board in the middle column", () => {
+test("middle column holds only the Live board; Chance insights and Player ID tags are cut", () => {
   assert.equal(columns.length, 3, "three desk columns");
   const middle = columns[1]!;
-  const board = middle.indexOf("<LiveBoardPanel");
-  const chances = middle.indexOf('title="Chance insights"');
-  assert.ok(board >= 0, "Live board in middle column");
-  assert.ok(chances > board, "Chance insights follows the Live board");
-  assert.equal(middle.match(/<Panel\b/g)?.length, 1, "Chance insights is the only panel beside the board");
-  assert.ok(middle.includes("chance-list--scroll"), "chance list scrolls so the middle column stays balanced");
-  assert.ok(!columns[2]!.includes("Chance insights"), "Chance insights moved out of the right column");
+  assert.ok(middle.includes("<LiveBoardPanel"), "Live board in middle column");
+  assert.equal(middle.match(/<Panel\b/g)?.length ?? 0, 0, "no other panel beside the board");
+  for (const removed of ["Chance insights", "ChanceInsightCard", "chanceInsights", "getChanceInsights", "PlayerIdTags", "computePlayerTags", "playerTags", "Player ID ·"]) {
+    assert.ok(!studio.includes(removed), `${removed} should not appear in StudioPage`);
+  }
+});
+
+test("lower-third overlay export no longer carries player tags", () => {
+  const exportCall = studio.slice(studio.indexOf("downloadJson("), studio.indexOf("})} />", studio.indexOf("downloadJson(")));
+  assert.ok(exportCall.includes("onAirLine") && exportCall.includes("claimSources"), "overlay export still has its core fields");
+  assert.ok(!exportCall.includes("playerTags"), "playerTags dropped from the overlay JSON");
 });
 
 test("every desk column keeps at least one panel so the grid has no empty column", () => {

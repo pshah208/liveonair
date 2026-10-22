@@ -50,7 +50,7 @@ function flow(health: AppHealth | null, desk: DeskHealth | null, live: LiveStatu
 const DESKS = [
   { icon: "🎙️", title: "Live desk", chips: ["Live board", "Storyline queue", "Corrections"], line: "Run the match, approve storylines." },
   { icon: "🎬", title: "Recap & highlights", chips: ["Auto-cut reel", "Written recap", "EN · ES · FR · PT"], line: "Every goal, red card and approved story." },
-  { icon: "📈", title: "Player analysis", chips: ["Heat maps", "Impact rating", "Analyst note"], line: "Every player's numbers from the feed." },
+  { icon: "📈", title: "Player analysis", chips: ["Heat maps", "Illustrative activity score", "Analyst note"], line: "Every player's numbers from the feed." },
   { icon: "🔍", title: "Video lab", chips: ["Hudl-style tags", "Notes", "Pundit reel"], line: "Manual tagging cut into highlights." },
   { icon: "🎯", title: "Player cam", chips: ["One player", "Spotlight", "Vertical cut"], line: "Studio highlights of a specific player." }
 ];
@@ -65,7 +65,7 @@ const GUARDRAILS = [
 
 const HOSTING = ["Container Apps", "Container Registry", "Managed identity", "Fabric Eventstream", "Eventhouse (KQL)", "Foundry agents", "AI Search", "Azure AI Speech", "Bicep", "GitHub Actions"];
 
-const NEXT = ["Player tracking feed (distance, sprints)", "Licensed data feed", "Entra ID roles", "Multi-match state", "Graphics-engine output"];
+const NEXT = ["Measured player tracking feed", "Licensed data feed", "Entra ID roles", "Multi-match state", "Graphics-engine output"];
 
 export function InfrastructurePanel({ open, onToggle, health, desk, live }: InfrastructurePanelProps) {
   return (

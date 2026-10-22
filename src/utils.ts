@@ -115,6 +115,28 @@ export function liveTransportLabel(status: Pick<LiveStatus, "transport" | "trans
   return status.transport === "fabric-eventstream" ? "Fabric Eventstream" : status.transportConfigured ? "Local bus" : "Local bus (Fabric off)";
 }
 
+/** Persistent disclosure shown on Fan View and Studio Desk. */
+export const SYNTHETIC_BADGE_TEXT = "Synthetic match · fictional · illustrative analytics";
+
+export type TransportBadge = { transport: "eventstream" | "local" | null; source: string | null };
+
+/**
+ * Reads `transport` and `source` from `/api/live/status` without trusting their shape.
+ * Older servers send "fabric-eventstream"; newer ones send "eventstream". Missing or unknown values give null.
+ */
+export function transportBadge(status: unknown): TransportBadge {
+  const record = status && typeof status === "object" ? (status as Record<string, unknown>) : {};
+  const raw = typeof record.transport === "string" ? record.transport.trim().toLowerCase() : "";
+  const transport = raw === "eventstream" || raw === "fabric-eventstream" ? "eventstream" : raw === "local" ? "local" : null;
+  const source = typeof record.source === "string" && record.source.trim() ? record.source.trim().slice(0, 40) : null;
+  return { transport, source };
+}
+
+/** Scripted scenario names, always marked as staged. */
+export function scenarioLabel(scenario: ScenarioKind): string {
+  return `${labelize(scenario)} (staged)`;
+}
+
 export function statusTone(status: StorylineStatus): "neutral" | "info" | "success" | "warning" | "danger" {
   switch (status) {
     case "approved": return "success";

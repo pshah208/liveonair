@@ -32,8 +32,9 @@ The app has three desks, switched at the top of the page:
   highlights, Video lab, Player cam).
 * **Fan View**: a read-only, personalised audience view of the same live match, with the same
   **Live board** (pitch and live stats) as the Studio Desk. See **Fan View** below.
-* **VAR Desk** (next phase): a design preview of an assistant for VAR reviews. See `VAR Desk
-  (next phase)`_.
+* **VAR Desk** is Phase 2 and is not in the app. The design is kept in `VAR Desk (Phase 2)`_.
+* Every view shows a "Synthetic match · fictional · illustrative analytics" badge, and scripted
+  scenarios are labelled *staged*. Per-player ID tags are intentionally out of scope.
 
 A collapsible **How Live on Air works** panel at the top of the Studio Desk shows each pipeline stage
 with live health.
@@ -46,9 +47,11 @@ with live health.
 * Start a seeded fixtureor generate a new match (comeback, red card, set piece, late winner,
   goal fest) at up to 60x speed. Events flow through Fabric Eventstream with the measured lag
   shown in the broadcast bar.
-* Follow the scorebug, animated pitch, live stats and notable-event feed. **Chance insights**
-  sits under the live board: each shot or goal shows its inferred build-up and event-derived
-  territory as events arrive.
+* Follow the scorebug, animated pitch, live stats and notable-event feed. The broadcast bar shows
+  the transport (``eventstream`` or ``local``) and source reported by ``/api/live/status``.
+* When the server requires a producer token (``GET /api/studio/auth-required``), the Studio Desk
+  shows a token field. The token is kept in ``localStorage`` (``liveonair.studioToken``) and sent
+  as a bearer token on Studio writes. Fan View never asks for one.
 * The live board has two views. **Ball movement** (default) animates the ball through the latest
   events on one pitch frame (home attacks left to right, away coordinates mirrored): solid arrows
   for passes, crosses and shots, dotted lines for the inferred route between logged events, shots
@@ -94,17 +97,19 @@ with live health.
 
 **Player analysis**
 
-* Squad lists for both teams, ranked by an illustrative impact rating or shirt number.
+* Squad lists for both teams, ranked by an illustrative activity score or shirt number.
 * Per player: heat map and action map of their logged actions (with average position), goals,
-  assists, shots, shots on target, xG, xA, box touches, passes completed and accuracy, key and
-  progressive passes, possession lost, tackles won, pressures, saves, fouls and cards.
-* **Impact on the game**: a 6.0-based rating built from published weights for scoring, chance
+  assists, shots, shots on target, illustrative xG, xG assisted (inferred creator), box touches,
+  passes completed and accuracy, key passes, passes gaining >= 15 grid units, possession lost, tackles won, pressures, saves, fouls and cards.
+* **Illustrative activity score**: a 6.0-based score built from published weights for scoring, chance
   creation, passing, defending, goalkeeping and discipline, with the breakdown shown as bars.
 * **Analyst note**: the Foundry ``matchlens-player-analyst`` agent writes a short scouting note in
   any of the four languages. Every number and name is checked against the computed figures; a note
   that invents anything (for example a distance run) is rejected for a rules-based note.
-* Distance covered, sprints, top speed and minutes played are shown as needing a tracking feed: an
-  event feed records on-ball actions, not continuous player positions.
+* Without a tracking feed, distance and top speed are shown as needing one: an event feed records
+  on-ball actions, not continuous player positions. With synthetic tracking, distance is labelled a
+  *synthetic minute aggregate* and top speed a *synthetic peak-speed milestone*. Sprint counts are
+  not shown.
 
 **Video lab**
 
@@ -162,12 +167,6 @@ with live health.
 * **Big moment**: one producer-approved, non-retracted story: goals first, then red cards, then the
   latest, with a mini-map of the linked event. If the shown story is later withdrawn the card says
   "This moment was updated".
-* **How the chance was built**: the latest non-withdrawn chance insight from the live stream
-  (``insight`` messages), favourite player's then favourite club's chances first, then goals. Casual
-  copy ("6 passes from their own half, 3 players involved"), player · action chips, and an
-  event-derived comparison with the previous 10 minutes. Revised insights show "Updated"; withdrawn
-  ones disappear with "This chance was updated after a correction". Chains are inferred from event
-  order, not provider possessions.
 * **Player of the match** vote: local to your browser (``liveonair.fan.vote.v1``), top three per team
   by impact, opens at 60' and locks at full time. No tallies and nothing is sent anywhere.
 * **My match** (key moments): your club's and player's moments first, while every goal, ruled-out
@@ -195,8 +194,7 @@ with live health.
   favourite-player alerts (deduplicated; no push notifications) and **My match summary** (an *AI
   summary* written on demand for your language, club and player, with audio when Azure AI
   Speech is available; always full match). The former *Why it matters* panel and *My moments*
-  reel were removed from Fan View. A slot is reserved for the upcoming *Chance build-up* and
-  post-match *Storylines* cards.
+  reel were removed from Fan View, and so was the *Chance build-up* card.
 * The fan stream (``/api/live/stream?role=fan``) only carries producer-approved storylines, without
   agent traces, handoffs, review notes or rejected claims, and only the verified facts of approved
   storylines. ``role=fan`` is presentation filtering, **not access control**: the demo's producer
@@ -248,9 +246,8 @@ How it works
    A shot or goal also gets a chance insight: the preceding sequence and event-derived
    territory, recomputed on every event. Definitions and limits are in ``docs/metrics.md``.
 5. **Render and personalise.** Approved copy becomes lower-thirds, recaps and
-   highlight captions in four languages. Studio shows the chance build-up before approval.
-   Fan and studio streams both receive issued, revised and withdrawn insights so a client
-   can drop a withdrawn card. Tailored fan copy still waits for producer approval.
+   highlight captions in four languages. Fan and studio streams still carry issued, revised
+   and withdrawn insights, but neither desk displays them. Tailored fan copy still waits for producer approval.
 
 Director, handoffs and recovery
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -725,8 +722,8 @@ Governance                      Producer approval                          Right
                                                                            responsible-AI review for on-air copy
 ==============================  =========================================  ==========================================
 
-VAR Desk (next phase)
----------------------
+VAR Desk (Phase 2)
+------------------
 
 A second desk that stays idle until a VAR check or review is called in the live feed. It reuses
 the Studio Desk pipeline:
@@ -745,7 +742,7 @@ the Studio Desk pipeline:
 
 It is advisory only. Offside needs calibrated multi-camera tracking, and official use would need
 competition and IFAB approval, so the first build targets explaining decisions to fans and
-preparing review notes. Today the desk is a design preview with no live connections.
+preparing review notes. It is Phase 2: the design preview was removed from the app.
 
 Cost and teardown
 -----------------

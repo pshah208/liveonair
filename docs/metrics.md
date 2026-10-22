@@ -55,3 +55,70 @@ Storylines for a shot or goal store `insightId`. Withdrawal retracts linked stor
 - Camera-frame fixtures have no metric progression.
 - Evidence lists are capped at 40 events.
 - This is not xG, pressure, field tilt, or possession.
+
+---
+
+## Additional synthetic / illustrative metrics
+
+These are synthetic/illustrative figures for hackathon demo data. They are not calibrated to licensed provider models.
+
+### Illustrative xG (location-only)
+
+- Module: `shared/xg.ts`
+- Function: `illustrativeXg(x, y)`
+- Frame: 0–100 attacking coordinates (`x=100` is the attacked goal, `y=50` is centre).
+- Pitch mapping: `x_m=(x/100)*105`, `y_m=(y/100)*68`.
+- Formula:
+  - `p = clamp(sigmoid(-1.15 - 0.08*d + 1.2*theta), 0.01, 0.60)`
+  - `d`: distance (metres) to goal centre
+  - `theta`: goal-mouth angle (radians) from shot point to both posts
+- Usage: generated shots set `xg` from this function. Outcome does not change the estimate.
+- Big/high chance threshold: `HIGH_XG_SHOT_THRESHOLD = 0.30` (`shared/xg.ts`).
+
+### xG assisted (inferred creator)
+
+- Surface label: **xG assisted (inferred creator)**.
+- Definition: sum of shot xG for shots attributed to a creator pass/corner link:
+  - explicit `relatedEventId` pass/corner to shot; else
+  - latest completed same-team pass by another player within 15 seconds, without crossing halftime.
+- Synthetic inference, not provider xA.
+
+### Progressive passes
+
+- Rule used: **Opta-style 25% closer to goal** (illustrative implementation).
+- Completed pass is progressive when end distance to goal centre is at least 25% lower than start distance.
+- Function: `isProgressivePass` in `shared/metrics.ts`.
+
+### Pass difficulty (illustrative, uncalibrated)
+
+- Formula in `shared/metrics.ts` (`PASS_DIFFICULTY_FORMULA`) is illustrative/uncalibrated.
+- Pressure bonus (+15) is applied only for **matched pressure**:
+  - opponent pressure event
+  - within 0–2 seconds before the pass
+  - within 5 metres of the pass start
+  - not rescinded
+  - if `relatedEventId` is present, it must match the pass id.
+
+### Attacking-threat momentum chart (illustrative)
+
+- Module: `shared/momentum.ts`
+- Function: `computeMomentum(events, opts?)`
+- Per-minute home vs away threat from:
+  - completed pass/carry `ΔxT` on an illustrative 12×8 grid derived from `illustrativeXg` by cell centre
+  - shots contribute their `illustrativeXg`
+- Output:
+  - smoothed per-minute net (`home - away`, ~3-minute smoothing default)
+  - goal/substitution markers by minute
+  - period split (first/second half)
+  - `insufficientCoverage` when event density is low.
+
+### Control vs chaos windows (illustrative)
+
+- Module: `shared/momentum.ts`
+- Function: `controlVsChaos(events, windowMinutes=5)`
+- Per window:
+  - `C = completed pass share` (controlled when `C >= 0.60`)
+  - `T = possession changes` (chaotic when `T >= 8` **or** shots `>= 3`)
+  - otherwise `mixed`
+- Includes window-over-window change in matched pressure-event count.
+- Includes `insufficientCoverage` guard for sparse windows.

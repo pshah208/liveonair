@@ -1,15 +1,49 @@
 import type { GenerateMatchRequest } from "../../shared/platform.js";
 import type { MatchEvent, MatchFixture, Team, TeamId } from "../../shared/types.js";
+import { illustrativeXg } from "../../shared/xg.js";
 import { getArchive } from "../archive/index.js";
 import {
   DURATION_SECONDS,
-  buildComposedFixture,
   clampCoord,
   createEvent,
   createTeam,
   eventSecond,
   lcg,
+  sortEventsStable,
+  syntheticTracking,
+  withSyntheticBallFlight,
 } from "../fixtures.js";
+
+type TeamCounter = Record<TeamId, number>;
+
+interface TeamTargets {
+  passes: TeamCounter;
+  completedPasses: TeamCounter;
+  shots: TeamCounter;
+}
+
+interface TeamProgress {
+  passes: TeamCounter;
+  completedPasses: TeamCounter;
+  shots: TeamCounter;
+}
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+const PASS_TARGET_MIN = 350;
+const PASS_TARGET_MAX = 600;
+const SHOT_TARGET_MIN = 9;
+const SHOT_TARGET_MAX = 17;
+const PASS_COMPLETION_MIN = 0.78;
+const PASS_COMPLETION_MAX = 0.88;
+const MAX_MATCH_SECOND = DURATION_SECONDS - 2;
+const PRESSURE_WINDOW_SECONDS = 2;
+const PRESSURE_MAX_DISTANCE_M = 5;
+const PITCH_LENGTH_M = 105;
+const PITCH_WIDTH_M = 68;
 
 const archive = getArchive();
 const clubIds = archive.clubs.map((club) => club.id).sort((a, b) => a.localeCompare(b));
@@ -57,38 +91,6 @@ function firstByRole(team: Team, role: string, fallbackIndex: number): string {
   return team.players.find((player) => player.position === role)?.id ?? team.players[fallbackIndex]?.id ?? team.players[0].id;
 }
 
-function firstAttacker(team: Team, offset = 0): string {
-  const attackers = team.players.filter((player) => ["RW", "LW", "ST", "AM"].includes(player.position));
-  return attackers[offset]?.id ?? attackers[0]?.id ?? team.players[0].id;
-}
-
-function firstMidfielder(team: Team): string {
-  return team.players.find((player) => ["DM", "CM", "AM"].includes(player.position))?.id ?? team.players[6]?.id ?? team.players[0].id;
-}
-
-function firstDefender(team: Team, offset = 0): string {
-  const defenders = team.players.filter((player) => ["RB", "LB", "CB"].includes(player.position));
-  return defenders[offset]?.id ?? defenders[0]?.id ?? team.players[0].id;
-}
-
-function shotAndGoal(fixtureId: string, stem: string, atSecond: number, teamId: TeamId, playerId: string, x: number, y: number, xg: number): MatchEvent[] {
-  const shotId = `${fixtureId}-${stem}-shot`;
-  return [
-    createEvent({ id: shotId, atSecond, type: "shot", teamId, playerId, outcome: "success", x, y, xg }),
-    createEvent({ id: `${fixtureId}-${stem}-goal`, atSecond: atSecond + 1, type: "goal", teamId, playerId, outcome: "success", x: clampCoord(x + 8), y: clampCoord(y + 1), relatedEventId: shotId }),
-  ];
-}
-
-function cornerShot(fixtureId: string, stem: string, atSecond: number, teamId: TeamId, takerId: string, shooterId: string, xg: number, goal = false): MatchEvent[] {
-  const cornerId = `${fixtureId}-${stem}-corner`;
-  const shotId = `${fixtureId}-${stem}-shot`;
-  return [
-    createEvent({ id: cornerId, atSecond, type: "corner", teamId, playerId: takerId, outcome: "complete", x: teamId === "home" ? 100 : 0, y: teamId === "home" ? 4 : 6, endX: 84, endY: 47 }),
-    createEvent({ id: shotId, atSecond: atSecond + 6, type: "shot", teamId, playerId: shooterId, outcome: goal ? "success" : "saved", x: 84, y: 47, xg, relatedEventId: cornerId }),
-    ...(goal ? [createEvent({ id: `${fixtureId}-${stem}-goal`, atSecond: atSecond + 7, type: "goal", teamId, playerId: shooterId, outcome: "success", x: 95, y: 49, relatedEventId: shotId })] : []),
-  ];
-}
-
 function scenarioTitle(scenario: GenerateMatchRequest["scenario"], home: Team, away: Team): { title: string; description: string } {
   switch (scenario) {
     case "comeback":
@@ -119,83 +121,394 @@ function scenarioTitle(scenario: GenerateMatchRequest["scenario"], home: Team, a
   }
 }
 
-function curatedEventsForScenario(fixtureId: string, scenario: GenerateMatchRequest["scenario"], home: Team, away: Team): MatchEvent[] {
-  const homeStriker = firstByRole(home, "ST", 10);
-  const awayStriker = firstByRole(away, "ST", 10);
-  const homeCreator = firstAttacker(home, 0);
-  const awayCreator = firstAttacker(away, 0);
-  const homeWide = firstAttacker(home, 1);
-  const awayWide = firstAttacker(away, 1);
-  const homeDefender = firstDefender(home, 1);
-  const awayDefender = firstDefender(away, 1);
-  const awayMid = firstMidfielder(away);
-  const homeMid = firstMidfielder(home);
+function randomInt(rand: () => number, min: number, max: number): number {
+  return min + Math.floor(rand() * (max - min + 1));
+}
 
-  const kickoff = createEvent({ id: `${fixtureId}-kickoff`, atSecond: 0, type: "kickoff", teamId: "home", playerId: homeStriker, outcome: "none", x: 50, y: 50 });
-  const halftime = createEvent({ id: `${fixtureId}-halftime`, atSecond: 45 * 60, type: "halftime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 });
-  const fulltime = createEvent({ id: `${fixtureId}-fulltime`, atSecond: DURATION_SECONDS, type: "fulltime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 });
+function otherTeam(teamId: TeamId): TeamId {
+  return teamId === "home" ? "away" : "home";
+}
 
-  if (scenario === "comeback") {
-    return [
-      kickoff,
-      ...shotAndGoal(fixtureId, "away-early", 11 * 60 + 15, "away", awayStriker, 87, 50, 0.24),
-      ...cornerShot(fixtureId, "away-corner", 29 * 60 + 34, "away", awayCreator, awayDefender, 0.19, true),
-      halftime,
-      ...shotAndGoal(fixtureId, "home-1", 53 * 60 + 11, "home", homeStriker, 88, 49, 0.27),
-      ...shotAndGoal(fixtureId, "home-2", 68 * 60 + 2, "home", homeWide, 85, 58, 0.21),
-      ...shotAndGoal(fixtureId, "home-3", 82 * 60 + 44, "home", homeCreator, 89, 54, 0.29),
-      fulltime,
-    ];
+function metresBetween(a: Point, b: Point): number {
+  return Math.hypot(((a.x - b.x) / 100) * PITCH_LENGTH_M, ((a.y - b.y) / 100) * PITCH_WIDTH_M);
+}
+
+function shiftWithinMetres(rand: () => number, from: Point, metresMax: number): Point {
+  const metresX = (rand() * 2 - 1) * metresMax;
+  const metresY = (rand() * 2 - 1) * metresMax;
+  return {
+    x: clampCoord(from.x + (metresX / PITCH_LENGTH_M) * 100),
+    y: clampCoord(from.y + (metresY / PITCH_WIDTH_M) * 100),
+  };
+}
+
+function choosePlayer(team: Team, rand: () => number, group: "defenders" | "midfield" | "attackers" | "any"): string {
+  const selectors: Record<typeof group, string[]> = {
+    defenders: ["RB", "LB", "CB"],
+    midfield: ["DM", "CM", "AM"],
+    attackers: ["RW", "LW", "ST", "AM"],
+    any: [],
+  };
+  const pool = selectors[group].length
+    ? team.players.filter((player) => selectors[group].includes(player.position))
+    : team.players;
+  const chosen = (pool.length ? pool : team.players)[Math.floor(rand() * (pool.length || team.players.length))];
+  return chosen!.id;
+}
+
+function passOutcome(rand: () => number, teamId: TeamId, targets: TeamTargets, progress: TeamProgress): MatchEvent["outcome"] {
+  const attemptsLeft = targets.passes[teamId] - progress.passes[teamId];
+  const completesLeft = targets.completedPasses[teamId] - progress.completedPasses[teamId];
+  if (attemptsLeft <= 0) return "incomplete";
+  if (completesLeft <= 0) return "incomplete";
+  if (completesLeft >= attemptsLeft) return "complete";
+  return rand() < (completesLeft / attemptsLeft) ? "complete" : "incomplete";
+}
+
+function passEnd(rand: () => number, from: Point, complete: boolean): Point {
+  const forward = complete ? 4 + rand() * 12 : -4 + rand() * 11;
+  const sideways = (rand() * 2 - 1) * (complete ? 12 : 18);
+  const end = {
+    x: clampCoord(from.x + forward),
+    y: clampCoord(from.y + sideways),
+  };
+  if (metresBetween(from, end) < 1.2) {
+    end.x = clampCoord(from.x + (complete ? 3 : -3));
+  }
+  if (metresBetween(from, end) < 1.2) {
+    end.y = clampCoord(from.y + (from.y <= 50 ? 3 : -3));
+  }
+  return end;
+}
+
+function shotOutcome(rand: () => number): MatchEvent["outcome"] {
+  const roll = rand();
+  if (roll < 0.14) return "success";
+  if (roll < 0.50) return "saved";
+  if (roll < 0.73) return "blocked";
+  return "miss";
+}
+
+function shotPoint(rand: () => number, from: Point): Point {
+  return {
+    x: clampCoord(Math.max(from.x, 73) + rand() * 6),
+    y: clampCoord(from.y + (rand() * 2 - 1) * 10),
+  };
+}
+
+function buildTargets(rand: () => number): TeamTargets {
+  const passes: TeamCounter = {
+    home: randomInt(rand, PASS_TARGET_MIN, PASS_TARGET_MAX),
+    away: randomInt(rand, PASS_TARGET_MIN, PASS_TARGET_MAX),
+  };
+  const completionRates: TeamCounter = {
+    home: PASS_COMPLETION_MIN + rand() * (PASS_COMPLETION_MAX - PASS_COMPLETION_MIN),
+    away: PASS_COMPLETION_MIN + rand() * (PASS_COMPLETION_MAX - PASS_COMPLETION_MIN),
+  };
+  return {
+    passes,
+    completedPasses: {
+      home: Math.round(passes.home * completionRates.home),
+      away: Math.round(passes.away * completionRates.away),
+    },
+    shots: {
+      home: randomInt(rand, SHOT_TARGET_MIN, SHOT_TARGET_MAX),
+      away: randomInt(rand, SHOT_TARGET_MIN, SHOT_TARGET_MAX),
+    },
+  };
+}
+
+function hasCompletedTargets(targets: TeamTargets, progress: TeamProgress): boolean {
+  return (["home", "away"] as const).every((teamId) => (
+    progress.passes[teamId] >= targets.passes[teamId]
+    && progress.completedPasses[teamId] >= targets.completedPasses[teamId]
+    && progress.shots[teamId] >= targets.shots[teamId]
+  ));
+}
+
+function forSecond(second: number): { minute: number; second: number } {
+  return { minute: Math.floor(second / 60), second: second % 60 };
+}
+
+function eventAtSecond(event: MatchEvent): number {
+  return event.minute * 60 + event.second;
+}
+
+function withFlight(events: MatchEvent[], seed: number): MatchEvent[] {
+  const sorted = sortEventsStable(events);
+  const byId = new Map(sorted.map((event) => [event.id, event]));
+  return sorted.map((event) => withSyntheticBallFlight(event, seed, byId));
+}
+
+function addPossessionChange(events: MatchEvent[], fixtureId: string, sequence: number, second: number, teamId: TeamId, at: Point, defenderId: string): MatchEvent {
+  const turnover = createEvent({
+    id: `${fixtureId}-turnover-${sequence}`,
+    atSecond: second,
+    type: "tackle",
+    teamId,
+    playerId: defenderId,
+    outcome: "success",
+    x: at.x,
+    y: at.y,
+  });
+  events.push(turnover);
+  return turnover;
+}
+
+function generatePossessionEvents(fixtureId: string, seed: number, home: Team, away: Team): MatchEvent[] {
+  const rand = lcg(seed);
+  const targets = buildTargets(rand);
+  const progress: TeamProgress = {
+    passes: { home: 0, away: 0 },
+    completedPasses: { home: 0, away: 0 },
+    shots: { home: 0, away: 0 },
+  };
+  const events: MatchEvent[] = [];
+  const homeKickoff = firstByRole(home, "ST", 10);
+  events.push(createEvent({ id: `${fixtureId}-kickoff`, atSecond: 0, type: "kickoff", teamId: "home", playerId: homeKickoff, outcome: "none", x: 50, y: 50 }));
+
+  let second = 3;
+  let position: Point = { x: 50, y: 50 };
+  let teamId: TeamId = "home";
+  let sequence = 0;
+  let halftimeInserted = false;
+
+  while (second < MAX_MATCH_SECOND && !hasCompletedTargets(targets, progress)) {
+    if (!halftimeInserted && second >= 45 * 60) {
+      events.push(createEvent({ id: `${fixtureId}-halftime`, atSecond: 45 * 60, type: "halftime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 }));
+      halftimeInserted = true;
+      second = Math.max(second, 45 * 60 + 2);
+      position = { x: 50, y: 50 };
+      teamId = "away";
+    }
+
+    const team = teamId === "home" ? home : away;
+    const opponents = teamId === "home" ? away : home;
+    const shotsLeft = targets.shots[teamId] - progress.shots[teamId];
+    const steps = Math.max(1, Math.min(9, randomInt(rand, 2, 7) + (shotsLeft > 0 ? 1 : 0)));
+    let ended = false;
+
+    for (let step = 0; step < steps && second < MAX_MATCH_SECOND; step += 1) {
+      const passesRemaining = targets.passes[teamId] - progress.passes[teamId];
+      const shotsRemaining = targets.shots[teamId] - progress.shots[teamId];
+      const mustShootSoon = shotsRemaining > 0 && (targets.shots[teamId] - progress.shots[teamId]) > (targets.passes[teamId] - progress.passes[teamId]) / 28;
+      const canPass = passesRemaining > 0;
+      const shootNow = (mustShootSoon || (shotsRemaining > 0 && step >= 1 && rand() < 0.12 + step * 0.06)) && (step >= 1 || !canPass);
+
+      if (shootNow) {
+        second += randomInt(rand, 3, 7);
+        const shotFrom = shotPoint(rand, position);
+        const shooter = choosePlayer(team, rand, "attackers");
+        const shotOutcomeValue = shotOutcome(rand);
+        const shotId = `${fixtureId}-shot-${sequence++}`;
+        const shot = createEvent({
+          id: shotId,
+          atSecond: Math.min(second, MAX_MATCH_SECOND),
+          type: "shot",
+          teamId,
+          playerId: shooter,
+          outcome: shotOutcomeValue,
+          x: shotFrom.x,
+          y: shotFrom.y,
+          xg: illustrativeXg(shotFrom.x, shotFrom.y),
+        });
+        events.push(shot);
+        progress.shots[teamId] += 1;
+        position = shotFrom;
+
+        if (shotOutcomeValue === "saved") {
+          const saveSecond = Math.min(MAX_MATCH_SECOND, second + 1);
+          events.push(createEvent({
+            id: `${fixtureId}-save-${sequence++}`,
+            atSecond: saveSecond,
+            type: "save",
+            teamId: otherTeam(teamId),
+            playerId: firstByRole(opponents, "GK", 0),
+            outcome: "success",
+            x: clampCoord(Math.min(97, shotFrom.x + 8)),
+            y: clampCoord(50 + (shotFrom.y - 50) * 0.3),
+            relatedEventId: shotId,
+          }));
+          second = saveSecond;
+          position = { x: clampCoord(Math.min(97, shotFrom.x + 8)), y: clampCoord(50 + (shotFrom.y - 50) * 0.3) };
+        } else if (shotOutcomeValue === "success") {
+          const goalSecond = Math.min(MAX_MATCH_SECOND, second + 1);
+          events.push(createEvent({
+            id: `${fixtureId}-goal-${sequence++}`,
+            atSecond: goalSecond,
+            type: "goal",
+            teamId,
+            playerId: shooter,
+            outcome: "success",
+            x: clampCoord(Math.max(93, shotFrom.x)),
+            y: clampCoord(50 + (shotFrom.y - 50) * 0.2),
+            relatedEventId: shotId,
+          }));
+          second = goalSecond;
+          position = { x: 50, y: 50 };
+        } else {
+          second = Math.min(MAX_MATCH_SECOND, second + 1);
+        }
+
+        // Possession changes explicitly after every terminal shot action.
+        const turnover = addPossessionChange(
+          events,
+          fixtureId,
+          sequence++,
+          Math.min(MAX_MATCH_SECOND, second + 1),
+          otherTeam(teamId),
+          position,
+          choosePlayer(opponents, rand, "defenders"),
+        );
+        second = eventSecond(turnover);
+        teamId = otherTeam(teamId);
+        ended = true;
+        break;
+      }
+
+      if (!canPass) {
+        ended = true;
+        teamId = otherTeam(teamId);
+        break;
+      }
+
+      const passSecond = Math.min(MAX_MATCH_SECOND, second + randomInt(rand, 3, 8));
+      const passer = choosePlayer(team, rand, rand() < 0.65 ? "midfield" : "attackers");
+      const outcome = passOutcome(rand, teamId, targets, progress);
+
+      // Matched pressure is an opponent pressure event within 0–2 seconds and within 5 metres of the pass start.
+      if (passSecond > PRESSURE_WINDOW_SECONDS + 1 && rand() < 0.20) {
+        const pressureAt = passSecond - randomInt(rand, 0, PRESSURE_WINDOW_SECONDS);
+        const pressurePoint = shiftWithinMetres(rand, position, PRESSURE_MAX_DISTANCE_M);
+        if (metresBetween(pressurePoint, position) <= PRESSURE_MAX_DISTANCE_M) {
+          events.push(createEvent({
+            id: `${fixtureId}-pressure-${sequence++}`,
+            atSecond: pressureAt,
+            type: "pressure",
+            teamId: otherTeam(teamId),
+            playerId: choosePlayer(opponents, rand, "defenders"),
+            outcome: "success",
+            x: pressurePoint.x,
+            y: pressurePoint.y,
+            relatedEventId: `${fixtureId}-pass-${sequence}`,
+          }));
+        }
+      }
+
+      const end = passEnd(rand, position, outcome === "complete");
+      const pass = createEvent({
+        id: `${fixtureId}-pass-${sequence++}`,
+        atSecond: passSecond,
+        type: "pass",
+        teamId,
+        playerId: passer,
+        outcome,
+        x: position.x,
+        y: position.y,
+        endX: end.x,
+        endY: end.y,
+      });
+      events.push(pass);
+      second = passSecond;
+      progress.passes[teamId] += 1;
+      if (outcome === "complete") progress.completedPasses[teamId] += 1;
+      position = end;
+
+      if (outcome !== "complete") {
+        const turnover = addPossessionChange(
+          events,
+          fixtureId,
+          sequence++,
+          Math.min(MAX_MATCH_SECOND, second + 1),
+          otherTeam(teamId),
+          position,
+          choosePlayer(opponents, rand, "defenders"),
+        );
+        second = eventSecond(turnover);
+        teamId = otherTeam(teamId);
+        ended = true;
+        break;
+      }
+    }
+
+    if (!ended) {
+      const turnover = addPossessionChange(
+        events,
+        fixtureId,
+        sequence++,
+        Math.min(MAX_MATCH_SECOND, second + 1),
+        otherTeam(teamId),
+        position,
+        choosePlayer(otherTeam(teamId) === "home" ? home : away, rand, "defenders"),
+      );
+      second = eventSecond(turnover);
+      teamId = otherTeam(teamId);
+    }
   }
 
-  if (scenario === "red_card") {
-    return [
-      kickoff,
-      ...shotAndGoal(fixtureId, "home-open", 18 * 60 + 20, "home", homeStriker, 87, 50, 0.26),
-      halftime,
-      createEvent({ id: `${fixtureId}-away-red`, atSecond: 52 * 60 + 18, type: "red_card", teamId: "away", playerId: awayMid, outcome: "none", x: 51, y: 50 }),
-      createEvent({ id: `${fixtureId}-home-blocked-shot`, atSecond: 61 * 60 + 9, type: "shot", teamId: "home", playerId: homeWide, outcome: "blocked", x: 82, y: 44, xg: 0.15 }),
-      ...shotAndGoal(fixtureId, "away-level", 71 * 60 + 6, "away", awayStriker, 88, 49, 0.22),
-      ...shotAndGoal(fixtureId, "home-late", 84 * 60 + 37, "home", homeCreator, 86, 56, 0.28),
-      fulltime,
-    ];
+  if (!halftimeInserted) {
+    events.push(createEvent({ id: `${fixtureId}-halftime`, atSecond: 45 * 60, type: "halftime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 }));
   }
+  events.push(createEvent({ id: `${fixtureId}-fulltime`, atSecond: DURATION_SECONDS, type: "fulltime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 }));
+  return sortEventsStable(events);
+}
 
-  if (scenario === "set_piece") {
-    return [
-      kickoff,
-      ...cornerShot(fixtureId, "home-corner-1", 12 * 60 + 8, "home", homeCreator, homeDefender, 0.18),
-      ...cornerShot(fixtureId, "home-corner-2", 31 * 60 + 25, "home", homeCreator, homeStriker, 0.23, true),
-      halftime,
-      ...cornerShot(fixtureId, "away-corner-1", 57 * 60 + 14, "away", awayCreator, awayDefender, 0.21, true),
-      ...cornerShot(fixtureId, "home-corner-3", 63 * 60 + 3, "home", homeCreator, homeStriker, 0.24, true),
-      fulltime,
-    ];
+function ensureGoals(events: MatchEvent[], fixtureId: string, rand: () => number): MatchEvent[] {
+  const withGoals = [...events];
+  const shotIndexes = withGoals
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === "shot");
+  const existingGoals = withGoals.filter((event) => event.type === "goal");
+  const needed = Math.max(0, 2 - existingGoals.length);
+  for (let index = 0; index < needed && index < shotIndexes.length; index += 1) {
+    const pick = shotIndexes[index]!;
+    const shot = pick.event;
+    shot.outcome = "success";
+    const goalAt = Math.min(MAX_MATCH_SECOND, eventAtSecond(shot) + 1);
+    withGoals.push(createEvent({
+      id: `${fixtureId}-forced-goal-${index}`,
+      atSecond: goalAt,
+      type: "goal",
+      teamId: shot.teamId,
+      playerId: shot.playerId,
+      outcome: "success",
+      x: clampCoord(Math.max(93, shot.x + rand() * 4)),
+      y: clampCoord(50 + (shot.y - 50) * 0.2),
+      relatedEventId: shot.id,
+    }));
   }
+  return sortEventsStable(withGoals);
+}
 
-  if (scenario === "late_winner") {
-    return [
-      kickoff,
-      ...shotAndGoal(fixtureId, "home-first", 24 * 60 + 22, "home", homeCreator, 86, 55, 0.24),
-      halftime,
-      ...shotAndGoal(fixtureId, "away-equalizer", 67 * 60 + 11, "away", awayWide, 85, 45, 0.2),
-      ...shotAndGoal(fixtureId, "home-winner", 89 * 60 + 4, "home", homeStriker, 90, 50, 0.3),
-      fulltime,
-    ];
+function buildFixture(fixtureId: string, seed: number, title: string, description: string, home: Team, away: Team, events: MatchEvent[]): MatchFixture {
+  const sorted = sortEventsStable(events).map((event) => ({ ...event }));
+  const goalEvents = sorted.filter((event) => event.type === "goal");
+  const correctionTarget = goalEvents[Math.min(1, goalEvents.length - 1)] ?? goalEvents[0];
+  if (!correctionTarget) {
+    throw new Error("Generated fixture must include at least one goal");
   }
-
-  return [
-    kickoff,
-    ...shotAndGoal(fixtureId, "home-1", 7 * 60 + 18, "home", homeStriker, 88, 51, 0.28),
-    ...shotAndGoal(fixtureId, "away-1", 15 * 60 + 8, "away", awayStriker, 87, 48, 0.24),
-    ...shotAndGoal(fixtureId, "home-2", 29 * 60 + 55, "home", homeCreator, 84, 58, 0.19),
-    ...shotAndGoal(fixtureId, "away-2", 41 * 60 + 21, "away", awayCreator, 85, 41, 0.17),
-    halftime,
-    ...shotAndGoal(fixtureId, "home-3", 52 * 60 + 13, "home", homeMid, 83, 49, 0.16),
-    ...shotAndGoal(fixtureId, "away-3", 63 * 60 + 46, "away", awayMid, 84, 52, 0.18),
-    ...shotAndGoal(fixtureId, "home-4", 78 * 60 + 33, "home", homeWide, 89, 53, 0.27),
-    fulltime,
-  ];
+  const correctionMoment = eventSecond(correctionTarget);
+  const withBallFlight = withFlight(sorted, seed);
+  const dismissals = withBallFlight
+    .filter((event) => event.type === "red_card")
+    .map((event) => ({ teamId: event.teamId, playerId: event.playerId, atSecond: eventSecond(event) }));
+  const tracking = syntheticTracking(seed, home, away, DURATION_SECONDS, dismissals);
+  const halftimeSecond = 45 * 60;
+  const perioded = withBallFlight.map((event): MatchEvent => ({ ...event, period: eventSecond(event) <= halftimeSecond ? 1 : 2 }));
+  return {
+    id: fixtureId,
+    seed,
+    title,
+    description,
+    home,
+    away,
+    events: perioded,
+    durationSeconds: DURATION_SECONDS,
+    correctionEventId: correctionTarget.id,
+    correctionAvailableAt: Math.min(DURATION_SECONDS - 5, correctionMoment + 150),
+    periods: { source: "synthetic", halftimeSecond },
+    tracking,
+  };
 }
 
 export function generateMatch(request: GenerateMatchRequest): MatchFixture {
@@ -203,22 +516,8 @@ export function generateMatch(request: GenerateMatchRequest): MatchFixture {
   const home = teamFromArchive("home", homeClubId);
   const away = teamFromArchive("away", awayClubId);
   const fixtureId = `gen-${request.scenario}-${request.seed}`;
-  const curatedEvents = curatedEventsForScenario(fixtureId, request.scenario, home, away);
-  const goalIds = curatedEvents.filter((event) => event.type === "goal").map((event) => event.id);
-  const correctionEventId = goalIds[Math.min(1, goalIds.length - 1)]!;
-  const correctionMoment = eventSecond(curatedEvents.find((event) => event.id === correctionEventId)!);
   const meta = scenarioTitle(request.scenario, home, away);
-
-  return buildComposedFixture({
-    id: fixtureId,
-    seed: request.seed,
-    title: meta.title,
-    description: meta.description,
-    home,
-    away,
-    durationSeconds: DURATION_SECONDS,
-    correctionEventId,
-    correctionAvailableAt: Math.min(DURATION_SECONDS - 5, correctionMoment + 150),
-    curatedEvents,
-  });
+  const base = generatePossessionEvents(fixtureId, request.seed, home, away);
+  const secured = ensureGoals(base, fixtureId, lcg(request.seed ^ 0x9e3779b9));
+  return buildFixture(fixtureId, request.seed, meta.title, meta.description, home, away, secured);
 }

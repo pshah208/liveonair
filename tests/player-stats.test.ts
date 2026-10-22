@@ -53,7 +53,7 @@ test("player analysis derives scoring, creating, passing, defending and discipli
   assert.equal(creator.xa, 0.4);
   assert.equal(creator.passes, 3);
   assert.equal(creator.passAccuracy, 67);
-  assert.equal(creator.progressivePasses, 2);
+  assert.equal(creator.progressivePasses, 2, "uses the 25%-closer-to-goal progressive-pass rule");
   assert.equal(creator.possessionLost, 1);
 
   const keeper = players.get("a1")!;

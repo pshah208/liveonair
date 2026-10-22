@@ -30,7 +30,7 @@ function parseReviewRequest(payload: unknown): ReviewStorylineRequest {
   return result.data;
 }
 
-export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveService }): Router {
+export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveService; authRequired?: boolean }): Router {
   const router = express.Router();
   const reviewLimiter = rateLimit({
     windowMs: 60_000,
@@ -38,6 +38,10 @@ export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveServic
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many storyline review requests" },
+  });
+
+  router.get("/api/studio/auth-required", (_request, response) => {
+    response.json({ required: Boolean(deps.authRequired) });
   });
 
   router.get("/api/studio/storylines", (_request, response) => {

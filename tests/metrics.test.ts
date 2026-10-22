@@ -77,12 +77,15 @@ test("difficulty factors follow the published formula", () => {
   assert.equal(simple.score, Math.round(6.8 * 0.75));
 
   const pass = ev({ id: "hard", type: "pass", minute: 30, second: 10, x: 60, y: 10, endX: 88, endY: 55 });
-  const pressure = ev({ id: "press", type: "pressure", teamId: "away", minute: 30, second: 6, outcome: "success" });
+  const pressure = ev({ id: "press", type: "pressure", teamId: "away", minute: 30, second: 8, outcome: "success", x: 60, y: 10 });
   const ownPressure = ev({ id: "own", type: "pressure", teamId: "home", minute: 30, second: 8, outcome: "success" });
-  const stale = ev({ id: "stale", type: "pressure", teamId: "away", minute: 30, second: 4, outcome: "success" });
+  const stale = ev({ id: "stale", type: "pressure", teamId: "away", minute: 30, second: 4, outcome: "success", x: 60, y: 10 });
+  const far = ev({ id: "far", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 60, y: 30 });
   const later = ev({ id: "later", type: "pressure", teamId: "away", minute: 30, second: 12, outcome: "success" });
-  const withoutPressure = passDifficulty(pass, [ownPressure, stale, later])!;
-  assert.ok(!withoutPressure.factors.some((factor) => factor.key === "pressure"), "own-team, >5 s and later pressures do not count");
+  const rescinded = ev({ id: "resc", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 60, y: 11, rescinded: true });
+  const wrongLink = ev({ id: "wrong-link", type: "pressure", teamId: "away", minute: 30, second: 9, outcome: "success", x: 60, y: 10, relatedEventId: "different-pass" });
+  const withoutPressure = passDifficulty(pass, [ownPressure, stale, far, later, rescinded, wrongLink])!;
+  assert.ok(!withoutPressure.factors.some((factor) => factor.key === "pressure"), "same-team, >2 s, >5 m, later, rescinded, and mismatched link pressures do not count");
   const result = passDifficulty(pass, [pressure])!;
   const keys = result.factors.map((factor) => factor.key);
   assert.deepEqual(keys, ["distance", "forward", "box", "pressure", "switch", "cross"]);

@@ -25,7 +25,7 @@ export function PotmVote({ fixture, matchId, uptoSecond, clockSecond, finished }
       <h3 className="fan-card__title fan-card__title--small">Player of the match</h3>
       {phase === "not_open" ? <p className="fan-card__empty">Voting opens at 60′.</p> : (
         <>
-          <p className="fan-card__hint">{phase === "locked" ? "Voting is closed." : "Your pick (just for you)."} Top three per team by impact. Nothing is sent anywhere.</p>
+          <p className="fan-card__hint">{phase === "locked" ? "Voting is closed." : "Your pick (just for you)."} Top three per team by illustrative activity score. Nothing is sent anywhere.</p>
           <div className="fan-vote">
             {(["home", "away"] as const).map((side) => (
               <fieldset key={side} className="fan-vote__side" disabled={phase === "locked"}>

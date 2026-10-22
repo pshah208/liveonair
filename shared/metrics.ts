@@ -18,7 +18,8 @@ export const PITCH_LENGTH_M = 105;
 export const PITCH_WIDTH_M = 68;
 export const SHORT_PASS_MAX_M = 15;
 export const LONG_PASS_MIN_M = 30;
-export const PRESSURE_WINDOW_SECONDS = 5;
+export const PRESSURE_WINDOW_SECONDS = 2;
+export const PRESSURE_MAX_DISTANCE_M = 5;
 export const SWITCH_OF_PLAY_UNITS = 40;
 export const SPRINT_THRESHOLD_KMH = 25;
 export const SHOT_SPEED_THRESHOLD_KMH = 100;
@@ -45,7 +46,7 @@ export const PASS_DIFFICULTY_FORMULA = [
   "distance: 0.75 pts per metre, max 30",
   "forward progress: 0.6 pts per metre gained towards goal, max 20",
   "ends in the final third (x ≥ 66.7): +10, or in the box (x ≥ 83, 21 ≤ y ≤ 79): +15",
-  `opponent pressure event within ${PRESSURE_WINDOW_SECONDS} s before: +15`,
+  `matched opponent pressure within ${PRESSURE_WINDOW_SECONDS} s and ${PRESSURE_MAX_DISTANCE_M} m: +15`,
   `switch of play (|Δy| ≥ ${SWITCH_OF_PLAY_UNITS} units): +10`,
   "cross from a wide area into the box, or a set-piece delivery: +10",
   "score = sum, capped at 100; expected completion = clamp(0.97 − 0.0075 × score, 0.2, 0.97)",
@@ -54,6 +55,28 @@ export const PASS_DIFFICULTY_FORMULA = [
 const secondOf = (event: Pick<MatchEvent, "minute" | "second">) => event.minute * 60 + event.second;
 const round = (value: number, digits = 1) => Math.round(value * 10 ** digits) / 10 ** digits;
 const metresBetween = (dxUnits: number, dyUnits: number) => Math.hypot((dxUnits / 100) * PITCH_LENGTH_M, (dyUnits / 100) * PITCH_WIDTH_M);
+
+function pressureDistanceM(pass: MatchEvent, pressure: MatchEvent): number {
+  return metresBetween(pass.x - pressure.x, pass.y - pressure.y);
+}
+
+export function isMatchedPressureEvent(pass: MatchEvent, pressure: MatchEvent): boolean {
+  if (pass.type !== "pass" || pressure.type !== "pressure") return false;
+  if (pressure.teamId === pass.teamId || pressure.rescinded) return false;
+  const passAt = secondOf(pass);
+  const pressureAt = secondOf(pressure);
+  if (pressureAt > passAt || passAt - pressureAt > PRESSURE_WINDOW_SECONDS) return false;
+  if (pressure.relatedEventId && pressure.relatedEventId !== pass.id) return false;
+  return pressureDistanceM(pass, pressure) <= PRESSURE_MAX_DISTANCE_M;
+}
+
+/** Opta-style illustrative rule: completed pass that ends at least 25% closer to the goal centre than it started. */
+export function isProgressivePass(event: MatchEvent): boolean {
+  if (event.type !== "pass" || event.outcome !== "complete" || event.endX === undefined || event.endY === undefined) return false;
+  const start = Math.hypot(100 - event.x, 50 - event.y);
+  const end = Math.hypot(100 - event.endX, 50 - event.endY);
+  return end <= start * 0.75;
+}
 
 export function metricOptions(fixture: Pick<MatchFixture, "id">): MetricOptions {
   return { camera: isCameraFixture(fixture) };
@@ -110,9 +133,7 @@ export function passDifficulty(event: MatchEvent, recentEvents: MatchEvent[] = [
   if (event.type !== "corner") add("forward", `${Math.round(Math.max(0, forwardM))} m towards goal`, Math.min(20, Math.max(0, forwardM) * 0.6));
   if (inBox(endX, endY)) add("box", "Ends in the box", 15);
   else if (endX >= 66.7) add("final_third", "Ends in the final third", 10);
-  const at = secondOf(event);
-  const pressured = recentEvents.some((other) => other.type === "pressure" && other.teamId !== event.teamId && !other.rescinded
-    && secondOf(other) <= at && at - secondOf(other) <= PRESSURE_WINDOW_SECONDS);
+  const pressured = recentEvents.some((other) => isMatchedPressureEvent(event, other));
   if (pressured) add("pressure", `Under pressure (≤ ${PRESSURE_WINDOW_SECONDS} s)`, 15);
   if (Math.abs(endY - start.y) >= SWITCH_OF_PLAY_UNITS) add("switch", "Switch of play", 10);
   if (event.type === "corner") add("set_piece", "Set-piece delivery", 10);

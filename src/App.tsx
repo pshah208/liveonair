@@ -3,14 +3,13 @@ import { AppHeader } from "./components.js";
 import { FanPage } from "./FanPage.js";
 import { EMPTY_MATCH_CONTEXT, type ActiveMatchContext } from "./liveContext.js";
 import { StudioPage } from "./StudioPage.js";
-import { VarDeskPage } from "./VarDeskPage.js";
 import type { Theme } from "./utils.js";
 
 const INFRA_KEY = "matchlens.infrastructure.open";
 const DESK_KEY = "matchlens.desk";
 
-export type Desk = "studio" | "fan" | "var";
-const DESKS: readonly Desk[] = ["studio", "fan", "var"];
+export type Desk = "studio" | "fan";
+const DESKS: readonly Desk[] = ["studio", "fan"];
 
 function isDesk(value: unknown): value is Desk {
   return typeof value === "string" && (DESKS as readonly string[]).includes(value);
@@ -44,6 +43,7 @@ export default function App() {
   const [desk, setDesk] = useState<Desk>(initialDesk);
   const [matchContext, setMatchContext] = useState<ActiveMatchContext>(EMPTY_MATCH_CONTEXT);
   const toggleInfra = useCallback(() => setInfraOpen((current) => !current), []);
+  const openFan = useCallback(() => setDesk("fan"), []);
 
   useEffect(() => {
     try { window.localStorage.setItem(DESK_KEY, desk); } catch { /* storage unavailable */ }
@@ -65,10 +65,9 @@ export default function App() {
       <AppHeader theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} infraOpen={infraOpen} onToggleInfra={toggleInfra} desk={desk} onDesk={setDesk} />
       {/* The Studio Desk stays mounted so the live stream and Video lab keep running while another desk is open. */}
       <div hidden={desk !== "studio"}>
-        <StudioDesk theme={theme} infraOpen={infraOpen} onToggleInfra={toggleInfra} onLiveContext={setMatchContext} />
+        <StudioDesk theme={theme} infraOpen={infraOpen} onToggleInfra={toggleInfra} onLiveContext={setMatchContext} onOpenFan={openFan} />
       </div>
       {desk === "fan" && <FanPage context={matchContext} theme={theme} onOpenStudio={() => setDesk("studio")} />}
-      {desk === "var" && <VarDeskPage onOpenStudio={() => setDesk("studio")} />}
     </div>
   );
 }

@@ -9,7 +9,7 @@ param registryServer string
 param imageTag string
 param aiEndpoint string
 param deploymentName string = 'matchlens-narrator'
-param aiMaxRequestsPerHour int = 60
+param aiMaxRequestsPerHour int = 120
 param projectEndpoint string = ''
 param searchEndpoint string = ''
 param searchIndex string = 'matchlens-archive'
@@ -28,6 +28,20 @@ param appInsightsConnectionString string = ''
   'off'
 ])
 param narrativeWebSearch string = 'on'
+@description('Bearer token for state-changing Studio/producer endpoints. Supplied at deploy time only; never committed.')
+@secure()
+param studioToken string = ''
+@description('Idle minutes before the demo watchdog restarts a live demo match.')
+@minValue(1)
+param demoWatchdogMinutes int = 10
+@description('Optional live source selector (for example opta-format). Empty leaves LIVE_SOURCE unset so the app default applies.')
+param liveSource string = ''
+param tags object = {
+  application: 'LiveOnAir'
+  purpose: 'synthetic-football-hackathon'
+  project: 'pied-piper-soccer'
+  'managed-by': 'copilot-agents'
+}
 
 var eventstreamConfigured = !empty(eventstreamSourceConnectionString) && !empty(eventstreamDestinationConnectionString)
 var eventstreamSecrets = eventstreamConfigured ? [
@@ -46,6 +60,16 @@ var telemetrySecrets = telemetryConfigured ? [
 var telemetryEnv = telemetryConfigured ? [
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection' }
 ] : []
+var studioConfigured = !empty(studioToken)
+var studioSecrets = studioConfigured ? [
+  { name: 'studio-token', value: studioToken }
+] : []
+var studioEnv = studioConfigured ? [
+  { name: 'STUDIO_TOKEN', secretRef: 'studio-token' }
+] : []
+var liveSourceEnv = empty(liveSource) ? [] : [
+  { name: 'LIVE_SOURCE', value: liveSource }
+]
 var deskEnv = empty(projectEndpoint) ? [] : [
   { name: 'PROJECT_ENDPOINT', value: projectEndpoint }
 ]
@@ -62,7 +86,7 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
-  tags: { application: 'LiveOnAir', purpose: 'synthetic-football-hackathon' }
+  tags: tags
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identity.id}': {} } }
   properties: {
     managedEnvironmentId: environment.id
@@ -71,13 +95,15 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: { external: true, targetPort: 3000, transport: 'http', allowInsecure: false }
       registries: [{ server: registryServer, identity: identity.id }]
-      secrets: concat(eventstreamSecrets, telemetrySecrets)
+      // Secrets omitted here are REMOVED from the app on deploy; deploy.ps1 refuses to run without them.
+      secrets: concat(eventstreamSecrets, telemetrySecrets, studioSecrets)
     }
     template: {
       containers: [{
         name: 'liveonair'
         image:'${registryServer}/matchlens:${imageTag}'
-        resources: { cpu: json('0.5'), memory: '1Gi' }
+        // 1 vCPU / 2 GiB: headroom for Video lab ffmpeg and SSE fan-out during judging.
+        resources: { cpu: json('1.0'), memory: '2Gi' }
         env: concat([
           { name: 'NODE_ENV', value: 'production' }
           { name: 'PORT', value: '3000' }
@@ -88,7 +114,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           { name: 'AI_MAX_REQUESTS_PER_HOUR', value: string(aiMaxRequestsPerHour) }
           { name: 'AI_MAX_CONCURRENT', value: '2' }
           { name: 'NARRATIVE_WEB_SEARCH', value: narrativeWebSearch }
-        ], deskEnv, searchEnv, eventstreamEnv, telemetryEnv)
+          { name: 'DEMO_WATCHDOG_MINUTES', value: string(demoWatchdogMinutes) }
+        ], deskEnv, searchEnv, eventstreamEnv, telemetryEnv, studioEnv, liveSourceEnv)
         probes: [
           {
             type: 'Startup'
@@ -110,7 +137,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         ]
       }]
       scale: {
-        // One always-on replica: the live match, SSE fan-out and desk state are in-process, and
+        // minReplicas 1: never scale to zero during judging. maxReplicas 1: the live match, SSE fan-out and desk state are in-process, and
         // the Eventstream consumer must keep running between HTTP requests.
         minReplicas: 1
         maxReplicas: 1

@@ -23,7 +23,7 @@ import type {
 } from "../../shared/types.js";
 import { resolveFavoriteTeam } from "../../shared/fan.js";
 import { getArchive } from "../archive/index.js";
-import { createBudget, createCompletionClientFromEnv, validateGroundedProse, type CompletionClient } from "../narrator.js";
+import { createBudget, createCompletionClientFromEnv, DEFAULT_HOURLY_LIMIT, validateGroundedProse, type CompletionClient } from "../narrator.js";
 import { HttpError } from "../validation.js";
 import {
   acceptWebCitations,
@@ -854,7 +854,7 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 /** Same hourly and concurrency settings the live narrator reads from the environment. */
 export function readAiBudget(env: NodeJS.ProcessEnv = process.env): { maxRequestsPerHour: number; maxConcurrent: number } {
   return {
-    maxRequestsPerHour: positiveInt(env.AI_MAX_REQUESTS_PER_HOUR, 60),
+    maxRequestsPerHour: positiveInt(env.AI_MAX_REQUESTS_PER_HOUR, DEFAULT_HOURLY_LIMIT),
     maxConcurrent: positiveInt(env.AI_MAX_CONCURRENT, 2),
   };
 }

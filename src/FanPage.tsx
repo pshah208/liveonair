@@ -25,10 +25,8 @@ import {
   type StorageLike
 } from "../shared/fan.js";
 import { api } from "./api.js";
-import { FactTicker, Panel } from "./components.js";
-import type { ChanceInsight } from "../shared/chanceSequence.js";
+import { FactTicker, Panel, SyntheticBadge, TransportSourceBadge } from "./components.js";
 import { BigMomentCard } from "./fan/BigMoment.js";
-import { ChanceBuildUpCard } from "./fan/ChanceBuildUpCard.js";
 import { LiveBoardPanel } from "./LiveBoardPanel.js";
 import { PlayerCardSection } from "./fan/PlayerCardSection.js";
 import { PotmVote } from "./fan/PotmVote.js";
@@ -115,7 +113,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
   const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null);
   const [storylines, setStorylines] = useState<Storyline[]>([]);
   const [facts, setFacts] = useState<VerifiedFact[]>([]);
-  const [insights, setInsights] = useState<ChanceInsight[]>([]);
   const matchRef = useRef<string | undefined>(matchId);
   matchRef.current = matchId;
 
@@ -127,10 +124,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
     } else if (message.type === "storyline") {
       if (current && message.storyline.matchId !== current) return;
       setStorylines((list) => mergeById(list, message.storyline));
-    } else if (message.type === "insight") {
-      if (current && message.insight.matchId !== current) return;
-      const next = message.insight;
-      setInsights((list) => [...list.filter((item) => item.insightId !== next.insightId), next]);
     } else if (message.type === "fact") {
       if (current && message.fact.matchId !== current) return;
       setFacts((list) => sortFactsNewestFirst(mergeById(list, message.fact)));
@@ -195,7 +188,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
     previousMatch.current = matchId;
     setSnapshot(null);
     setStorylines([]);
-    setInsights([]);
     setFacts([]);
     setAlerts([]);
     seenAlerts.current = new Set();
@@ -258,10 +250,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
 
   return (
     <main className="page fan-page">
-      <FanPreferences fixture={fixture} prefs={prefs} storageOk={storageOk} favoriteTeamInMatch={favoriteTeam.inMatch} favoritePlayerInMatch={favoritePlayer.inMatch}
-        halvesUnavailable={halvesUnavailable} period={period} onChange={updatePrefs} />
-
-      <section className="broadcast-bar fan-header" aria-label="Match status">
+      <section className="broadcast-bar fan-header fan-scorebar" aria-label="Match status">
         <div className="broadcast-bar__score">
           <span className={`broadcast-bar__team${focus.teamId === "home" ? " is-favorite" : ""}`}>{fixture.home.name}</span>
           <strong className="broadcast-bar__digits" aria-live="polite">{score.home} – {score.away}</strong>
@@ -270,10 +259,16 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         <div className="broadcast-bar__meta">
           <span className={`live-pill live-pill--${status.state}`}>{status.state === "running" ? "Live" : status.state === "finished" ? finishedLabel : "Idle"}</span>
           <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}</span>
-          <span className="tag">{liveTransportLabel(status)}</span>
+          <span className="tag fan-scorebar__optional">{liveTransportLabel(status)}</span>
+          <TransportSourceBadge status={status} />
           <span className={`tag${stream.phase === "open" ? " tag--success" : stream.phase === "reconnecting" || stream.phase === "error" ? " tag--danger" : ""}`} role="status">{phaseLabel(stream)}</span>
         </div>
+        {/* Own row on phones so the disclosure is never scrolled out of the sticky bar. */}
+        <SyntheticBadge compact />
       </section>
+      <FanPreferences fixture={fixture} prefs={prefs} storageOk={storageOk} favoriteTeamInMatch={favoriteTeam.inMatch} favoritePlayerInMatch={favoritePlayer.inMatch}
+        halvesUnavailable={halvesUnavailable} period={period} onChange={updatePrefs} />
+
       {context.analyzedThrough !== undefined && (
         <p className="banner banner--warning">Video analysis has reached {formatClock(context.analyzedThrough)}. Score and events are AI-detected and provisional; they reflect analysed footage, not your local playback.{context.analysisStoppedEarly ? " Analysis stopped early — this is not full time." : ""}</p>
       )}
@@ -333,8 +328,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         </div>
       </div>
 
-      <ChanceBuildUpCard fixture={fixture} insights={insights} matchId={matchId} focus={focus} />
-
       <section className="fan-story-of-match" aria-label="The story of the match">
         <h2 className="fan-story-of-match__title">The story of the match</h2>
         <p className="fan-card__hint">{finished ? "The full-time story, written from the verified feed." : "The story so far. Written on demand from the verified feed; it updates when you regenerate."}</p>
@@ -356,7 +349,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
                   const line = storylineText(storyline.onAirLine, prefs.language);
                   return (
                     <li key={storyline.id} className="fan-story">
-                      <span className="fan-story__meta"><span className="mono">{storyline.triggerMinute}'</span>{(headline.fallback || line.fallback) && <span className="tag" title="No translation is available yet; showing the approved English copy">English fallback</span>}</span>
+                      <span className="fan-story__meta"><span className="mono">{storyline.triggerMinute}'</span>{(headline.fallback || line.fallback) && <span className="tag">English fallback · no translation yet</span>}</span>
                       <strong>{headline.text}</strong>
                       <span>{line.text}</span>
                     </li>

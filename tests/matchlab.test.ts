@@ -10,6 +10,18 @@ function secondOf(event: MatchEvent): number {
   return event.minute * 60 + event.second;
 }
 
+function rangeStats(fixture: MatchFixture, teamId: "home" | "away"): { passes: number; completed: number; shots: number; passPct: number } {
+  const passes = fixture.events.filter((event) => event.type === "pass" && event.teamId === teamId);
+  const completed = passes.filter((event) => event.outcome === "complete").length;
+  const shots = fixture.events.filter((event) => event.type === "shot" && event.teamId === teamId).length;
+  return {
+    passes: passes.length,
+    completed,
+    shots,
+    passPct: passes.length ? completed / passes.length : 0,
+  };
+}
+
 function assertFixtureSemantics(fixture: MatchFixture): void {
   assert.equal(fixture.id, `gen-${fixture.id.split("-")[1]}-${fixture.seed}`);
   assert.equal(fixture.durationSeconds, 5400);
@@ -124,4 +136,43 @@ test("buildFeedPlan preserves all events and injects stress duplicates, out-of-o
   assert.equal(correctionItem.event.id, target.id);
   assert.equal(correctionItem.event.revision, target.revision + 1);
   assert.equal(correctionItem.event.rescinded, true);
+});
+
+test("generated fixtures hit possession-first volume targets across seeds", () => {
+  const seeds = [11, 42, 77, 2026, 9090];
+  for (const seed of seeds) {
+    const fixture = generateMatch({ scenario: "goal_fest", seed });
+    for (const teamId of ["home", "away"] as const) {
+      const stats = rangeStats(fixture, teamId);
+      assert.ok(stats.passes >= 350 && stats.passes <= 600, `${seed}-${teamId} passes ${stats.passes}`);
+      assert.ok(stats.shots >= 9 && stats.shots <= 17, `${seed}-${teamId} shots ${stats.shots}`);
+      assert.ok(stats.passPct >= 0.78 && stats.passPct <= 0.88, `${seed}-${teamId} completion ${stats.passPct.toFixed(3)}`);
+    }
+  }
+});
+
+test("possession transitions are explicit and pressure is matched to passes", () => {
+  const fixture = generateMatch({ scenario: "set_piece", seed: 2027 });
+  const open = fixture.events.filter((event) => !event.rescinded);
+  for (let index = 1; index < open.length; index += 1) {
+    const previous = open[index - 1]!;
+    const current = open[index]!;
+    if (previous.type === "pass" && previous.endX !== undefined && previous.endY !== undefined && current.type === "pass") {
+      assert.equal(current.x, previous.endX);
+      assert.equal(current.y, previous.endY);
+    }
+  }
+  assert.ok(open.some((event) => event.type === "tackle"), "turnovers are explicit");
+  const pressures = open.filter((event) => event.type === "pressure");
+  assert.ok(pressures.length > 0);
+  for (const pressure of pressures) {
+    const match = open.find((candidate) => candidate.type === "pass" && candidate.id === pressure.relatedEventId);
+    assert.ok(match, `pressure ${pressure.id} links to pass`);
+    const dt = secondOf(match!) - secondOf(pressure);
+    assert.ok(dt >= 0 && dt <= 2, `pressure dt=${dt}`);
+    assert.equal(pressure.teamId === match!.teamId, false);
+  }
+  assert.ok(open.some((event) => event.type === "shot" && event.outcome === "miss"));
+  assert.ok(open.some((event) => event.type === "shot" && event.outcome === "saved"));
+  assert.ok(open.some((event) => event.type === "shot" && event.outcome === "blocked"));
 });

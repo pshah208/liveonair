@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { analysePlayers, heatGrid, IMPACT_WEIGHTS, TRACKING_METRICS, type PlayerAnalysis } from "../shared/playerStats.js";
-import { PASS_DIFFICULTY_FORMULA, SPRINT_THRESHOLD_KMH } from "../shared/metrics.js";
+import { PASS_DIFFICULTY_FORMULA } from "../shared/metrics.js";
 import { PERIOD_LABEL, periodBoundary, periodScope } from "../shared/periods.js";
 import type { Language, MatchFixture, MatchPeriod, TeamId } from "../shared/types.js";
 import { api, type PlayerNote } from "./api.js";
@@ -80,14 +80,23 @@ function PlayerMap({ analysis, mode }: { analysis: PlayerAnalysis; mode: MapMode
 }
 
 function Stat({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
-  return <div className="pa-stat" title={hint}><span>{label}</span><strong>{value}</strong></div>;
+  // Hints are inline text, not hover-only titles, so they work on touch screens.
+  return <div className="pa-stat"><span>{label}</span><strong>{value}</strong>{hint && <small className="pa-stat__hint">{hint}</small>}</div>;
 }
+
+/** Sprint counts are hidden in the UI; the synthetic one-sample-per-minute feed cannot support them. */
+const HIDDEN_TRACKING_KEYS = new Set(["sprints"]);
+
+/** UI labels for the tracked physical tiles; the synthetic feed only supports minute aggregates and milestones. */
+const TRACKING_LABEL: Record<string, string> = {
+  distance: "Distance (synthetic minute aggregate)",
+  top_speed: "Top speed (synthetic peak-speed milestone)"
+};
 
 /** A tracked physical figure for a TRACKING_METRICS tile, or null when this player has no tracking value. */
 function physicalValue(analysis: PlayerAnalysis, key: string): string | null {
   if (key === "distance") return analysis.distanceCoveredM === null ? null : `${(analysis.distanceCoveredM / 1000).toFixed(2)} km`;
   if (key === "top_speed") return analysis.topSpeedKmh === null ? null : `${analysis.topSpeedKmh.toFixed(1)} km/h`;
-  if (key === "sprints") return analysis.sprints === null ? null : String(analysis.sprints);
   return null;
 }
 
@@ -141,7 +150,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
     return (
       <div className="panel empty-hero">
         <h2>No match yet</h2>
-        <p className="subtle-text">Start a match on the live desk. Every player's numbers, heat map and impact rating build up from the live feed.</p>
+        <p className="subtle-text">Start a match on the live desk. Every player's numbers, heat map and illustrative activity score build up from the live feed.</p>
         <button type="button" className="button button--primary" onClick={onOpenLiveDesk}>Go to live desk</button>
       </div>
     );
@@ -156,7 +165,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
         <header className="panel__header">
           <div><span className="eyebrow">Squads · {PERIOD_LABEL[period]}</span><h2 id="pa-squads-title">Players</h2></div>
           <label className="inline-select"><span className="sr-only">Sort players</span>
-            <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)}><option value="impact">By impact</option><option value="number">By shirt number</option></select>
+            <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)}><option value="impact">By illustrative activity score</option><option value="number">By shirt number</option></select>
           </label>
         </header>
         {onPeriodChange && <PeriodSelector value={period} onChange={onPeriodChange} halvesUnavailable={!halvesAvailable} className="pa-period-toggle" />}
@@ -196,8 +205,8 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
               <h2 id="pa-player-title">{selected.player.name}</h2>
               <p className="subtle-text">{selected.involvements} logged actions{period === "full" ? "" : ` in the ${PERIOD_LABEL[period]}`} · {selected.involvementShare}% of the team's · match clock {Math.floor(clockSecond / 60)}'</p>
             </div>
-            <div className={`pa-hero__rating pa-rating--${ratingTone(selected.impact.rating)}`} title="Illustrative impact rating: 6.0 plus weighted contributions, kept within 3–10">
-              <strong>{selected.impact.rating.toFixed(1)}</strong><span>Impact</span>
+            <div className={`pa-hero__rating pa-rating--${ratingTone(selected.impact.rating)}`}>
+              <strong>{selected.impact.rating.toFixed(1)}</strong><span>Illustrative activity score</span>
             </div>
           </header>
 
@@ -219,18 +228,18 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
               <div className="pa-group"><h3>Attacking</h3><div className="pa-stats">
                 <Stat label="Goals" value={selected.goals} /><Stat label="Assists" value={selected.assists} />
                 <Stat label="Shots" value={selected.shots} /><Stat label="On target" value={selected.shotsOnTarget} />
-                <Stat label="xG" value={selected.xg.toFixed(2)} hint="Illustrative expected goals from shot quality" /><Stat label="xA" value={selected.xa.toFixed(2)} hint="xG of the shots this player set up" />
+                <Stat label="illustrative xG" value={selected.xg.toFixed(2)} hint="Illustrative, uncalibrated shot-quality heuristic" /><Stat label="xG assisted (inferred creator)" value={selected.xa.toFixed(2)} hint="illustrative xG of shots this player is inferred to have set up" />
                 <Stat label="Box touches" value={selected.touchesInBox ?? "—"} hint="Actions in the opposition penalty area" />
                 <Stat label="Top shot speed" value={selected.topShotSpeedKmh === null ? "—" : `${Math.round(selected.topShotSpeedKmh)} km/h`} hint="Fastest shot from the shot's own synthetic ball-flight measurement" />
               </div></div>
               <div className="pa-group"><h3>Passing</h3><div className="pa-stats">
                 <Stat label="Completed" value={`${selected.passesCompleted}/${selected.passes}`} /><Stat label="Accuracy" value={selected.passAccuracy === null ? "—" : `${selected.passAccuracy}%`} />
-                <Stat label="Key passes" value={selected.keyPasses} hint="Passes or corners followed by a shot within 15 s" /><Stat label="Progressive" value={selected.progressivePasses} hint="Completed passes that moved the ball 15+ units towards goal" />
+                <Stat label="Key passes" value={selected.keyPasses} hint="Passes or corners followed by a shot within 15 s" /><Stat label="Passes gaining ≥15 grid units" value={selected.progressivePasses} hint="Completed passes moving the ball at least 15 grid units towards goal" />
                 <Stat label="Possession lost" value={selected.possessionLost} hint="Unsuccessful passes" />
                 <Stat label="Avg length" value={selected.avgPassDistanceM === null ? "—" : `${selected.avgPassDistanceM.toFixed(1)} m`} hint="Mean pass length on a 105 × 68 m pitch" />
-                <Stat label="Avg difficulty" value={selected.avgPassDifficulty === null ? "—" : selected.avgPassDifficulty.toFixed(0)} hint={PASS_DIFFICULTY_FORMULA.join("; ")} />
-                <Stat label="vs expected" value={selected.passCompletionOverExpected === null ? "—" : `${selected.passCompletionOverExpected > 0 ? "+" : ""}${selected.passCompletionOverExpected.toFixed(1)} pp`} hint="Completed minus expected completions, percentage points of attempts" />
-                <Stat label="Hardest completed" value={selected.hardestCompletedPass ? `${selected.hardestCompletedPass.difficulty}/100 · ${Math.round(selected.hardestCompletedPass.distanceM)} m` : "—"} hint={selected.hardestCompletedPass ? `Event ${selected.hardestCompletedPass.eventId}` : undefined} />
+                <Stat label="Avg difficulty (illustrative, uncalibrated)" value={selected.avgPassDifficulty === null ? "—" : selected.avgPassDifficulty.toFixed(0)} hint={PASS_DIFFICULTY_FORMULA.join("; ")} />
+                <Stat label="Completion vs heuristic (illustrative, uncalibrated)" value={selected.passCompletionOverExpected === null ? "—" : `${selected.passCompletionOverExpected > 0 ? "+" : ""}${selected.passCompletionOverExpected.toFixed(1)} pp`} hint="Completed passes minus an uncalibrated difficulty heuristic, percentage points of attempts" />
+                <Stat label="Hardest completed (illustrative, uncalibrated)" value={selected.hardestCompletedPass ? `${selected.hardestCompletedPass.difficulty}/100 · ${Math.round(selected.hardestCompletedPass.distanceM)} m` : "—"} />
               </div></div>
               <div className="pa-group"><h3>Defending</h3><div className="pa-stats">
                 <Stat label="Tackles won" value={`${selected.tacklesWon}/${selected.tackles}`} /><Stat label="Pressures" value={selected.pressures} />
@@ -244,7 +253,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
 
           <div className="pa-body pa-body--split">
             <div className="pa-impact">
-              <h3>Impact on the game</h3>
+              <h3>Illustrative activity score breakdown</h3>
               <ul>
                 {selected.impact.components.map((component) => (
                   <li key={component.key}>
@@ -256,8 +265,8 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                   </li>
                 ))}
               </ul>
-              <details className="pa-model"><summary>How the impact rating works</summary>
-                <p className="subtle-text">Rating = 6.0 + the sum above, kept within 3–10. Weights per action: goal +{IMPACT_WEIGHTS.goal}, assist +{IMPACT_WEIGHTS.assist}, chance created +{IMPACT_WEIGHTS.keyPass}, shot on target +{IMPACT_WEIGHTS.shotOnTarget}, completed pass +{IMPACT_WEIGHTS.passCompleted}, lost pass {IMPACT_WEIGHTS.passFailed}, progressive pass +{IMPACT_WEIGHTS.progressivePass}, tackle won +{IMPACT_WEIGHTS.tackleWon}, pressure +{IMPACT_WEIGHTS.pressure}, save +{IMPACT_WEIGHTS.save} (+{IMPACT_WEIGHTS.savedXg} × xG saved), foul {IMPACT_WEIGHTS.foul}, yellow {IMPACT_WEIGHTS.yellow}, red {IMPACT_WEIGHTS.red}; plus xG × {IMPACT_WEIGHTS.xg} and xA × {IMPACT_WEIGHTS.xa}. Illustrative, from logged events only.</p>
+              <details className="pa-model"><summary>How the illustrative activity score works</summary>
+                <p className="subtle-text">Score = 6.0 + the sum above, kept within 3–10. Weights per action: goal +{IMPACT_WEIGHTS.goal}, assist +{IMPACT_WEIGHTS.assist}, chance created +{IMPACT_WEIGHTS.keyPass}, shot on target +{IMPACT_WEIGHTS.shotOnTarget}, completed pass +{IMPACT_WEIGHTS.passCompleted}, lost pass {IMPACT_WEIGHTS.passFailed}, pass gaining ≥15 grid units +{IMPACT_WEIGHTS.progressivePass}, tackle won +{IMPACT_WEIGHTS.tackleWon}, pressure +{IMPACT_WEIGHTS.pressure}, save +{IMPACT_WEIGHTS.save} (+{IMPACT_WEIGHTS.savedXg} × xG saved), foul {IMPACT_WEIGHTS.foul}, yellow {IMPACT_WEIGHTS.yellow}, red {IMPACT_WEIGHTS.red}; plus illustrative xG × {IMPACT_WEIGHTS.xg} and xG assisted × {IMPACT_WEIGHTS.xa}. Illustrative and uncalibrated, from logged events only; not a performance rating.</p>
               </details>
             </div>
 
@@ -276,7 +285,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                   <p>{note.summary}</p>
                   {note.strengths.length > 0 && <><h4>Strengths</h4><ul>{note.strengths.map((item) => <li key={item}>{item}</li>)}</ul></>}
                   {note.concerns.length > 0 && <><h4>Watch</h4><ul>{note.concerns.map((item) => <li key={item}>{item}</li>)}</ul></>}
-                  <span className={`tag${note.source === "foundry" ? " tag--accent" : ""}`} title={note.problem}>{note.source === "foundry" ? "Foundry player analyst · numbers checked" : "Rules-based note"}</span>
+                  <span className={`tag${note.source === "foundry" ? " tag--accent" : ""}`}>{note.source === "foundry" ? "Foundry player analyst · numbers checked" : "Rules-based note"}</span>
                   <span className="tag">{PERIOD_LABEL[note.period ?? "full"]}{note.asOfSecond !== undefined ? ` · as of ${Math.floor(note.asOfSecond / 60)}'` : ""}</span>
                 </div>
               ) : (
@@ -288,19 +297,19 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
           <div className="pa-tracking">
             <h3>Physical metrics{fixture.tracking ? <span className="tag tag--muted pa-tracking__source">synthetic tracking</span> : null}</h3>
             <div className="pa-tracking__grid">
-              {TRACKING_METRICS.map((metric) => {
+              {TRACKING_METRICS.filter((metric) => !HIDDEN_TRACKING_KEYS.has(metric.key)).map((metric) => {
                 const tracked = fixture.tracking ? physicalValue(selected, metric.key) : null;
                 return (
-                  <div key={metric.key} className="pa-tracking__tile" title={tracked ? "Seeded synthetic tracking samples, one per minute" : metric.reason}>
-                    <span>{metric.label}</span><strong>{tracked ?? "—"}</strong>
-                    <small>{tracked ? "Synthetic tracking" : fixture.tracking && metric.key !== "minutes" ? "Not tracked for this player" : metric.key === "minutes" ? "Needs line-up data" : "Needs a tracking feed"}</small>
+                  <div key={metric.key} className="pa-tracking__tile">
+                    <span>{TRACKING_LABEL[metric.key] ?? metric.label}</span><strong>{tracked ?? "—"}</strong>
+                    <small>{tracked ? "Seeded synthetic samples, one per minute" : fixture.tracking && metric.key !== "minutes" ? "Not tracked for this player" : metric.key === "minutes" ? "Needs line-up data" : metric.reason}</small>
                   </div>
                 );
               })}
             </div>
             <p className="subtle-text">{fixture.tracking
-              ? `Distance, top speed and sprints (≥ ${SPRINT_THRESHOLD_KMH} km/h) come from seeded synthetic tracking samples (one per outfield player per minute), labelled as synthetic. A real broadcast would use optical tracking or GPS vests.`
-              : "Event feeds record what happened on the ball, not how far players ran. Distance, sprints and speed need player tracking: positions for every player many times a second, from optical tracking or GPS vests."}</p>
+              ? "Distance is a synthetic minute aggregate and top speed a synthetic peak-speed milestone, from seeded samples (one per outfield player per minute). They are illustrative, not measured; a real broadcast would use optical tracking or GPS vests."
+              : "Event feeds record what happened on the ball, not how far players ran. Distance and speed need player tracking: positions for every player many times a second, from optical tracking or GPS vests."}</p>
           </div>
         </section>
       ) : (
