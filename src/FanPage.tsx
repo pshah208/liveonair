@@ -4,20 +4,23 @@ import type { LiveMessage, Storyline, VerifiedFact } from "../shared/platform.js
 import { filterByPeriod, PERIOD_LABEL, periodBoundary } from "../shared/periods.js";
 import { latestRevisions } from "../shared/highlights.js";
 import {
-  alertKey,
+  alertPrefsOf,
   changesSince,
   clubPreferenceFor,
   createFanCursor,
   FAN_CURSOR_KEY,
   FAN_PERSONA,
+  fanAlertCandidates,
+  fanMoments,
   favoritePlayerOf,
   loadFanPrefs,
-  newPlayerAlerts,
   parseFanCursor,
   prioritiseFanFeed,
+  reconcileFanAlerts,
   resolveFavoritePlayer,
   resolveFavoriteTeam,
   saveFanPrefs,
+  type FanAlert,
   type FanChange,
   type FanCursor,
   type FanFocus,
@@ -26,11 +29,16 @@ import {
 } from "../shared/fan.js";
 import { api } from "./api.js";
 import { FactTicker, Panel, SyntheticBadge, TransportSourceBadge } from "./components.js";
-import { BigMomentCard } from "./fan/BigMoment.js";
 import { LiveBoardPanel } from "./LiveBoardPanel.js";
+import { CatchUpCard } from "./fan/CatchUp.js";
+import { AlertPrefsFieldset, FanAlerts } from "./fan/FanAlerts.js";
+import { FanMomentum } from "./fan/FanMomentum.js";
+import { MomentCards } from "./fan/MomentCards.js";
 import { PlayerCardSection } from "./fan/PlayerCardSection.js";
-import { PotmVote } from "./fan/PotmVote.js";
 import { PressBoxSection } from "./fan/PressBoxSection.js";
+import { FAN_TEXT } from "./fan/strings.js";
+import { useMomentCredits } from "./fan/useMomentCredits.js";
+import "./fan/fan-p2.css";
 import { useLiveStream, type LiveStreamState } from "./hooks/useLiveStream.js";
 import type { ActiveMatchContext } from "./liveContext.js";
 import { PeriodSelector, scopedTitle } from "./PeriodSelector.js";
@@ -39,7 +47,6 @@ import {
   computeScoreFromEvents,
   eventSecond,
   formatClock,
-  formatMinuteLabel,
   getErrorMessage,
   labelize,
   LANGUAGE_LABEL,
@@ -175,8 +182,11 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
   }
 
   // ---------------------------------------------------------------- match change: clear everything tied to the old match
-  const [alerts, setAlerts] = useState<MatchEvent[]>([]);
-  const seenAlerts = useRef<Set<string>>(new Set());
+  const [alerts, setAlerts] = useState<FanAlert[]>([]);
+  const alertsRef = useRef<FanAlert[]>([]);
+  const replaceAlerts = useCallback((next: FanAlert[]) => { alertsRef.current = next; setAlerts(next); }, []);
+  const [announcement, setAnnouncement] = useState("");
+  const seenAlerts = useRef<Record<string, string>>({});
   const alertsPrimedFor = useRef<string | null>(null);
   const [cursor, setCursor] = useState<FanCursor | null>(() => {
     try { return parseFanCursor(safeStorage("session")?.getItem(FAN_CURSOR_KEY) ?? null); } catch { return null; }
@@ -189,24 +199,41 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
     setSnapshot(null);
     setStorylines([]);
     setFacts([]);
-    setAlerts([]);
-    seenAlerts.current = new Set();
+    replaceAlerts([]);
+    setAnnouncement("");
+    seenAlerts.current = {};
     alertsPrimedFor.current = null;
     setCursor((current) => (current && current.matchId === matchId ? current : null));
   }, [matchId]);
 
-  // In-app favourite-player alerts; existing moments are primed silently so opening the view does not flood alerts.
+  // Quiet in-page alerts for major moments and the favourite player. Moments already on screen when the view
+  // opens (or when the favourite or alert settings change) are primed silently, so nothing floods in.
+  const alertPrefs = alertPrefsOf(prefs);
+  const alertPrefsKey = Object.entries(alertPrefs).map(([key, on]) => `${key}:${on ? 1 : 0}`).join(",");
+  const alertClock = context.analyzedThrough ?? (status?.state === "running" ? status.clockSecond : fixture?.durationSeconds ?? 0);
   useEffect(() => {
     if (!fixture || !matchId) return;
-    const primeKey = `${matchId}|${streamPlayerId ?? "-"}`;
-    const fresh = newPlayerAlerts(fixture.events, streamPlayerId, seenAlerts.current);
-    for (const event of fresh) seenAlerts.current.add(alertKey(event));
-    if (alertsPrimedFor.current !== primeKey) {
-      alertsPrimedFor.current = primeKey;
-      return;
-    }
-    if (fresh.length > 0) setAlerts((current) => [...fresh.reverse(), ...current].slice(0, 5));
-  }, [fixture, matchId, streamPlayerId]);
+    const primeKey = `${matchId}|${streamPlayerId ?? "-"}|${alertPrefsKey}`;
+    const prime = alertsPrimedFor.current !== primeKey;
+    alertsPrimedFor.current = primeKey;
+    const candidates = fanAlertCandidates({
+      events: fixture.events,
+      storylines,
+      players: new Map([...fixture.home.players, ...fixture.away.players].map((player) => [player.id, player])),
+      teamNames: { home: fixture.home.name, away: fixture.away.name },
+      favoritePlayerId: streamPlayerId,
+      prefs: alertPrefs,
+      uptoSecond: alertClock,
+      language: prefs.language
+    });
+    const result = reconcileFanAlerts(alertsRef.current, candidates, seenAlerts.current, { prime });
+    seenAlerts.current = result.seen;
+    alertsRef.current = result.alerts;
+    setAlerts(result.alerts);
+    if (result.announcement) setAnnouncement(result.announcement);
+    // alertPrefs is represented by alertPrefsKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fixture, matchId, streamPlayerId, storylines, alertPrefsKey, alertClock, prefs.language]);
 
   // "What changed since you last looked": remember what was on screen when the fan leaves the view.
   const latest = useRef<{ matchId?: string; events: MatchEvent[]; storylines: Storyline[] }>({ events: [], storylines: [] });
@@ -226,8 +253,17 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
   const score = (snapshot && fixture && snapshot.fixtureId === fixture.id ? snapshot.score : null) ?? computeScoreFromEvents(fixture);
   const clockSecond = context.analyzedThrough ?? status?.clockSecond ?? 0;
   const uptoSecond = context.analyzedThrough ?? (status?.state === "running" ? status.clockSecond : fixture?.durationSeconds ?? 0);
-  const approved = useMemo(() => storylines.filter((item) => item.status === "approved").sort((a, b) => b.triggerMinute - a.triggerMinute), [storylines]);
-  const retractedCount = storylines.filter((item) => item.status === "retracted").length;
+  const moments = useMemo(() => (fixture ? fanMoments(storylines, fixture.events, prefs.language, uptoSecond, facts) : []), [fixture, storylines, prefs.language, uptoSecond, facts]);
+  const creditSignature = moments.map((moment) => `${moment.id}@${moment.version}:${moment.status}`).join("|");
+  const credits = useMomentCredits(matchId, creditSignature);
+  const playerCardRef = useRef<HTMLDivElement>(null);
+  const openPlayerCard = useCallback(() => {
+    const node = playerCardRef.current;
+    if (!node) return;
+    const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    node.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+    node.focus({ preventScroll: true });
+  }, []);
   const changes = useMemo(() => (matchId && fixture ? changesSince(cursor, matchId, fixture.events, storylines) : []), [cursor, matchId, fixture, storylines]);
   const players = useMemo(() => new Map(fixture ? [...fixture.home.players, ...fixture.away.players].map((player) => [player.id, player]) : []), [fixture]);
 
@@ -276,16 +312,14 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         <p className="subtle-text">Goals in the {PERIOD_LABEL[period]}: {fixture.home.shortName} {scopedSnapshot.periodScore.home}–{scopedSnapshot.periodScore.away} {fixture.away.shortName} · match score {score.home}–{score.away}</p>
       )}
 
-      {alerts.length > 0 && (
-        <section className="fan-alerts" aria-label="Favourite player alerts" aria-live="polite">
-          {alerts.map((event) => (
-            <div key={alertKey(event)} className="banner banner--info fan-alert">
-              <strong>{players.get(event.playerId)?.name ?? "Your player"}</strong> · {labelize(event.type)} ({outcomeLabel(event)}) at {formatMinuteLabel(eventSecond(event))}
-              <button type="button" className="link-button" onClick={() => setAlerts((current) => current.filter((item) => alertKey(item) !== alertKey(event)))}>Dismiss</button>
-            </div>
-          ))}
-        </section>
-      )}
+      <FanAlerts alerts={alerts} announcement={announcement}
+        onDismiss={(key) => replaceAlerts(alertsRef.current.filter((alert) => alert.key !== key))}
+        onDismissAll={() => replaceAlerts([])}
+        onOpenPlayerCard={openPlayerCard} />
+
+      <CatchUpCard fixture={fixture} storylines={storylines} currentSecond={uptoSecond} language={prefs.language} />
+
+      <MomentCards fixture={fixture} moments={moments} credits={credits} favoritePlayerId={favoritePlayer.player?.id} />
 
       {cursor && cursor.matchId === matchId && (
         <Panel eyebrow="Since you last looked" title="What changed" className="fan-changes" aside={<button type="button" className="button button--ghost button--small" onClick={() => setCursor(createFanCursor(matchId!, fixture.events, storylines))}>Mark as seen</button>}>
@@ -293,7 +327,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
             <ul className="fan-list">
               {changes.map((change) => (
                 <li key={`${change.kind}-${change.id}`} className="fan-list__item">
-                  <span className="mono">{change.minute}'</span>
+                  <span className="mono">{change.minute}′</span>
                   <span className={`tag${change.kind === "ruled_out" || change.kind === "red_card" || change.kind === "story_retracted" ? " tag--danger" : change.kind === "goal" || change.kind === "story" ? " tag--accent" : ""}`}>{CHANGE_LABEL[change.kind]}</span>
                   <span>{change.storylineId
                     ? storylineText((storylines.find((item) => item.id === change.storylineId)?.headline) ?? { en: "", es: "", fr: "", pt: "" }, prefs.language).text
@@ -305,85 +339,68 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         </Panel>
       )}
 
+      <FanMomentum fixture={fixture} uptoSecond={uptoSecond} finished={finished} />
+
       <div className="fan-top">
         <div className="fan-top__col fan-top__col--left">
           <div className="fan-top__board">
             <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={(next) => updatePrefs({ period: next })}
               halvesUnavailable={halvesUnavailable} score={score} title="Live board" />
           </div>
-          <div className="fan-top__player">
+        </div>
+        <div className="fan-top__col fan-top__col--right">
+          <div id="fan-player-card" className="fan-top__player fan-p2-player-anchor" ref={playerCardRef} tabIndex={-1}>
             <PlayerCardSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} finished={finished} matchId={matchId!}
               favorite={favoritePlayer} hasFavorite={Boolean(prefs.favoritePlayer)} savedName={prefs.favoritePlayer?.name} language={prefs.language}
               onPickFavorite={(player) => updatePrefs({ favoritePlayer: favoritePlayerOf(player) })} />
           </div>
         </div>
-        <div className="fan-top__col fan-top__col--right">
-          <div className="fan-top__social">
-            <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
-          </div>
-          <div className="fan-top__rest">
-            <BigMomentCard fixture={fixture} storylines={storylines} language={prefs.language} />
-            <PotmVote fixture={fixture} matchId={matchId!} uptoSecond={uptoSecond} clockSecond={clockSecond} finished={finished} />
-          </div>
-        </div>
       </div>
-
-      <section className="fan-story-of-match" aria-label="The story of the match">
-        <h2 className="fan-story-of-match__title">The story of the match</h2>
-        <p className="fan-card__hint">{finished ? "The full-time story, written from the verified feed." : "The story so far. Written on demand from the verified feed; it updates when you regenerate."}</p>
-        <PostMatchStorylines variant="fan" matchId={matchId} language={prefs.language} favouriteClubId={streamClubId} favouritePlayerId={favoritePlayer.player?.id} />
-      </section>
 
       <div className="fan-grid">
         <div className="desk-col">
           <Panel eyebrow={scopedTitle("My match", period)} title={focus.playerId || focus.teamId ? "Your moments first" : "Key moments"}>
             <FanFeed fixture={fixture} focus={focus} period={period} players={players} />
           </Panel>
-
-          <Panel eyebrow="Producer-approved" title="Approved stories" aside={<span className="tag">{approved.length}</span>}>
-            {retractedCount > 0 && <p className="subtle-text">{retractedCount} {retractedCount === 1 ? "story was" : "stories were"} withdrawn after a correction and removed.</p>}
-            {approved.length === 0 ? <div className="empty-state">Stories appear here once the producer approves them in the studio.</div> : (
-              <ul className="fan-list">
-                {approved.map((storyline) => {
-                  const headline = storylineText(storyline.headline, prefs.language);
-                  const line = storylineText(storyline.onAirLine, prefs.language);
-                  return (
-                    <li key={storyline.id} className="fan-story">
-                      <span className="fan-story__meta"><span className="mono">{storyline.triggerMinute}'</span>{(headline.fallback || line.fallback) && <span className="tag">English fallback · no translation yet</span>}</span>
-                      <strong>{headline.text}</strong>
-                      <span>{line.text}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {facts.some((fact) => !fact.retracted) && (
-              <details className="disclosure disclosure--compact">
-                <summary>Verified facts behind these stories</summary>
-                <FactTicker facts={facts.filter((fact) => !fact.retracted)} language={prefs.language} />
-              </details>
-            )}
-          </Panel>
         </div>
 
         <div className="desk-col">
-          <Panel eyebrow="AI summary" title="My match summary" aside={summary && <span className="tag">{summary.claims.length} grounded claims</span>}>
-            <p className="subtle-text">Written on demand by the Foundry narrator for your language and favourites from the verified feed. An AI summary, not producer-approved broadcast copy. Always covers the full match.</p>
-            <div className="recap-controls">
-              <button type="button" className="button button--primary" onClick={() => void requestSummary()} disabled={!context.aiReady || summaryLoading}>{summaryLoading ? "Writing…" : summary ? "Refresh my summary" : "My match summary"}</button>
-            </div>
-            {!context.aiReady && <div className="banner banner--info">AI narration isn't configured on this server, so personal summaries are unavailable.</div>}
-            {summaryError && <div className="banner banner--danger" role="alert">{summaryError}</div>}
-            {summary && (
-              <article className={`recap${summaryLoading ? " is-stale" : ""}`}>
-                <div className="recap__head"><h3>{summary.title}</h3><span className="tag tag--accent">AI summary</span></div>
-                <p className="recap__script">{summary.script}</p>
-                {summary.audioUrl && <audio className="recap__audio" controls preload="none" src={summary.audioUrl} aria-label="Listen to my match summary" />}
-              </article>
+          <section className="fan-story-of-match" aria-labelledby="fan-story-title">
+            <h2 id="fan-story-title" className="fan-story-of-match__title">{FAN_TEXT.storyTitle}</h2>
+            <p className="fan-card__hint">{finished ? "The full-time story, written from the verified feed." : "The story so far. Written on demand from the verified feed; it updates when you regenerate."}</p>
+            <PostMatchStorylines variant="fan" matchId={matchId} language={prefs.language} favouriteClubId={streamClubId} favouritePlayerId={favoritePlayer.player?.id} />
+            <details className="disclosure disclosure--compact fan-p2-summary">
+              <summary>My match summary (AI){summary ? ` · ${summary.claims.length} grounded claims` : ""}</summary>
+              <p className="subtle-text">Written on demand by the Foundry narrator for your language and favourites from the verified feed. An AI summary, not producer-approved broadcast copy. Always covers the full match.</p>
+              <div className="recap-controls">
+                <button type="button" className="button button--primary" onClick={() => void requestSummary()} disabled={!context.aiReady || summaryLoading}>{summaryLoading ? "Writing…" : summary ? "Refresh my summary" : "Write my match summary"}</button>
+              </div>
+              {!context.aiReady && <div className="banner banner--info">AI narration isn't configured on this server, so personal summaries are unavailable.</div>}
+              {summaryError && <div className="banner banner--danger" role="alert">{summaryError}</div>}
+              {summary && (
+                <article className={`recap${summaryLoading ? " is-stale" : ""}`}>
+                  <div className="recap__head"><h3>{summary.title}</h3><span className="tag tag--accent">AI summary</span></div>
+                  <p className="recap__script">{summary.script}</p>
+                  {summary.audioUrl && <audio className="recap__audio" controls preload="none" src={summary.audioUrl} aria-label="Listen to my match summary" />}
+                </article>
+              )}
+            </details>
+            {facts.some((fact) => !fact.retracted) && (
+              <details className="disclosure disclosure--compact">
+                <summary>Verified facts behind the approved moments</summary>
+                <FactTicker facts={facts.filter((fact) => !fact.retracted)} language={prefs.language} />
+              </details>
             )}
-          </Panel>
+          </section>
         </div>
       </div>
+
+      {finished && (
+        <section className="fan-p2-whistle" aria-labelledby="fan-whistle-title">
+          <h2 id="fan-whistle-title" className="fan-p2-section__title">{FAN_TEXT.afterWhistleTitle}</h2>
+          <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
+        </section>
+      )}
 
       <p className="subtle-text fan-footnote">Fan View is a read-only view of the match on the Studio Desk. It only shows producer-approved stories; the agents' drafts and traces stay in the studio.</p>
     </main>
@@ -409,14 +426,14 @@ function FanPreferences({ fixture, prefs, storageOk, favoriteTeamInMatch, favori
   const player = resolveFavoritePlayer(fixture, prefs.favoritePlayer).player;
   const playerValue = !prefs.favoritePlayer ? "" : player?.id ?? "__saved";
   return (
-    <section className="panel fan-prefs" aria-label="Your preferences">
-      <div className="fan-prefs__row">
-        <label className="field"><span>Language</span>
+    <section className="panel fan-prefs fan-p2-prefs" aria-label="Your preferences">
+      <div className="fan-prefs__row fan-p2-prefs__row">
+        <label className="field fan-p2-prefs__field"><span>Language</span>
           <select value={prefs.language} onChange={(event) => onChange({ language: event.target.value as Language })}>
             {LANGUAGES.map((item) => <option key={item} value={item}>{LANGUAGE_LABEL[item]}</option>)}
           </select>
         </label>
-        <label className="field"><span>Favourite club</span>
+        <label className="field fan-p2-prefs__field"><span>Club</span>
           <select value={clubValue} onChange={(event) => {
             const value = event.target.value;
             if (value === "saved") return;
@@ -429,8 +446,8 @@ function FanPreferences({ fixture, prefs, storageOk, favoriteTeamInMatch, favori
             {clubValue === "saved" && <option value="saved">Saved club (not in this match)</option>}
           </select>
         </label>
-        <label className="field"><span>Favourite player</span>
-          <select value={playerValue} onChange={(event) => {
+        <label className="field fan-p2-prefs__field"><span>Player</span>
+          <select value={playerValue} aria-describedby="fan-prefs-hint" onChange={(event) => {
             const value = event.target.value;
             if (value === "__saved") return;
             const picked = [...fixture.home.players, ...fixture.away.players].find((item) => item.id === value);
@@ -445,9 +462,13 @@ function FanPreferences({ fixture, prefs, storageOk, favoriteTeamInMatch, favori
             ))}
           </select>
         </label>
-        <PeriodSelector value={period} onChange={(next) => onChange({ period: next })} halvesUnavailable={halvesUnavailable} label="Fan View period" className="fan-prefs__period" />
       </div>
-      <p id="fan-prefs-hint" className="subtle-text">
+      <details className="fan-p2-prefs__more">
+        <summary>More settings · period and {FAN_TEXT.alertPrefs.toLowerCase()}</summary>
+        <PeriodSelector value={period} onChange={(next) => onChange({ period: next })} halvesUnavailable={halvesUnavailable} label="Fan View period" className="fan-prefs__period" />
+        <AlertPrefsFieldset prefs={alertPrefsOf(prefs)} onChange={(alerts) => onChange({ alerts })} />
+      </details>
+      <p id="fan-prefs-hint" className="subtle-text fan-p2-prefs__hint">
         {!prefs.favoritePlayer ? "Pick a favourite player to see their card." : favoritePlayerInMatch ? "Your player's card ranks them among everyone with a logged action in this match." : `${prefs.favoritePlayer.name} is not in this match; coverage is neutral and no other player is substituted.`}
         {prefs.favoriteClubId && !favoriteTeamInMatch ? " Your saved club is not in this match." : ""}
         {halvesUnavailable ? " Halves are unavailable for clip-derived footage." : ""}

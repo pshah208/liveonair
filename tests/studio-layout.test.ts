@@ -16,11 +16,13 @@ test("Studio live desk no longer renders Match intelligence or the Fact desk", (
   }
 });
 
-test("middle column holds only the Live board; Chance insights and Player ID tags are cut", () => {
+test("middle column holds the Live board plus the game-rhythm panels; Chance insights and Player ID tags are cut", () => {
   assert.equal(columns.length, 3, "three desk columns");
   const middle = columns[1]!;
   assert.ok(middle.includes("<LiveBoardPanel"), "Live board in middle column");
-  assert.equal(middle.match(/<Panel\b/g)?.length ?? 0, 0, "no other panel beside the board");
+  assert.ok(middle.indexOf("<LiveBoardPanel") < middle.indexOf("<MomentumChart"), "momentum sits below the board, in the freed space");
+  const titles = [...middle.matchAll(/<Panel\b[^>]*title="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(titles, ["Attacking-threat momentum", "Control vs chaos", "Second-screen engagement (simulated)"], "only the game-rhythm panels join the board");
   for (const removed of ["Chance insights", "ChanceInsightCard", "chanceInsights", "getChanceInsights", "PlayerIdTags", "computePlayerTags", "playerTags", "Player ID ·"]) {
     assert.ok(!studio.includes(removed), `${removed} should not appear in StudioPage`);
   }

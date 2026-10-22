@@ -6,15 +6,17 @@
  */
 import { eventSecondOf, latestRevisions } from "./highlights.js";
 import type { MatchEvent, MatchFixture, Player, TeamId } from "./types.js";
+import { HIGH_XG_SHOT_THRESHOLD } from "./xg.js";
 
 export const MAX_PRESS_POSTS = 20;
 export const MAX_POST_CHARS = 200;
 export const PRESS_BOX_LABEL = "Synthetic posts · fictional accounts";
 
-export const BIG_CHANCE_XG = 0.3;
+/** "High illustrative xG shot": the shared threshold from shared/xg.ts. */
+export const BIG_CHANCE_XG = HIGH_XG_SHOT_THRESHOLD;
 export const GOLDEN_CHANCE_XG = 0.5;
 export const SAVE_MIN_XG = 0.15;
-export const BIG_SAVE_XG = 0.3;
+export const BIG_SAVE_XG = HIGH_XG_SHOT_THRESHOLD;
 export const YELLOW_MIN_MINUTE = 80;
 export const SUBS_MIN_MINUTE = 60;
 export const DOMINANT_WINDOW_SECONDS = 15 * 60;
@@ -504,7 +506,7 @@ export function buildAllPressPosts(fixture: MatchFixture, uptoSecond: number): P
     const golden = xg >= GOLDEN_CHANCE_XG;
     add({ key: e.id, kind: "big_chance", second: secondOf(e), minute, teamId: e.teamId, types: PERSONA_TYPES.big_chance, text: (v) => golden
       ? pick([`Golden chance gone: ${name}'s effort for ${t} was a chance worth ${xgText(xg)} illustrative xG, ${minute}'.`, `${name} (${t}) misses a golden chance, ${xgText(xg)} illustrative xG, ${minute}'.`], v)
-      : pick([`Big chance gone: ${name}'s effort for ${t} was a chance worth ${xgText(xg)} illustrative xG.`, `${t} will want that back: ${name}, ${xgText(xg)} illustrative xG, ${minute}'.`], v) });
+      : pick([`High illustrative xG shot missed: ${name}'s effort for ${t} was worth ${xgText(xg)} illustrative xG.`, `${t} will want that back: ${name}, ${xgText(xg)} illustrative xG, ${minute}'.`], v) });
     if (golden) {
       const takeAt = secondOf(e) + 30 + (hashString(`${fixture.seed}|${e.id}|take`) % 31);
       add({ key: `${e.id}:take`, kind: "hot_take", second: takeAt, minute: minuteAtSecond(takeAt, e.period), teamId: e.teamId, types: PERSONA_TYPES.hot_take,

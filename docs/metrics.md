@@ -122,3 +122,13 @@ These are synthetic/illustrative figures for hackathon demo data. They are not c
   - otherwise `mixed`
 - Includes window-over-window change in matched pressure-event count.
 - Includes `insufficientCoverage` guard for sparse windows.
+
+### UI notes: momentum, control vs chaos, why it matters
+
+- View helpers live in `src/momentumView.ts` (pure, tested in `tests/momentum-ui.test.ts`).
+  - `momentumUpTo(events, uptoMinute)` trims the series to the live minute, re-smooths without the empty future (the data layer pads to 90 minutes), and judges coverage over the elapsed minutes only: fewer than 3 minutes played, or fewer than 1.2 on-ball events per elapsed minute, shows "Not enough match events yet". Sparse uploaded-video feeds land here.
+  - `latestControlWindow(events, uptoMinute)` picks the latest **completed** five-minute window.
+- `src/MomentumChart.tsx` draws home above / away below the zero line, labelled "Illustrative attacking threat (synthetic)", with goal (G) and substitution (V) markers and a half-time divider. Away is always hatched as well as coloured. Team colours that are too close, or a red/green pair, fall back to Okabe–Ito blue `#0072B2` / orange `#E69F00`. Screen readers get an `aria-label` summary and a visually hidden table of clear spells. Transitions are off under `prefers-reduced-motion`.
+- `src/ControlChaosCard.tsx` shows the latest window as Controlled / Chaotic / Mixed passage with completed-pass share, possession changes, shots and the change in pressing actions.
+- `src/WhyItMatters.tsx` builds the one-line "why it matters" chip deterministically (no LLM). Momentum: a side is "on top" when it holds a share lead of at least 0.35 of the last five minutes' raw threat (and the combined threat is at least 0.1); otherwise "evenly balanced". Control vs chaos: the window label plus the evidence. Every number in the line carries its unit or is a minute mark. Authors: "Match analyst" (momentum), "Tactics analyst" (control vs chaos).
+- Studio Desk also shows "Second-screen engagement (simulated)": opt-ins, average minutes engaged and drop-off at goals, half-time and full time, generated from a hash of the match ID. Labelled "Simulated — no real users"; there are no real users and no tracking. An optional "Momentum segment presented by Northwind Sports" label uses a fictional brand.

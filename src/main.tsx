@@ -8,6 +8,7 @@ import "@fontsource/ibm-plex-sans/700.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./styles.css";
+import "./board.css";
 
 const container = document.getElementById("root");
 

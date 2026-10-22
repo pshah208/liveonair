@@ -1,0 +1,111 @@
+/* Fan View P2: moment cards, catch-up, quiet alerts, compact momentum, compact preferences, after-the-whistle.
+   Colours come from theme tokens, so text keeps >= 4.5:1 contrast in dark and light themes. State is never shown
+   by colour alone: every status has a text label, and corrections are also struck through. */
+
+.fan-p2-section__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.fan-p2-section__title { margin: 0; font-size: 18px; line-height: 1.25; color: var(--cp-text); }
+.fan-p2-section__title:focus { outline: none; }
+.fan-p2-section__title:focus-visible { outline: 2px solid var(--cp-accent-text); outline-offset: 3px; border-radius: 4px; }
+.fan-p2-empty, .fan-p2-note { margin: 0; font-size: 13px; color: var(--cp-text-muted); }
+.fan-p2-inline-tag { margin-left: 6px; }
+
+/* Shared panel shell for the P2 sections. */
+.fan-p2-moments, .fan-p2-catchup__panel, .fan-p2-momentum, .fan-p2-whistle, .fan-p2-alerts {
+  display: grid; gap: 10px; min-width: 0; padding: 14px; border-radius: var(--radius-card);
+  border: 1px solid var(--cp-border); background: var(--panel-sheen), var(--cp-surface); box-shadow: var(--shadow-card);
+}
+
+/* Status pills: text label plus a border, so meaning does not depend on colour. */
+.fan-p2-pill {
+  display: inline-flex; align-items: center; padding: 1px 8px; border-radius: var(--radius-small); border: 1px solid var(--cp-border-strong);
+  font-size: 12px; font-weight: 600; line-height: 1.5; color: var(--cp-text); background: var(--cp-surface-soft); white-space: nowrap;
+}
+.fan-p2-pill--approved { color: var(--cp-success); border-color: color-mix(in srgb, var(--cp-success) 55%, var(--cp-border)); }
+.fan-p2-pill--corrected { color: var(--cp-danger); border-color: color-mix(in srgb, var(--cp-danger) 60%, var(--cp-border)); border-style: dashed; }
+
+/* ---------------------------------------------------------------- moment cards */
+.fan-p2-moments__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.fan-p2-moment { border: 1px solid var(--cp-border); border-radius: var(--radius-control); background: var(--cp-surface-soft); min-width: 0; }
+.fan-p2-moment.is-corrected { border-style: dashed; border-color: color-mix(in srgb, var(--cp-danger) 45%, var(--cp-border)); }
+.fan-p2-moment__toggle {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 44px;
+  padding: 8px 12px; border: 0; background: none; color: var(--cp-text); text-align: left; font: inherit; cursor: pointer; border-radius: var(--radius-control);
+}
+.fan-p2-moment__toggle:hover { background: var(--cp-surface-soft); }
+.fan-p2-moment__minute { font-weight: 700; color: var(--cp-text); }
+.fan-p2-moment__headline { font-weight: 600; overflow-wrap: anywhere; }
+.fan-p2-moment.is-corrected .fan-p2-moment__headline { color: var(--cp-text-muted); }
+.fan-p2-moment__chevron { font-size: 20px; line-height: 1; color: var(--cp-text-muted); width: 20px; text-align: center; }
+.fan-p2-moment__body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+.fan-p2-moment__body[hidden] { display: none; }
+.fan-p2-moment__correction { margin: 0; padding: 8px 10px; border-left: 3px solid var(--cp-danger); background: color-mix(in srgb, var(--cp-danger) 8%, transparent); font-size: 14px; color: var(--cp-text); }
+.fan-p2-moment__facts { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }
+.fan-p2-moment__facts dt { font-weight: 600; color: var(--cp-text-muted); font-size: 13px; }
+.fan-p2-moment__facts dd { margin: 0; color: var(--cp-text); overflow-wrap: anywhere; min-width: 0; }
+.fan-p2-moment__fallback { margin-left: 6px; }
+.fan-p2-moment__evidence { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.fan-p2-moment__sources { display: block; font-size: 12px; color: var(--cp-text-muted); }
+.fan-p2-moment__body .fan-moment__map { width: 100%; max-width: 280px; height: auto; color: var(--cp-text-muted); }
+.fan-p2-moments__more { justify-self: start; }
+
+/* ---------------------------------------------------------------- catch-up */
+.fan-p2-catchup { min-width: 0; }
+.fan-p2-catchup__button { width: 100%; min-height: 48px; font-size: 16px; font-weight: 600; }
+.fan-p2-catchup__lines { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 15px; color: var(--cp-text); }
+.fan-p2-catchup__subtitle { margin: 4px 0 0; font-size: 14px; color: var(--cp-text-muted); }
+.fan-p2-catchup__moments { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.fan-p2-catchup__moments li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: start; font-size: 14px; }
+.fan-p2-catchup__minute { font-weight: 700; }
+.fan-p2-catchup__text { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.fan-p2-catchup__text span { color: var(--cp-text-muted); font-size: 13px; }
+.fan-p2-catchup__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------------------------------------------------------------- quiet alerts */
+.fan-p2-alerts__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.fan-p2-alert {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 6px 8px; align-items: start; padding: 8px 10px; font-size: 14px;
+  border: 1px solid var(--cp-border); border-left: 3px solid var(--cp-link); border-radius: var(--radius-control); background: var(--cp-surface-soft);
+}
+.fan-p2-alert.is-yours { border-left-color: var(--cp-accent-text); border-left-width: 5px; }
+.fan-p2-alert.is-corrected { border-left-color: var(--cp-danger); border-left-style: dashed; }
+.fan-p2-alert__minute { font-weight: 700; }
+.fan-p2-alert__text { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; color: var(--cp-text); }
+.fan-p2-alert__text > span { color: var(--cp-text-muted); font-size: 13px; }
+.fan-p2-alert__text > .fan-p2-alert__correction { color: var(--cp-text); }
+.fan-p2-alert__actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.fan-p2-alerts__all { justify-self: end; }
+
+/* ---------------------------------------------------------------- momentum */
+.fan-p2-sponsor { margin: 0; font-size: 12px; color: var(--cp-text-muted); font-style: italic; }
+
+/* ---------------------------------------------------------------- compact preferences bar */
+.fan-p2-prefs { gap: 6px; padding-top: 10px; padding-bottom: 10px; }
+.fan-p2-prefs .fan-p2-prefs__row { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.fan-p2-prefs__field > span { font-size: 12px; }
+.fan-p2-prefs__more > summary { cursor: pointer; display: inline-flex; align-items: center; min-height: 32px; font-size: 13px; font-weight: 600; color: var(--cp-text-muted); }
+.fan-p2-prefs__more[open] { display: grid; gap: 10px; }
+.fan-p2-prefs__hint { margin: 0; font-size: 12px; color: var(--cp-text-muted); }
+.fan-p2-alertprefs { margin: 0; padding: 8px 10px; border: 1px solid var(--cp-border); border-radius: var(--radius-control); display: flex; flex-wrap: wrap; gap: 4px 14px; min-width: 0; }
+.fan-p2-alertprefs legend { font-size: 13px; font-weight: 600; color: var(--cp-text-muted); padding: 0 4px; }
+.fan-p2-alertprefs .fan-p2-note { flex-basis: 100%; }
+.fan-p2-check { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: 14px; color: var(--cp-text); cursor: pointer; }
+.fan-p2-check input { width: 18px; height: 18px; accent-color: var(--cp-accent); }
+
+/* Player card anchor: the "Open player card" alert action moves focus here. */
+.fan-p2-player-anchor { scroll-margin-top: 88px; border-radius: var(--radius-card); }
+.fan-p2-player-anchor:focus { outline: none; }
+.fan-p2-player-anchor:focus-visible { outline: 2px solid var(--cp-accent-text); outline-offset: 3px; }
+
+/* Visible focus on every P2 control, including inside light .fan-card surfaces. */
+.fan-p2-moment__toggle:focus-visible, .fan-p2-check input:focus-visible, .fan-p2-prefs__more > summary:focus-visible, .fan-p2-summary > summary:focus-visible {
+  outline: 2px solid var(--cp-accent-text); outline-offset: 2px;
+}
+
+@media (max-width: 767.98px) {
+  .fan-p2-prefs .fan-p2-prefs__row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .fan-p2-prefs .fan-p2-prefs__row > :first-child { grid-column: 1 / -1; }
+  .fan-p2-moment__facts { grid-template-columns: minmax(0, 1fr); }
+  .fan-p2-moment__facts dd { margin-bottom: 4px; }
+  .fan-p2-moments, .fan-p2-catchup__panel, .fan-p2-momentum, .fan-p2-whistle, .fan-p2-alerts { padding: 12px 10px; }
+  .fan-p2-prefs__more > summary, .fan-p2-summary > summary, .fan-p2-check { min-height: 44px; }
+}

@@ -1,0 +1,62 @@
+.pitch-stack {
+  position: relative;
+}
+
+.tracking-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tracking-overlay__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tracking-overlay__controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cp-bg) 85%, transparent);
+  border: 1px solid var(--cp-border);
+}
+
+.tracking-overlay__number {
+  font-size: 1.7px;
+  font-weight: 700;
+  fill: #ffffff;
+  pointer-events: none;
+}
+
+.pitch-events-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pitch-events-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pitch-events-legend__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+@media (max-width: 767.98px) {
+  .pitch-label {
+    font-size: 3.7px;
+  }
+}

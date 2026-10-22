@@ -2,6 +2,7 @@ import type { Language, MatchEvent, MatchFixture, TeamId } from "./types.js";
 import type { Storyline } from "./platform.js";
 import { metricOptions, passDifficulty } from "./metrics.js";
 import { eventPeriod, periodBoundary, sameHalf, type MatchPeriod } from "./periods.js";
+import { HIGH_XG_SHOT_THRESHOLD } from "./xg.js";
 
 /**
  * Deterministic highlight selection.
@@ -153,7 +154,8 @@ const WINDOWS: Record<HighlightKind, { pre: number; post: number; base: number }
   hard_pass: { pre: 6, post: 5, base: 20 }
 };
 
-const BIG_CHANCE_XG = 0.25;
+/** A shot clip ("High illustrative xG shot") needs at least the shared illustrative-xG threshold. */
+const BIG_CHANCE_XG = HIGH_XG_SHOT_THRESHOLD;
 const STORYLINE_BONUS = 20;
 const DEFAULT_MAX_CLIPS = 8;
 /** A player reel can hold more moments; the commentary request accepts at most 10 clips. */
@@ -220,7 +222,7 @@ type Phrases = {
 
 const PHRASES: Record<Language, Phrases> = {
   en: {
-    title: { goal: "GOAL", disallowed_goal: "Goal ruled out", red_card: "Red card", big_chance: "Big chance", key_save: "Key save", booking: "Booking", shot: "Shot", chance_created: "Chance created", tackle: "Tackle won", hard_pass: "Hard pass" },
+    title: { goal: "GOAL", disallowed_goal: "Goal ruled out", red_card: "Red card", big_chance: "High illustrative xG shot", key_save: "Key save", booking: "Booking", shot: "Shot", chance_created: "Chance created", tackle: "Tackle won", hard_pass: "Hard pass" },
     scores: (name, xg) => `${name} scores${xg !== undefined ? ` from a ${xg.toFixed(2)} xG chance` : ""}.`,
     ruledOut: (name) => `${name}'s goal is ruled out after review; the score is corrected.`,
     sentOff: (name) => `${name} is sent off.`,

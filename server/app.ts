@@ -29,6 +29,8 @@ import { createPlatform, type Platform } from "./platform.js";
 import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
 import { createOverlayRouter } from "./routes/overlay.js";
+import { createFanMomentsRouter } from "./routes/fanMoments.js";
+import { createTrackingRouter } from "./routes/tracking.js";
 import { createStudioAuth, studioAuthRequired } from "./routes/studioAuth.js";
 import { createStudioRouter } from "./routes/studio.js";
 import { createA2aRouter } from "./a2a/index.js";
@@ -483,8 +485,10 @@ export function createApp(options: CreateAppOptions = {}) {
   const studioToken = options.studioToken ?? process.env.STUDIO_TOKEN;
   app.use(createStudioAuth(studioToken));
   app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights }));
+  app.use(createTrackingRouter({ live: platform.live }));
   app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken) }));
   app.use(createOverlayRouter({ live: platform.live, desk: platform.desk }));
+  app.use(createFanMomentsRouter({ live: platform.live, desk: platform.desk }));
   app.use(createMcpRouter({
     live: platform.live, desk: platform.desk, analyzeFixture, archive: getArchive(),
     retrieval: createArchiveRetrievalFromEnv(), version, token: process.env.MCP_TOKEN || undefined,

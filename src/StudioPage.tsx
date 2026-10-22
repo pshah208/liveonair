@@ -16,6 +16,11 @@ import { LabHighlightReel, type LabHighlights } from "./LabHighlightReel.js";
 import { PlayerAnalysisPage } from "./PlayerAnalysis.js";
 import { PlayerCam } from "./PlayerCam.js";
 import { LiveVideoPanel } from "./LiveVideoPanel.js";
+import { MomentumChart } from "./MomentumChart.js";
+import { ControlChaosCard } from "./ControlChaosCard.js";
+import { SecondScreenEngagement } from "./SecondScreenPanel.js";
+import { whyItMattersText } from "./WhyItMatters.js";
+import { EMPTY_MOMENTUM, latestControlWindow, momentumUpTo, SPONSOR_NAME } from "./momentumView.js";
 import type { ProgressiveVideoSession } from "../shared/progressiveVideo.js";
 import {
   clamp,
@@ -65,6 +70,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
   const [progressiveSession, setProgressiveSession] = useState<ProgressiveVideoSession | null>(null);
 
   const [deskLanguage, setDeskLanguage] = useState<Language>("en");
+  const [showSponsor, setShowSponsor] = useState(false);
   // One stats scope shared by the Live Desk and Player Analysis; playback, score and producer controls stay whole-match.
   const [period, setPeriod] = useState<MatchPeriod>("full");
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(null);
@@ -281,6 +287,15 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
   const halvesUnavailable = fixture ? !periodBoundary(fixture).available : false;
   const analysisStoppedEarly = progressiveForMatch?.stage === "stopped" || progressiveForMatch?.stage === "failed";
   const aiConfigured = Boolean(health?.ai.configured);
+  // Game rhythm cards follow the live (or analysed) minute; at full time they cover the whole match.
+  const rhythmMinute = progressiveForMatch ? Math.floor(analyzedSecond / 60) : state === "running" ? Math.floor((status?.clockSecond ?? 0) / 60) : null;
+  const homeName = fixture?.home.name ?? "Home";
+  const awayName = fixture?.away.name ?? "Away";
+  const momentum = useMemo(() => (fixture ? momentumUpTo(fixture.events, rhythmMinute) : EMPTY_MOMENTUM), [fixture, rhythmMinute]);
+  const control = useMemo(() => (fixture ? latestControlWindow(fixture.events, rhythmMinute) : { current: null, previous: null }), [fixture, rhythmMinute]);
+  const momentumWhy = useMemo(() => (fixture ? whyItMattersText({ kind: "momentum", series: momentum, events: fixture.events, homeName, awayName }) : null), [fixture, momentum, homeName, awayName]);
+  const controlWhy = useMemo(() => whyItMattersText({ kind: "control", window: control.current }), [control]);
+  const rhythmLastMinute = momentum.points[momentum.points.length - 1]?.minute ?? 0;
 
   // Share the active match read-only with Fan View; Studio keeps owning the stream, producer controls and video.
   useEffect(() => {
@@ -386,6 +401,18 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
 
           <div className="desk-col">
             <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={setPeriod} halvesUnavailable={halvesUnavailable} score={score} />
+            <Panel eyebrow="Game rhythm" title="Attacking-threat momentum" aside={<label className="momentum-sponsor-toggle"><input type="checkbox" checked={showSponsor} onChange={(event) => setShowSponsor(event.target.checked)} /> Sponsor label</label>}>
+              {fixture ? <MomentumChart series={momentum} homeName={homeName} awayName={awayName} explanation={momentumWhy ?? undefined} /> : <div className="empty-state">Start a match to see the attacking-threat chart.</div>}
+              {showSponsor && <p className="momentum-sponsor">Momentum segment presented by <strong>{SPONSOR_NAME}</strong> (fictional brand)</p>}
+            </Panel>
+            <Panel eyebrow="Game rhythm" title="Control vs chaos">
+              <ControlChaosCard window={control.current} explanation={controlWhy ?? undefined} />
+            </Panel>
+            {fixture && (
+              <Panel eyebrow="Second screen" title="Second-screen engagement (simulated)">
+                <SecondScreenEngagement matchKey={status?.matchId ?? fixture.id} minute={rhythmLastMinute} goals={momentum.goals} homeName={homeName} awayName={awayName} />
+              </Panel>
+            )}
           </div>
 
           <div className="desk-col">
