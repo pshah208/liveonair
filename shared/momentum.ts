@@ -36,6 +36,11 @@ export interface ControlChaosWindow {
   period: 1 | 2;
   completedPassShare: number | null;
   possessionChanges: number;
+  /** Team switches divided by adjacent on-ball event pairs. */
+  turnoverRate?: number | null;
+  /** Recorded on-ball events per inferred same-team run, including window-edge runs. */
+  avgSequenceLength?: number | null;
+  lowDetail?: boolean;
   shots: number;
   matchedPressureEvents: number;
   pressureDeltaFromPrevious: number | null;
@@ -153,7 +158,9 @@ export function computeMomentum(events: MatchEvent[], opts: MomentumOptions = {}
 
   const minEventsPerMinute = opts.minEventsPerMinute ?? 1.2;
   const qualifyingEvents = open.filter((event) => ON_BALL.has(event.type)).length;
-  const insufficientCoverage = qualifyingEvents < (maxMinute + 1) * minEventsPerMinute;
+  // The point grid extends to 90 for display; unplayed future minutes are not observed coverage.
+  const observedMinutes = open.length ? minuteOf(secondOf(open[open.length - 1]!)) + 1 : 0;
+  const insufficientCoverage = observedMinutes === 0 || qualifyingEvents < observedMinutes * minEventsPerMinute;
   return { points, goals, substitutions, insufficientCoverage };
 }
 
@@ -188,15 +195,27 @@ export function controlVsChaos(events: MatchEvent[], windowMinutes = 5): Control
       if (onBall[index]!.teamId !== onBall[index - 1]!.teamId) possessionChanges += 1;
     }
     const pressureCount = matchedPressuresInWindow(open, startSecond, endSecond);
-    const insufficientCoverage = onBall.length < width * 4;
-    const chaotic = possessionChanges >= 8 || shots >= 3;
-    const controlled = !chaotic && passShare !== null && passShare >= 0.60;
+    const turnoverRate = onBall.length > 1 ? possessionChanges / (onBall.length - 1) : null;
+    const avgSequenceLength = onBall.length ? onBall.length / (possessionChanges + 1) : null;
+    // Fewer than six observations cannot support even the coarse, low-detail classification.
+    const insufficientCoverage = onBall.length < 6;
+    const lowDetail = onBall.length < 20;
+    // Sparse feeds often select notable events rather than logging every pass. Do not interpret
+    // their apparent switch rate alone as chaos; require a shot flurry as corroboration.
+    const chaotic = lowDetail
+      ? shots >= 3 && turnoverRate !== null && turnoverRate >= 0.4
+      : turnoverRate !== null && (turnoverRate >= 0.28 || (shots >= 3 && turnoverRate >= 0.26));
+    const controlled = !chaotic && passShare !== null && passShare >= 0.8
+      && passes.length >= 4 && turnoverRate !== null && turnoverRate <= (lowDetail ? 0.25 : 0.235);
     out.push({
       startMinute: start,
       endMinute: end,
       period: start < 45 ? 1 : 2,
       completedPassShare: passShare === null ? null : round(passShare, 3),
       possessionChanges,
+      turnoverRate: turnoverRate === null ? null : round(turnoverRate, 3),
+      avgSequenceLength: avgSequenceLength === null ? null : round(avgSequenceLength, 2),
+      lowDetail,
       shots,
       matchedPressureEvents: pressureCount,
       pressureDeltaFromPrevious: previousPressureCount === null ? null : pressureCount - previousPressureCount,

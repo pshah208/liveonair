@@ -110,18 +110,45 @@ These are synthetic/illustrative figures for hackathon demo data. They are not c
   - smoothed per-minute net (`home - away`, ~3-minute smoothing default)
   - goal/substitution markers by minute
   - period split (first/second half)
-  - `insufficientCoverage` when event density is low.
+  - `insufficientCoverage` when fewer than 1.2 on-ball events per **observed** minute
+    (through the last open event) are available; the chart's 90-minute padding does not
+    count as elapsed play. An empty feed is insufficient. The live UI independently
+    measures coverage through its current clock minute.
 
 ### Control vs chaos windows (illustrative)
 
 - Module: `shared/momentum.ts`
 - Function: `controlVsChaos(events, windowMinutes=5)`
-- Per window:
-  - `C = completed pass share` (controlled when `C >= 0.60`)
-  - `T = possession changes` (chaotic when `T >= 8` **or** shots `>= 3`)
-  - otherwise `mixed`
-- Includes window-over-window change in matched pressure-event count.
-- Includes `insufficientCoverage` guard for sparse windows.
+- Inputs are latest non-rescinded events in non-overlapping match-clock windows (five minutes
+  by default). On-ball events are passes, shots, goals, saves, corners and tackles; pressure
+  events are excluded from possession switches. Consecutive on-ball actions by different
+  teams count as one **inferred team switch** (`possessionChanges`, count). This is not
+  provider possession data, and runs may be truncated at window edges.
+- `turnoverRate` (unitless share) = inferred team switches / (`onBall` count - 1);
+  null with fewer than two actions. `avgSequenceLength` (recorded actions per inferred
+  same-team run) = on-ball count / (switches + 1); null with no actions. Neither quantity
+  estimates actual ball-in-play time or a true possession sequence.
+- Completed-pass share (unitless) = completed passes / recorded passes; null with no passes.
+  Shots are recorded `shot` actions (count), not goals or saves.
+- **Full-detail rule** (at least 20 on-ball actions): `chaotic` if turnover rate is at
+  least 0.28, or at least three shots **and** turnover rate at least 0.26.
+  Otherwise `controlled` if completed-pass share is at least 0.80, at least four passes
+  were logged, and turnover rate is at most 0.235. Otherwise `mixed`.
+- **Low-detail rule** (`lowDetail=true`, 6–19 on-ball actions): `chaotic` only if at
+  least three shots **and** turnover rate at least 0.40. Otherwise `controlled`
+  only if at least four passes, completed-pass share at least 0.80 and turnover
+  rate at most 0.25. Otherwise `mixed`. This conservative fallback cannot infer
+  sustained possession from sparse, potentially selected events.
+- Fewer than six on-ball actions sets `insufficientCoverage=true`: the computed label
+  is provisional and the UI hides it. The six-action floor is an illustrative product
+  rule, not a statistically validated minimum; low-detail readings should be interpreted
+  cautiously. Windows beyond observed live play remain insufficient.
+- Includes matched pressure-event count and its difference from the preceding window
+  (unit: events); it does not change the label.
+- **Reference:** illustrative implementation and coverage tests in
+  `shared/momentum.ts` and `tests/momentum.test.ts`. These thresholds are heuristic,
+  not calibrated to a licensed tracking or event provider and not a validated
+  top-flight benchmark.
 
 ### UI notes: momentum, control vs chaos, why it matters
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getFixture } from "../server/fixtures.js";
 import { generateMatch } from "../server/matchlab/generator.js";
 import { computeMomentum, controlVsChaos } from "../shared/momentum.js";
 import type { MatchEvent } from "../shared/types.js";
@@ -22,6 +23,17 @@ test("momentum is deterministic for a fixed generated seed", () => {
   const a = computeMomentum(fixture.events);
   const b = computeMomentum(fixture.events);
   assert.deepEqual(a, b);
+});
+
+test("momentum coverage uses observed minutes rather than the padded 90-minute grid", () => {
+  const events = Array.from({ length: 15 }, (_, index) =>
+    e({ id: `early-${index}`, type: "pass", teamId: "home", playerId: "h8", minute: Math.floor(index / 2), second: (index % 2) * 20 }),
+  );
+  const momentum = computeMomentum(events);
+  assert.equal(momentum.points.length, 91);
+  assert.equal(momentum.insufficientCoverage, false);
+  assert.equal(computeMomentum([]).insufficientCoverage, true);
+  assert.equal(computeMomentum(events, { minEventsPerMinute: 2 }).insufficientCoverage, true);
 });
 
 test("balanced synthetic stream stays near neutral net momentum", () => {
@@ -61,4 +73,65 @@ test("control-vs-chaos tracks window pressure deltas and guards sparse windows",
   assert.equal(windows[0]!.matchedPressureEvents, 1);
   assert.equal(windows[1]!.pressureDeltaFromPrevious, 0);
   assert.ok(windows.some((window) => window.insufficientCoverage));
+});
+
+test("generated five-minute passages include controlled and mixed play with minority chaos across five seeds", () => {
+  const totals = { controlled: 0, mixed: 0, chaotic: 0 };
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const fixture = generateMatch({ scenario: "goal_fest", seed });
+    const windows = controlVsChaos(fixture.events).filter((window) => window.endMinute <= 90);
+    assert.deepEqual(controlVsChaos(fixture.events), controlVsChaos(fixture.events), `seed ${seed} is deterministic`);
+    assert.equal(windows.length, 18);
+    assert.ok(windows.every((window) => !window.insufficientCoverage), `seed ${seed} has adequate coverage`);
+    assert.ok(windows.filter((window) => window.lowDetail).length <= 1, `seed ${seed} is mostly dense`);
+    const counts = { controlled: 0, mixed: 0, chaotic: 0 };
+    for (const window of windows) counts[window.label] += 1;
+    assert.ok(counts.chaotic < counts.controlled + counts.mixed, `seed ${seed}: minority chaotic`);
+    assert.ok(counts.controlled > 0 && counts.mixed > 0, `seed ${seed}: both controlled and mixed`);
+    for (const label of ["controlled", "mixed", "chaotic"] as const) totals[label] += counts[label];
+  }
+  assert.deepEqual(totals, { controlled: 34, mixed: 42, chaotic: 14 });
+});
+
+test("sparse staged live fixture gets conservative low-detail readings by minute 43", () => {
+  const staged = getFixture("rivergate-comeback").events.filter((event) => event.minute <= 43);
+  const windows = controlVsChaos(staged).filter((window) => window.endMinute <= 40);
+  assert.equal(windows.length, 8);
+  assert.ok(windows.some((window) => !window.insufficientCoverage && window.lowDetail));
+  const latest = windows.at(-1)!;
+  assert.equal(latest.startMinute, 35);
+  assert.equal(latest.label, "mixed");
+  assert.equal(latest.insufficientCoverage, false);
+  assert.equal(latest.lowDetail, true);
+  assert.equal(latest.possessionChanges, 3);
+  assert.equal(controlVsChaos(staged)[0]!.insufficientCoverage, true);
+});
+
+test("rate and sequence thresholds do not call isolated shots or ordinary switches chaos", () => {
+  const passes = Array.from({ length: 16 }, (_, index) =>
+    e({ id: `pass-${index}`, minute: Math.floor(index / 4), second: (index % 4) * 10,
+      type: "pass", teamId: index < 8 ? "home" : "away", playerId: "h8" }),
+  );
+  const shots = Array.from({ length: 3 }, (_, index) =>
+    e({ id: `shot-${index}`, type: "shot", teamId: "away", playerId: "a9", minute: 4, second: index * 10 + 20 }),
+  );
+  const window = controlVsChaos([...passes, ...shots])[0]!;
+  assert.equal(window.shots, 3);
+  assert.equal(window.label, "controlled");
+  assert.equal(window.avgSequenceLength, 9.5);
+  assert.equal(window.turnoverRate, 0.056);
+});
+
+test("low-detail chaos needs a shot flurry as well as frequent switches", () => {
+  const events = Array.from({ length: 8 }, (_, index) =>
+    e({ id: `action-${index}`, type: index < 3 ? "shot" : "pass",
+      teamId: index % 2 ? "away" : "home", playerId: "p9",
+      minute: index < 4 ? 1 : 2, second: (index % 4) * 10 }),
+  );
+  const window = controlVsChaos(events)[0]!;
+  assert.equal(window.lowDetail, true);
+  assert.equal(window.insufficientCoverage, false);
+  assert.equal(window.shots, 3);
+  assert.equal(window.label, "chaotic");
+  assert.equal(controlVsChaos(events.filter((event) => event.type !== "shot"))[0]!.insufficientCoverage, true);
 });
