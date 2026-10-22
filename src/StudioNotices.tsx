@@ -32,7 +32,7 @@ type StudioTokenEntryProps = {
   onSaved: () => void;
 };
 
-/** Producer-token entry. Saving stores the token used as a bearer on studio fetches and as `?token=` on the studio EventSource. */
+/** Producer-token entry. Saving stores the token used as a bearer on studio fetches. The live stream exchanges it for a short-lived ticket. */
 export function StudioTokenEntry({ rejected, onSaved }: StudioTokenEntryProps) {
   const [value, setValue] = useState(getStudioToken);
   const [saved, setSaved] = useState(() => Boolean(getStudioToken()));

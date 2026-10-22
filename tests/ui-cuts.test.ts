@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-import { api, ApiError, applyStudioAuth, getStudioToken, isStudioReadPath, PRODUCER_TOKEN_REQUIRED, setStudioToken, STUDIO_TOKEN_KEY, withStudioStreamToken } from "../src/api.js";
+import { api, ApiError, applyStudioAuth, fetchStudioStreamTicket, getStudioToken, isStudioReadPath, PRODUCER_TOKEN_REQUIRED, setStudioToken, STUDIO_TOKEN_KEY } from "../src/api.js";
 import { clipTitle, BIG_CHANCE_LABEL } from "../src/highlightRenderer.js";
 import { scenarioLabel, SYNTHETIC_BADGE_TEXT, transportBadge } from "../src/utils.js";
 
@@ -166,23 +166,21 @@ test("applyStudioAuth skips public GET/HEAD and requests without a token", () =>
   assert.equal(headers.get("Authorization"), null);
   assert.equal(isStudioReadPath("/api/studio/auth-required"), false);
   assert.equal(isStudioReadPath("/API/STUDIO/STORYLINES/"), true);
-  const params = new URLSearchParams({ role: "fan", persona: "casual", language: "en" });
-  withStudioStreamToken(params, "fan");
-  assert.equal(params.has("token"), false);
-  withStudioStreamToken(params, "studio");
-  assert.equal(params.has("token"), false);
 });
 
-test("studio EventSource params include the saved producer token", async () => {
-  await withEnv(async () => json({}), async () => {
+test("studio EventSource fetches a one-time ticket and never puts the producer token in a URL", async () => {
+  await withEnv(async () => json({ ticket: "short-ticket", expiresInSeconds: 60 }), async (calls) => {
     setStudioToken("secret-token");
-    const studio = new URLSearchParams({ role: "studio", persona: "analyst", language: "en" });
-    withStudioStreamToken(studio, "studio");
-    assert.equal(studio.get("token"), "secret-token");
-    const fan = new URLSearchParams({ role: "fan" });
-    withStudioStreamToken(fan, "fan");
-    assert.equal(fan.has("token"), false);
-    assert.match(read("src/hooks/useLiveStream.ts"), /withStudioStreamToken/);
+    assert.equal(await fetchStudioStreamTicket(), "short-ticket");
+    const url = new URL(calls[0].url);
+    assert.equal(url.pathname, "/api/studio/stream-ticket");
+    assert.equal(url.search, "");
+    assert.equal(calls[0].method, "POST");
+    assert.equal(calls[0].headers.get("Authorization"), "Bearer secret-token");
+    assert.match(read("src/hooks/useLiveStream.ts"), /fetchStudioStreamTicket/);
+    assert.match(read("src/hooks/useLiveStream.ts"), /params\.set\("ticket"/);
+    assert.doesNotMatch(read("src/hooks/useLiveStream.ts"), /token=/);
+    assert.doesNotMatch(read("src/api.ts"), /token=/);
     assert.match(read("src/StudioNotices.tsx"), /setStudioToken\(value\)/);
   });
 });

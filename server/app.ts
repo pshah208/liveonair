@@ -32,6 +32,7 @@ import { createOverlayRouter } from "./routes/overlay.js";
 import { createFanMomentsRouter } from "./routes/fanMoments.js";
 import { createTrackingRouter } from "./routes/tracking.js";
 import { createStudioAuth, studioAuthRequired } from "./routes/studioAuth.js";
+import { createStreamTicketStore, type StreamTicketStore } from "./routes/streamTickets.js";
 import { createStudioRouter } from "./routes/studio.js";
 import { createA2aRouter } from "./a2a/index.js";
 import { getArchive } from "./archive/index.js";
@@ -74,6 +75,8 @@ type CreateAppOptions = {
   platform?: Platform;
   /** Undefined reads STUDIO_TOKEN. Empty string forces local-dev open mode. */
   studioToken?: string;
+  /** Shared one-time tickets for the studio EventSource. Tests inject a clocked store. */
+  streamTickets?: StreamTicketStore;
   video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand; playerVision?: PlayerVisionAnalyzer; playerWorker?: PlayerCamWorker };
   staticDir?: string;
   logger?: (entry: { level: "error"; requestId: string; reason: string; path: string }) => void;
@@ -482,12 +485,13 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   const studioToken = options.studioToken ?? process.env.STUDIO_TOKEN;
+  const streamTickets = options.streamTickets ?? createStreamTicketStore();
   app.use(createStudioAuth(studioToken));
   // Archive used to mount above this guard, so matchlab generate skipped the token check.
   app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch, studioToken }));
-  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights, studioToken }));
+  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights, studioToken, streamTickets }));
   app.use(createTrackingRouter({ live: platform.live }));
-  app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken), studioToken }));
+  app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken), studioToken, streamTickets }));
   app.use(createOverlayRouter({ live: platform.live, desk: platform.desk }));
   app.use(createFanMomentsRouter({ live: platform.live, desk: platform.desk }));
   app.use(createMcpRouter({

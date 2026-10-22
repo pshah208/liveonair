@@ -120,12 +120,10 @@ export function applyStudioAuth(headers: Headers, method: string | undefined, in
   if (token) headers.set("Authorization", `Bearer ${token}`);
 }
 
-/** EventSource cannot set headers, so the studio live stream carries the token as a query parameter. */
-export function withStudioStreamToken(params: URLSearchParams, role: "fan" | "studio"): void {
-  if (role !== "studio") return;
-  const token = getStudioToken();
-  if (token) params.set("token", token);
-}
+export type StudioStreamTicket = {
+  ticket: string | null;
+  expiresInSeconds: number;
+};
 
 export async function requestJson<T>(input: RequestInfo | URL, init?: RequestOptions): Promise<T | null> {
   const headers = new Headers(init?.headers);
@@ -160,6 +158,10 @@ export const api = {
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },
   getLiveStatus(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/status", { signal }); },
+  /** One-time ticket for the studio EventSource. The bearer stays on this POST and never goes in a URL. */
+  createStudioStreamTicket(signal?: AbortSignal) {
+    return requestJson<StudioStreamTicket>("/api/studio/stream-ticket", { method: "POST", signal });
+  },
   /** Whether Studio Desk writes need a producer token. A missing endpoint or any error means "not required". */
   async getStudioAuthRequired(signal?: AbortSignal): Promise<boolean> {
     try {
@@ -194,6 +196,13 @@ export const api = {
   listPlayerCamJobs(signal?: AbortSignal) { return requestJson<PlayerCamJobSummary[]>("/api/player-cam/jobs", { signal }); },
   deletePlayerCamJob(id: string) { return requestJson<null>(`/api/player-cam/jobs/${id}`, { method: "DELETE" }); }
 };
+
+/** EventSource cannot set headers. Exchange the stored bearer for a one-time stream ticket. */
+export async function fetchStudioStreamTicket(signal?: AbortSignal): Promise<string | null> {
+  const issued = await api.createStudioStreamTicket(signal);
+  const ticket = issued?.ticket;
+  return typeof ticket === "string" && ticket.length > 0 ? ticket : null;
+}
 
 export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number; maxVideoSeconds: number; maxFrames: number };
 

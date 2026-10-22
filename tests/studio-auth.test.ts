@@ -90,9 +90,10 @@ test("studio token guards producer writes and studio reads, and leaves fan reads
   assert.equal(requiresStudioAuth("GET", "/api/live/stream"), false);
   assert.equal(requiresStudioAuth("POST", "/api/analyze"), false);
   assert.equal(requiresStudioAuth("POST", "/api/live/start"), true);
-  assert.equal(studioAccessGranted(undefined, undefined, undefined), true);
-  assert.equal(studioAccessGranted(undefined, TOKEN, TOKEN), true);
-  assert.equal(studioAccessGranted(undefined, "wrong", TOKEN), false);
+  assert.equal(studioAccessGranted(undefined, undefined), true);
+  assert.equal(studioAccessGranted(`Bearer ${TOKEN}`, TOKEN), true);
+  assert.equal(studioAccessGranted(undefined, TOKEN), false);
+  assert.equal(studioAccessGranted("Bearer wrong", TOKEN), false);
 
   const server = await listen(probeApp(TOKEN));
   try {
@@ -357,7 +358,7 @@ async function readStream(url: string, headers?: Record<string, string>): Promis
   return { status: response.status, body };
 }
 
-test("studio-role stream falls back to the fan projection unless the token matches", async () => {
+test("studio-role stream falls back to the fan projection unless the Authorization bearer matches", async () => {
   const open = await listen(studioStreamApp(undefined));
   const closed = await listen(studioStreamApp(TOKEN));
   try {
@@ -377,8 +378,8 @@ test("studio-role stream falls back to the fan projection unless the token match
 
     const queryToken = await readStream(`${closed.baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&token=${encodeURIComponent(TOKEN)}`);
     assert.equal(queryToken.status, 200);
-    assert.match(queryToken.body, /internal-trace/);
-    assert.match(queryToken.body, /fact-draft/);
+    assert.equal(queryToken.body.includes("internal-trace"), false);
+    assert.equal(queryToken.body.includes("fact-draft"), false);
 
     const headerToken = await readStream(`${closed.baseUrl}/api/live/stream?role=studio&persona=analyst&language=en`, { authorization: `Bearer ${TOKEN}` });
     assert.match(headerToken.body, /internal-trace/);
@@ -386,7 +387,9 @@ test("studio-role stream falls back to the fan projection unless the token match
     const downgraded = await fetch(`${closed.baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&favoritePlayerId=missing-player`);
     assert.equal(downgraded.status, 200);
     await downgraded.body?.cancel();
-    const rejectedPlayer = await fetch(`${closed.baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&favoritePlayerId=missing-player&token=${encodeURIComponent(TOKEN)}`);
+    const rejectedPlayer = await fetch(`${closed.baseUrl}/api/live/stream?role=studio&persona=analyst&language=en&favoritePlayerId=missing-player`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
     assert.equal(rejectedPlayer.status, 400);
   } finally {
     await open.close();

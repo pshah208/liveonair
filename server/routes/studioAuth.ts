@@ -4,9 +4,6 @@ import type { RequestHandler } from "express";
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-/** Query tokens are only for EventSource. Reject oversized values instead of buffering them. */
-const MAX_QUERY_TOKEN_LENGTH = 512;
-
 /**
  * Express matches routes case-insensitively and ignores a trailing slash.
  * The raw request path does not, so compare a normalized path or the guard misses `/API/LIVE/STOP`.
@@ -51,22 +48,15 @@ export function tokensMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(left, right);
 }
 
-export function queryToken(value: unknown): string {
-  return typeof value === "string" && value.length > 0 && value.length <= MAX_QUERY_TOKEN_LENGTH ? value : "";
-}
-
 /**
- * Open when no token is configured. Otherwise the Authorization bearer or the EventSource `?token=` must match.
- * A wrong header does not hide a correct query token: EventSource cannot send headers.
+ * Open when no token is configured. Otherwise only the Authorization bearer may match.
+ * The long-lived studio token is never read from the query string.
  */
-export function studioAccessGranted(authorization: string | undefined, providedQueryToken: unknown, expected: string | undefined): boolean {
+export function studioAccessGranted(authorization: string | undefined, expected: string | undefined): boolean {
   const secret = expected?.trim() ?? "";
   if (!secret) return true;
   const fromHeader = bearerToken(authorization);
-  const fromQuery = queryToken(providedQueryToken);
-  if (fromHeader && tokensMatch(fromHeader, secret)) return true;
-  if (fromQuery && tokensMatch(fromQuery, secret)) return true;
-  return false;
+  return fromHeader.length > 0 && tokensMatch(fromHeader, secret);
 }
 
 function rejectStudio(response: { setHeader(name: string, value: string): void; status(code: number): { json(body: unknown): void } }): void {
@@ -78,7 +68,7 @@ function rejectStudio(response: { setHeader(name: string, value: string): void; 
 export function requireStudioToken(token: string | undefined): RequestHandler {
   const expected = token?.trim() ?? "";
   return (request, response, next) => {
-    if (studioAccessGranted(request.header("authorization"), undefined, expected)) {
+    if (studioAccessGranted(request.header("authorization"), expected)) {
       next();
       return;
     }
@@ -94,7 +84,7 @@ export function createStudioAuth(token: string | undefined): RequestHandler {
       next();
       return;
     }
-    if (!studioAccessGranted(request.header("authorization"), undefined, expected)) {
+    if (!studioAccessGranted(request.header("authorization"), expected)) {
       rejectStudio(response);
       return;
     }

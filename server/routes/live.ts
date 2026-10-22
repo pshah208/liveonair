@@ -9,6 +9,7 @@ import type { AnalyzeFixture, LiveMatchView, LiveService, StorylineDesk } from "
 import { isPublicStoryline } from "../agentAccess.js";
 import { type TickSource } from "../live/service.js";
 import { requireStudioToken, studioAccessGranted } from "./studioAuth.js";
+import { createStreamTicketStore, isStreamTicket, type StreamTicketStore } from "./streamTickets.js";
 import { HttpError, assertKnownFavoritePlayer, isHttpError } from "../validation.js";
 
 type ChanceInsightFeed = {
@@ -23,8 +24,10 @@ type CreateLiveRouterOptions = {
   /** Optional so existing test routers keep working. Fan and studio both receive issued, revised and withdrawn insights. */
   insights?: ChanceInsightFeed;
   maxStreams?: number;
-  /** When set, a studio-role stream without this token is projected as fan. Writes on this router require it. */
+  /** When set, a studio-role stream needs this bearer or a one-time ticket. Otherwise it is projected as fan. */
   studioToken?: string;
+  /** One-time tickets for browser EventSource clients. Share the instance with the studio router. */
+  streamTickets?: StreamTicketStore;
 };
 
 type StreamState = {
@@ -154,6 +157,35 @@ function withStoryline(storylines: Storyline[], storyline: Storyline): Storyline
   return [...storylines.filter((item) => item.id !== storyline.id), storyline];
 }
 
+/** Legacy query keys that must not authenticate a stream and must not fail strict parsing. */
+const IGNORED_STREAM_QUERY_KEYS = new Set(["token"]);
+
+function streamQueryInput(query: Record<string, unknown>): Record<string, unknown> {
+  const parsedInput: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (key === "ticket" || IGNORED_STREAM_QUERY_KEYS.has(key)) continue;
+    parsedInput[key] = value;
+  }
+  return parsedInput;
+}
+
+function resolveStreamRole(
+  requested: LiveStreamQuery["role"],
+  authorization: string | undefined,
+  ticket: unknown,
+  studioToken: string | undefined,
+  streamTickets: StreamTicketStore,
+): LiveStreamQuery["role"] {
+  if (requested !== "studio") return "fan";
+  const secret = studioToken?.trim() ?? "";
+  if (!secret) return "studio";
+  if (studioAccessGranted(authorization, secret)) return "studio";
+  if (!isStreamTicket(ticket)) return "fan";
+  const granted = streamTickets.consume(ticket);
+  console.info(JSON.stringify({ event: "studio.stream_ticket.consume", granted }));
+  return granted ? "studio" : "fan";
+}
+
 function tickSource(live: LiveService): TickSource | undefined {
   if ("subscribeTicks" in live && typeof live.subscribeTicks === "function") {
     return live as LiveService & TickSource;
@@ -173,6 +205,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
   const maxStreams = options.maxStreams ?? 200;
   const streams = new Set<StreamState>();
   const guard = requireStudioToken(options.studioToken);
+  const streamTickets = options.streamTickets ?? createStreamTicketStore();
 
   router.get("/api/live/status", (_request, response) => {
     response.json(options.live.status());
@@ -233,12 +266,9 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
       }
 
       const rawQuery = request.query as Record<string, unknown>;
-      const providedToken = rawQuery.token;
-      const queryWithoutToken = { ...rawQuery };
-      delete queryWithoutToken.token;
-      const parsed = parseStrict(streamQuerySchema, queryWithoutToken);
-      const studioGranted = parsed.role !== "studio" || studioAccessGranted(request.header("authorization"), providedToken, options.studioToken);
-      const query: LiveStreamQuery = studioGranted ? parsed : { ...parsed, role: "fan" };
+      const parsed = parseStrict(streamQuerySchema, streamQueryInput(rawQuery));
+      const role = resolveStreamRole(parsed.role, request.header("authorization"), rawQuery.ticket, options.studioToken, streamTickets);
+      const query: LiveStreamQuery = { ...parsed, role };
       const current = safeCurrent(options.live);
       validateFavoritePlayer(query.role, current?.fixture, query.favoritePlayerId);
 
