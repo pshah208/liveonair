@@ -1,0 +1,113 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import type { TrackingFrame } from "../shared/tracking.js";
+import {
+  TRACKING_LERP_MS,
+  TRACKING_SNAP_DISTANCE_M,
+  crowdedPlayerIds,
+  interpolateFrame,
+  maxDisplacement,
+  pushTrail,
+  shouldSnap,
+} from "../src/trackingRender.js";
+
+const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+function frame(second: number, ballX: number, players: Array<[string, number, number]> = [["h1", 10, 10]]): TrackingFrame {
+  return {
+    fixtureId: "fx",
+    seed: 1,
+    second,
+    synthetic: true,
+    players: players.map(([id, x, y], index) => ({ id, teamId: index % 2 ? "away" : "home", number: index + 1, x, y })),
+    ball: { x: ballX, y: 34 },
+  };
+}
+
+test("live board hides arrows, path and the event-board ball while tracking is on", () => {
+  const src = read("src/LivePitch.tsx");
+  assert.match(src, /const trackingActive = trackingHorizon !== null;/);
+  // The historical arrows/touches (ball mode) and dashed event paths (board mode) sit behind the tracking branch.
+  assert.match(src, /\{trackingActive \? \(\s*<g className="pitch-tracking-latest">[\s\S]*?\) : mode === "ball" \? \(/);
+  assert.match(src, /const ball = trackingActive \? null : motion\.position;/);
+  assert.match(src, /className="pitch-event-ring"/);
+  // Event caption moves to a corner chip, not an SVG label over the dots.
+  assert.match(src, /className="pitch-event-chip"/);
+  const trackingBranch = src.slice(src.indexOf('<g className="pitch-tracking-latest">'), src.indexOf(') : mode === "ball" ? ('));
+  assert.doesNotMatch(trackingBranch, /<text|markerEnd|strokeDasharray/);
+});
+
+test("tracking header strip names the source once", () => {
+  const src = read("src/TrackingLayer.tsx");
+  assert.equal(src.match(/>Synthetic tracking</g)?.length, 1);
+  assert.doesNotMatch(src, /setStatusText\("Synthetic tracking"\)/);
+  assert.match(src, /~\{TRACKING_DELAY_SECONDS\}s behind live/);
+  assert.equal(src.match(/className="tracking-overlay__controls"/g)?.length, 1);
+});
+
+test("tracking dots interpolate with requestAnimationFrame and honour reduced motion", () => {
+  const src = read("src/TrackingLayer.tsx");
+  assert.match(src, /requestAnimationFrame\(step\)/);
+  assert.match(src, /interpolateFrame\(from!, sourceFrame, t\)/);
+  assert.match(src, /TRACKING_LERP_MS/);
+  assert.match(src, /prefers-reduced-motion: reduce/);
+  assert.match(src, /if \(reduced\) \{/);
+  assert.match(src, /shouldSnap\(from, sourceFrame, reduced\)/);
+  assert.match(src, /role="img" aria-label=\{`Synthetic tracking/);
+  const css = read("src/board.css");
+  assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{\s*\.pitch-event-ring \{\s*animation: pitch-event-ring-fade 2s/);
+});
+
+test("interpolation lerps between frames and snaps on big jumps or reduced motion", () => {
+  const a = frame(1, 50, [["h1", 10, 10]]);
+  const b = frame(2, 54, [["h1", 12, 14]]);
+  const mid = interpolateFrame(a, b, 0.5);
+  assert.deepEqual([mid.ball.x, mid.players[0]!.x, mid.players[0]!.y], [52, 11, 12]);
+  assert.equal(TRACKING_LERP_MS, 200);
+  assert.equal(shouldSnap(a, b, false), false);
+  assert.equal(shouldSnap(a, b, true), true, "reduced motion never glides");
+  assert.equal(shouldSnap(null, b, false), true);
+  const seek = frame(90, 50, [["h1", 10 + TRACKING_SNAP_DISTANCE_M + 1, 10]]);
+  assert.ok(maxDisplacement(a, seek) > TRACKING_SNAP_DISTANCE_M);
+  assert.equal(shouldSnap(a, seek, false), true);
+  assert.equal(shouldSnap(a, { ...b, fixtureId: "other" }, false), true);
+});
+
+test("numbers are dropped only for dots closer than 2 m", () => {
+  const crowded = crowdedPlayerIds(frame(1, 0, [["a", 10, 10], ["b", 11.5, 10], ["c", 30, 30], ["d", 32.5, 30]]).players);
+  assert.deepEqual([...crowded].sort(), ["a", "b"]);
+});
+
+test("ball trail keeps only the last 0.6 s", () => {
+  let trail = pushTrail([], { x: 0, y: 0, at: 0 });
+  trail = pushTrail(trail, { x: 1, y: 0, at: 300 });
+  trail = pushTrail(trail, { x: 2, y: 0, at: 700 });
+  assert.deepEqual(trail.map((point) => point.at), [300, 700]);
+});
+
+test("tracking dot colours keep >= 3:1 contrast on the pitch in both themes", () => {
+  const css = read("src/styles.css");
+  const hex = (theme: "dark" | "light", name: string) => {
+    const block = theme === "dark" ? css.slice(0, css.indexOf(':root[data-theme="light"]')) : css.slice(css.indexOf(':root[data-theme="light"]'));
+    const value = block.match(new RegExp(`--${name}: (#[0-9a-f]{6});`, "i"))?.[1];
+    assert.ok(value, `${theme} --${name}`);
+    return [1, 3, 5].map((i) => parseInt(value!.slice(i, i + 2), 16));
+  };
+  const luminance = (rgb: number[]) => {
+    const [r, g, b] = rgb.map((c) => { const s = c / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+  };
+  const contrast = (a: number[], b: number[]) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi! + 0.05) / (lo! + 0.05); };
+  const mix = (a: number[], b: number[]) => a.map((c, i) => Math.round((c + b[i]!) / 2));
+  for (const theme of ["dark", "light"] as const) {
+    const bg = hex(theme, "cp-bg");
+    const text = hex(theme, "cp-text");
+    for (const team of ["team-home", "team-away"]) {
+      const fill = hex(theme, team);
+      assert.ok(contrast(fill, bg) >= 3, `${theme} ${team} ${contrast(fill, bg).toFixed(2)}`);
+      assert.ok(contrast(mix(fill, text), bg) >= 3, `${theme} ${team} GK`);
+    }
+  }
+});

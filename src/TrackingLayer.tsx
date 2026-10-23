@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TRACKING_DELAY_SECONDS, TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage, trackingMarkerHorizon } from "../shared/tracking.js";
 import type { MatchFixture } from "../shared/types.js";
-import { teamTint } from "./utils.js";
+import { TRACKING_BALL_TRAIL_MS, TRACKING_LERP_MS, type TrailPoint, crowdedPlayerIds, interpolateFrame, pushTrail, shouldSnap } from "./trackingRender.js";
 
 type TrackingLayerProps = {
   fixture: MatchFixture;
@@ -10,43 +10,36 @@ type TrackingLayerProps = {
   onHorizonChange?: (horizonSecond: number | null) => void;
 };
 
+type TrackingView = { frame: TrackingFrame; trail: TrailPoint[] };
+
+const DOT_RADIUS_M = 0.95;
+const BALL_RADIUS_M = 0.8;
+/** With reduced motion, positions update at most about once a second and never glide. */
+const REDUCED_MOTION_GATE_MS = 950;
+
 function reducedMotionNow(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
-function interpolateFrame(from: TrackingFrame, to: TrackingFrame, t: number): TrackingFrame {
-  const byId = new Map(from.players.map((player) => [player.id, player]));
-  const players = to.players.map((player) => {
-    const previous = byId.get(player.id);
-    if (!previous) return player;
-    return {
-      ...player,
-      x: previous.x + (player.x - previous.x) * t,
-      y: previous.y + (player.y - previous.y) * t,
-    };
-  });
-  return {
-    ...to,
-    players,
-    ball: {
-      x: from.ball.x + (to.ball.x - from.ball.x) * t,
-      y: from.ball.y + (to.ball.y - from.ball.y) * t,
-    },
-  };
-}
+const flipY = (y: number) => TRACKING_PITCH_WIDTH_M - y;
 
 export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) {
-  const [statusText, setStatusText] = useState("Connecting synthetic tracking…");
+  const [statusText, setStatusText] = useState("Connecting…");
   const [connected, setConnected] = useState(false);
   const [sourceFrame, setSourceFrame] = useState<TrackingFrame | null>(null);
-  const [renderFrame, setRenderFrame] = useState<TrackingFrame | null>(null);
+  const [view, setView] = useState<TrackingView | null>(null);
   const [manualEnabled, setManualEnabled] = useState<boolean | null>(null);
   const reduced = useMemo(reducedMotionNow, []);
   const rafRef = useRef<number | null>(null);
+  const drawnRef = useRef<TrackingFrame | null>(null);
+  const trailRef = useRef<TrailPoint[]>([]);
   const reducedGateRef = useRef(0);
 
   const enabled = manualEnabled ?? connected;
   const horizonSecond = enabled && sourceFrame ? trackingMarkerHorizon(sourceFrame.second) : null;
+  const goalkeeperIds = useMemo(() => new Set(
+    [...fixture.home.players, ...fixture.away.players].filter((player) => player.position.toUpperCase() === "GK").map((player) => player.id),
+  ), [fixture]);
 
   useEffect(() => {
     onHorizonChange?.(horizonSecond);
@@ -56,13 +49,20 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
 
   useEffect(() => {
     let cancelled = false;
-    setSourceFrame(null);
-    setRenderFrame(null);
+    const reset = () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      drawnRef.current = null;
+      trailRef.current = [];
+      setSourceFrame(null);
+      setView(null);
+    };
+    reset();
     const source = new EventSource("/api/live/tracking/stream");
     setConnected(false);
-    setStatusText("Connecting synthetic tracking…");
+    setStatusText("Connecting…");
     source.onopen = () => {
-      if (!cancelled) setStatusText("Tracking stream connected.");
+      if (!cancelled) setStatusText("Waiting for frames…");
     };
     source.onmessage = (event) => {
       if (cancelled) return;
@@ -72,15 +72,15 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
         if (payload.type === "status") {
           if (payload.status === "no_data") {
             setConnected(false);
-            setSourceFrame(null);
-            setRenderFrame(null);
+            reset();
           }
           setStatusText(payload.message);
           return;
         }
         if (payload.type === "frame" && payload.frame.fixtureId === fixture.id) {
           setConnected(true);
-          setStatusText("Synthetic tracking");
+          // The strip already says "Synthetic tracking"; a live stream needs no extra status text.
+          setStatusText("");
           setSourceFrame(payload.frame);
         }
       } catch {
@@ -100,65 +100,81 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
     };
   }, [fixture.id]);
 
+  // Interpolate dot positions with requestAnimationFrame: lerp from what is drawn now
+  // to the latest 5 Hz frame over TRACKING_LERP_MS; snap on big jumps and under reduced motion.
   useEffect(() => {
     if (!sourceFrame) return;
+    const draw = (frame: TrackingFrame, at: number, restartTrail: boolean) => {
+      drawnRef.current = frame;
+      trailRef.current = reduced ? [] : restartTrail ? [{ ...frame.ball, at }] : pushTrail(trailRef.current, { ...frame.ball, at });
+      setView({ frame, trail: trailRef.current });
+    };
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    const now = performance.now();
+    const from = drawnRef.current;
     if (reduced) {
-      const now = performance.now();
-      if (now - reducedGateRef.current >= 950 || !renderFrame) {
+      if (!from || now - reducedGateRef.current >= REDUCED_MOTION_GATE_MS) {
         reducedGateRef.current = now;
-        setRenderFrame(sourceFrame);
+        draw(sourceFrame, now, true);
       }
       return;
     }
-    const from = renderFrame ?? sourceFrame;
-    const to = sourceFrame;
-    const start = performance.now();
-    const durationMs = 180;
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    const animate = (now: number) => {
-      const t = Math.min(1, (now - start) / durationMs);
-      setRenderFrame(interpolateFrame(from, to, t));
-      if (t < 1) rafRef.current = requestAnimationFrame(animate);
-      else rafRef.current = null;
+    if (shouldSnap(from, sourceFrame, reduced)) {
+      draw(sourceFrame, now, true);
+      return;
+    }
+    const start = now;
+    const step = (time: number) => {
+      const t = Math.min(1, Math.max(0, (time - start) / TRACKING_LERP_MS));
+      draw(interpolateFrame(from!, sourceFrame, t), time, false);
+      rafRef.current = t < 1 ? requestAnimationFrame(step) : null;
     };
-    rafRef.current = requestAnimationFrame(animate);
-  }, [sourceFrame, reduced]); // eslint-disable-line react-hooks/exhaustive-deps
+    rafRef.current = requestAnimationFrame(step);
+  }, [sourceFrame, reduced]);
 
-  if (!enabled || !renderFrame) {
-    return (
-      <div className="tracking-overlay__controls">
-        <span className="tag">Synthetic tracking</span>
-        <span className="subtle-text">Tracking ~{TRACKING_DELAY_SECONDS}s behind live</span>
-        <label className="switch">
-          <input type="checkbox" checked={enabled} onChange={(event) => setManualEnabled(event.target.checked)} />
-          <span>Show tracking</span>
-        </label>
-        <span className="subtle-text">{statusText}</span>
-      </div>
-    );
-  }
+  const frame = enabled ? view?.frame ?? null : null;
+  const crowded = useMemo(() => (frame ? crowdedPlayerIds(frame.players) : new Set<string>()), [frame]);
+
+  const controls = (
+    <div className="tracking-overlay__controls" role="group" aria-label="Tracking overlay controls">
+      <span className="tracking-overlay__title">Synthetic tracking</span>
+      <span className="tracking-overlay__sep" aria-hidden="true">·</span>
+      <span className="subtle-text">~{TRACKING_DELAY_SECONDS}s behind live</span>
+      <span className="tracking-overlay__sep" aria-hidden="true">·</span>
+      <label className="switch">
+        <input type="checkbox" checked={enabled} onChange={(event) => setManualEnabled(event.target.checked)} />
+        <span>Show tracking</span>
+      </label>
+      {statusText && <span className="subtle-text tracking-overlay__status" role="status">{statusText}</span>}
+    </div>
+  );
+
+  if (!frame) return controls;
+
+  const trail = view?.trail ?? [];
+  const latestAt = trail[trail.length - 1]?.at ?? 0;
 
   return (
     <>
-      <div className="tracking-overlay__controls">
-        <span className="tag">Synthetic tracking</span>
-        <span className="subtle-text">Tracking ~{TRACKING_DELAY_SECONDS}s behind live</span>
-        <label className="switch">
-          <input type="checkbox" checked={enabled} onChange={(event) => setManualEnabled(event.target.checked)} />
-          <span>Show tracking</span>
-        </label>
-        <span className="subtle-text">{statusText}</span>
-      </div>
-      <svg className="tracking-overlay__svg" viewBox="0 0 105 68" aria-hidden="true">
+      {controls}
+      <svg className="tracking-overlay__svg" viewBox="0 0 105 68" role="img" aria-label={`Synthetic tracking, about ${TRACKING_DELAY_SECONDS} seconds behind live: ${frame.players.length} player dots and the ball`}>
         <g>
-          {renderFrame.players.map((player) => (
-            <g key={player.id} transform={`translate(${player.x} ${TRACKING_PITCH_WIDTH_M - player.y})`}>
-              <circle r="1.12" fill={teamTint(player.teamId)} stroke="var(--cp-bg)" strokeWidth="0.24" />
-              <text y="0.28" textAnchor="middle" className="tracking-overlay__number">{player.number}</text>
-            </g>
-          ))}
-          <g transform={`translate(${renderFrame.ball.x} ${TRACKING_PITCH_WIDTH_M - renderFrame.ball.y})`}>
-            <circle r="0.52" fill="#ffffff" stroke="#111114" strokeWidth="0.2" />
+          {frame.players.map((player) => {
+            const goalkeeper = goalkeeperIds.has(player.id) || player.id.endsWith("-GK");
+            return (
+              <g key={player.id} transform={`translate(${player.x} ${flipY(player.y)})`}>
+                <circle r={DOT_RADIUS_M} className={`tracking-dot tracking-dot--${player.teamId}${goalkeeper ? " tracking-dot--gk" : ""}`} />
+                {!crowded.has(player.id) && <text y="0.5" textAnchor="middle" className="tracking-overlay__number">{player.number}</text>}
+              </g>
+            );
+          })}
+          {trail.slice(0, -1).map((point) => {
+            const fresh = 1 - (latestAt - point.at) / TRACKING_BALL_TRAIL_MS;
+            return <circle key={point.at} cx={point.x} cy={flipY(point.y)} r={BALL_RADIUS_M * (0.35 + 0.45 * fresh)} className="tracking-ball-trail" opacity={0.45 * fresh} />;
+          })}
+          <g transform={`translate(${frame.ball.x} ${flipY(frame.ball.y)})`}>
+            <circle r={BALL_RADIUS_M} className="tracking-ball" />
           </g>
         </g>
       </svg>

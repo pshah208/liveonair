@@ -16,6 +16,8 @@ const HOP_MS = 420;
 const toX = (x: number) => (x / 100) * PITCH_W;
 const toY = (y: number) => (y / 100) * PITCH_H;
 
+const sentenceCase = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
@@ -147,7 +149,12 @@ export function Pitch({ fixture, events }: PitchProps) {
 
   const replay = () => motion.animate([...route, ...(path.ball ? [path.ball] : [])], HOP_MS + 80);
   const camera = path.frame === "camera";
-  const ball = motion.position;
+  // One representation at a time: while tracking frames are arriving, the tracked dots and
+  // ball replace the pass/touch arrows, the dashed event path and the event-board ball marker.
+  const trackingActive = trackingHorizon !== null;
+  const ball = trackingActive ? null : motion.position;
+  const ringEvent = trackingActive ? latestEvent : undefined;
+  const ringSpot = ringEvent ? placeEvent(fixture, ringEvent) : null;
 
   return (
     <figure className="pitch-figure">
@@ -159,7 +166,7 @@ export function Pitch({ fixture, events }: PitchProps) {
             </button>
           ))}
         </div>
-        {mode === "ball" && <button type="button" className="link-button" onClick={replay} disabled={route.length < 2 || motion.playing}>{motion.playing ? "Playing…" : "↻ Replay sequence"}</button>}
+        {mode === "ball" && !trackingActive && <button type="button" className="link-button" onClick={replay} disabled={route.length < 2 || motion.playing}>{motion.playing ? "Playing…" : "↻ Replay sequence"}</button>}
       </div>
       <div className="pitch-stack">
         <svg viewBox="0 0 105 68" className="pitch" role="img" aria-label={`${fixture.title} ${mode === "ball" ? "ball movement" : "event board"}`}>
@@ -188,7 +195,13 @@ export function Pitch({ fixture, events }: PitchProps) {
           <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
           <rect x="98.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
 
-          {mode === "ball" ? (
+          {trackingActive ? (
+            <g className="pitch-tracking-latest">
+              {ringEvent && ringSpot && (
+                <circle key={`${ringEvent.id}-${ringEvent.revision}`} cx={toX(ringSpot.x)} cy={toY(ringSpot.y)} r="2.6" fill="none" stroke={teamTint(ringEvent.teamId)} strokeWidth="0.35" className="pitch-event-ring" />
+              )}
+            </g>
+          ) : mode === "ball" ? (
             <g>
               {path.segments.map((segment, index) => {
                 const difficulty = segment.kind === "pass" && !segment.inferred ? metrics.difficulty.get(segment.eventId) : undefined;
@@ -258,10 +271,17 @@ export function Pitch({ fixture, events }: PitchProps) {
         <div className="tracking-overlay">
           <TrackingLayer fixture={fixture} onHorizonChange={setTrackingHorizon} />
         </div>
+        {ringEvent && (
+          <div className="pitch-event-chip" aria-label="Latest tracked event">
+            <i className="pitch-event-chip__dot" style={{ background: teamTint(ringEvent.teamId) }} aria-hidden="true" />
+            {ringEvent.minute}' {sentenceCase(labelize(ringEvent.type))} · {fixture[ringEvent.teamId].shortName}
+          </div>
+        )}
       </div>
       <figcaption className="pitch-legend">
         <span><i className="swatch swatch--home" />{camera ? fixture.home.shortName : `${fixture.home.shortName} attacks →`}</span>
-        {mode === "areas" && (
+        {trackingActive && <span className="subtle-text">Tracking view · ring marks the latest event · arrows return when tracking is off</span>}
+        {mode === "areas" && !trackingActive && (
           <span className="pitch-events-legend">
             {recentTypes.map((type) => (
               <span key={type} className="pitch-events-legend__item">
@@ -271,14 +291,14 @@ export function Pitch({ fixture, events }: PitchProps) {
             ))}
           </span>
         )}
-        {mode === "ball" && <span className="subtle-text">{camera ? "Camera-view positions · route between events inferred" : "Solid: pass / shot · dotted: inferred route between logged events"}</span>}
-        {mode === "ball" && !camera && metrics.difficulty.size > 0 && (
+        {mode === "ball" && !trackingActive && <span className="subtle-text">{camera ? "Camera-view positions · route between events inferred" : "Solid: pass / shot · dotted: inferred route between logged events"}</span>}
+        {mode === "ball" && !trackingActive && !camera && metrics.difficulty.size > 0 && (
           <span className="subtle-text pitch-difficulty-legend">
             Pass difficulty (illustrative, uncalibrated heuristic): <i className="swatch" style={{ background: DIFFICULTY_COLOUR.easy }} />easy <i className="swatch" style={{ background: DIFFICULTY_COLOUR.medium }} />medium <i className="swatch" style={{ background: DIFFICULTY_COLOUR.hard }} />hard
           </span>
         )}
         <span>{camera ? fixture.away.shortName : `← ${fixture.away.shortName}`} <i className="swatch swatch--away" /></span>
-        <span className="subtle-text">{(mode === "ball" ? latestTouch : latestEvent) ? `${(mode === "ball" ? latestTouch : latestEvent)!.minute}' ${labelize((mode === "ball" ? latestTouch : latestEvent)!.type)}` : "Awaiting feed"}</span>
+        {!trackingActive && <span className="subtle-text">{(mode === "ball" ? latestTouch : latestEvent) ? `${(mode === "ball" ? latestTouch : latestEvent)!.minute}' ${labelize((mode === "ball" ? latestTouch : latestEvent)!.type)}` : "Awaiting feed"}</span>}
       </figcaption>
     </figure>
   );
