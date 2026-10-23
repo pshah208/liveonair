@@ -86,9 +86,19 @@ These are synthetic/illustrative figures for hackathon demo data. They are not c
 ### Progressive passes
 
 - Rule used: **common 25%-closer-to-goal heuristic** (illustrative implementation).
-- Completed pass is progressive when end distance to goal centre is at least 25% lower than start distance.
-- Distance is measured in metres on a 105 × 68 m pitch.
+- Unit: completed passes (count). A completed pass with both end coordinates is progressive when its endpoint is at most 75% of its start distance to the attacked goal centre (`x=100, y=50`).
+- Distances use metres on a 105 × 68 m pitch, not an absolute grid-unit gain; this works identically in each team's attacking frame.
 - Function: `isProgressivePass` in `shared/metrics.ts`.
+- **Reference:** illustrative 25%-closer-to-goal rule implemented in `shared/metrics.ts` and tested in `tests/metrics.test.ts`; UI copy comes from `PROGRESSIVE_PASS_LABEL` and `PROGRESSIVE_PASS_HINT` in that module.
+
+### Illustrative activity score (player)
+
+- Unit: score on a 3–10 scale, rounded to 0.1; **not** a calibrated player performance rating.
+- Module: `shared/playerStats.ts` (`analysePlayers`, `IMPACT_WEIGHTS`, `IMPACT_RATING_FORMULA`, `impactRating`).
+- Each component is the sum of its event counts multiplied by the published weights, rounded to 0.01: scoring (goals, shots, xG); chance creation (assists, shot-creating passes/corners, xG assisted); passing (completed/failed/progressive passes); defending (tackles, pressures); goalkeeping (saves, related shot xG); discipline (fouls/cards). `impact.total` is the sum of these displayed rounded components. All input counts are for the selected period and latest non-rescinded event revision.
+- Formula: `round(clamp(6.2 + 3.8 × tanh(impact.total / 4.5), 3, 10), 1)`. A score of 6.2 represents zero logged contribution. Negative discipline or failed-pass contributions can lower the score. Routine completed passes (+0.003), successful tackles (+0.018) and pressures (+0.002) carry small weights; a goal contributes +1.4. The smooth curve compresses extreme event totals instead of hard-capping a typical high-volume player at 10.
+- No minutes-played normalisation: reliable line-up/substitution minutes are not present in every fixture. Sparse staged fixtures retain event-derived differentiation; players without events receive the baseline, not an inferred performance judgment. Synthetic event density and inferred shot creation can affect comparisons across providers.
+- **Reference:** implementation and five-seed possession-first distribution tests in `shared/playerStats.ts` and `tests/player-stats.test.ts`; heuristic weights, not an externally validated rating model.
 
 ### Pass difficulty (illustrative, uncalibrated)
 

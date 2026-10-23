@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { analysePlayers, heatGrid, TRACKING_METRICS } from "../shared/playerStats.js";
+import { analysePlayers, heatGrid, impactRating, TRACKING_METRICS } from "../shared/playerStats.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
+import { generateMatch } from "../server/matchlab/generator.js";
+import { getFixture } from "../server/fixtures.js";
 import { createPlayerAnalyst, rulesNote } from "../server/players/analyst.js";
 
 function event(overrides: Partial<MatchEvent> & Pick<MatchEvent, "id" | "type">): MatchEvent {
@@ -71,6 +73,35 @@ test("player analysis derives scoring, creating, passing, defending and discipli
 
   assert.ok(striker.impact.rating > 6 && striker.impact.rating <= 10);
   assert.ok(striker.impact.rating > defender.impact.rating);
+});
+
+test("illustrative activity ratings stay spread across five possession-first match seeds", () => {
+  for (const seed of [11, 42, 77, 2026, 9090]) {
+    const players = analysePlayers(generateMatch({ scenario: "goal_fest", seed }))
+      .filter((entry) => entry.involvements >= 10);
+    const ratings = players.map((entry) => entry.impact.rating).sort((a, b) => a - b);
+    const quantile = (fraction: number) => ratings[Math.floor((ratings.length - 1) * fraction)]!;
+    assert.ok(players.length >= 15, `${seed}: enough involved players to test the spread`);
+    assert.ok(quantile(0.5) >= 6.5 && quantile(0.5) <= 7.1, `${seed}: median ${quantile(0.5)}`);
+    assert.ok(ratings.filter((rating) => rating >= 5.5 && rating <= 8.5).length / ratings.length >= 0.85, `${seed}: 5.5–8.5 coverage`);
+    const standouts = players.filter((entry) => entry.impact.rating >= 9);
+    assert.ok(standouts.length <= 2, `${seed}: ${standouts.length} rated ≥9`);
+    assert.ok(standouts.every((entry) => entry.goals > 0 || entry.impact.components.find((part) => part.key === "creating")!.value >= 2), `${seed}: top rating requires standout contribution`);
+    assert.equal(players.filter((entry) => entry.impact.rating === 10).length, 0, `${seed}: no routine 10s`);
+    for (const entry of players) {
+      assert.equal(entry.impact.rating, impactRating(entry.impact.total));
+      assert.equal(entry.impact.total, Math.round(entry.impact.components.reduce((sum, part) => sum + part.value, 0) * 100) / 100);
+    }
+  }
+});
+
+test("staged comeback activity scores remain differentiated despite sparse events", () => {
+  const players = analysePlayers(getFixture("rivergate-comeback")).filter((entry) => entry.involvements >= 10);
+  const ratings = players.map((entry) => entry.impact.rating);
+  assert.ok(players.length >= 3);
+  assert.ok(new Set(ratings).size >= 2);
+  assert.ok(ratings.every((rating) => rating >= 5.5 && rating < 9));
+  assert.ok(players.some((entry) => entry.goals > 0 && entry.impact.rating > 7));
 });
 
 test("uptoSecond limits analysis to events already played", () => {

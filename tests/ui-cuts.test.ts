@@ -6,6 +6,8 @@ import test from "node:test";
 import { api, ApiError, applyStudioAuth, fetchStudioStreamTicket, getStudioToken, isStudioReadPath, PRODUCER_TOKEN_REQUIRED, setStudioToken, STUDIO_TOKEN_KEY } from "../src/api.js";
 import { clipTitle, BIG_CHANCE_LABEL } from "../src/highlightRenderer.js";
 import { scenarioLabel, SYNTHETIC_BADGE_TEXT, transportBadge } from "../src/utils.js";
+import { PROGRESSIVE_PASS_HINT, PROGRESSIVE_PASS_LABEL } from "../shared/metrics.js";
+import { IMPACT_RATING_FORMULA } from "../shared/playerStats.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -55,10 +57,17 @@ test("sprint counts are not rendered and tracking labels say synthetic", () => {
 
 test("metric labels use the illustrative wording", () => {
   const analysis = read("src/PlayerAnalysis.tsx");
-  for (const label of ["xG assisted (inferred creator)", "Passes gaining ≥15 grid units", "Illustrative activity score", "illustrative, uncalibrated", "illustrative xG"]) {
+  for (const label of ["xG assisted (inferred creator)", "Illustrative activity score", "illustrative, uncalibrated", "illustrative xG"]) {
     assert.ok(analysis.includes(label), label);
   }
-  assert.doesNotMatch(analysis, /"xA"|Impact rating|Progressive passes/);
+  assert.doesNotMatch(analysis, /"xA"|Impact rating|15 grid units/);
+  assert.equal(PROGRESSIVE_PASS_LABEL, "Progressive passes (≥25% closer to goal)");
+  assert.match(PROGRESSIVE_PASS_HINT, /completed passes ending at least 25% closer to the goal centre/i);
+  assert.match(analysis, /label=\{PROGRESSIVE_PASS_LABEL\}[^>]*hint=\{PROGRESSIVE_PASS_HINT\}/);
+  assert.match(analysis, /PROGRESSIVE_PASS_LABEL\.toLowerCase\(\)/);
+  assert.match(analysis, /\{IMPACT_RATING_FORMULA\}/);
+  assert.match(IMPACT_RATING_FORMULA, /tanh\(sum of the displayed contributions ÷ 4\.5\)/);
+  assert.match(analysis, /Fastest shot from its recorded speed or its own ball-flight time and distance/);
   const components = read("src/components.tsx");
   assert.match(components, /label: "illustrative xG"/);
   assert.match(components, /Completion vs heuristic \(illustrative, uncalibrated\)/);

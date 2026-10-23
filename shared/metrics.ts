@@ -73,6 +73,9 @@ export function isMatchedPressureEvent(pass: MatchEvent, pressure: MatchEvent): 
   return pressureDistanceM(pass, pressure) <= PRESSURE_MAX_DISTANCE_M;
 }
 
+export const PROGRESSIVE_PASS_LABEL = "Progressive passes (≥25% closer to goal)";
+export const PROGRESSIVE_PASS_HINT = "Completed passes ending at least 25% closer to the goal centre, measured in metres on a 105 × 68 m pitch.";
+
 /** Common illustrative rule: completed pass that ends at least 25% closer to goal centre than it started. */
 export function isProgressivePass(event: MatchEvent): boolean {
   if (event.type !== "pass" || event.outcome !== "complete" || event.endX === undefined || event.endY === undefined) return false;

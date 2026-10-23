@@ -135,28 +135,36 @@ function inOpponentBox(event: MatchEvent): boolean {
 
 /**
  * Illustrative impact model. Weights are deliberately simple and published in the UI so a pundit can see
- * why a player rates where they do; the rating is 6.0 plus the weighted contribution, kept within 3–10.
+ * why a player rates where they do. Routine actions carry small weights so possession volume
+ * cannot overwhelm goals and chance creation; the total is mapped through a smooth curve.
  */
 export const IMPACT_WEIGHTS = {
-  goal: 1.0,
+  goal: 1.4,
   assist: 0.6,
-  keyPass: 0.25,
+  keyPass: 0.12,
   xa: 0.5,
   shotOnTarget: 0.12,
   shotOffTarget: 0.04,
   xg: 0.4,
-  passCompleted: 0.015,
+  passCompleted: 0.003,
   passFailed: -0.02,
-  progressivePass: 0.05,
-  tackleWon: 0.12,
-  tackleLost: 0.03,
-  pressure: 0.03,
+  progressivePass: 0.025,
+  tackleWon: 0.018,
+  tackleLost: 0.002,
+  pressure: 0.002,
   save: 0.3,
   savedXg: 0.8,
   foul: -0.08,
   yellow: -0.25,
   red: -1.0,
 };
+
+export const IMPACT_RATING_FORMULA = "Score = clamp(6.2 + 3.8 × tanh(sum of the displayed contributions ÷ 4.5), 3, 10), rounded to 0.1. Routine actions have small weights so logged event volume alone cannot dominate.";
+
+/** Smoothly compress exceptional activity without hard-capping typical players. */
+export function impactRating(total: number): number {
+  return round(Math.min(10, Math.max(3, 6.2 + 3.8 * Math.tanh(total / 4.5))), 1);
+}
 
 /**
  * Per-player figures for a period. Revisions are reconciled over the whole match first, so a correction made
@@ -242,7 +250,7 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       redCards,
       averagePosition,
       touches,
-      impact: { rating: round(Math.min(10, Math.max(3, 6 + total)), 1), total, components },
+      impact: { rating: impactRating(total), total, components },
       involvementShare: teamActions[player.teamId] ? Math.round((own.length / teamActions[player.teamId]) * 100) : 0,
       avgPassDistanceM: passAggregate.avgPassDistanceM,
       avgPassDifficulty: passAggregate.avgPassDifficulty,

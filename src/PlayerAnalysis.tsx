@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { analysePlayers, heatGrid, IMPACT_WEIGHTS, TRACKING_METRICS, type PlayerAnalysis } from "../shared/playerStats.js";
-import { PASS_DIFFICULTY_FORMULA } from "../shared/metrics.js";
+import { analysePlayers, heatGrid, IMPACT_RATING_FORMULA, IMPACT_WEIGHTS, TRACKING_METRICS, type PlayerAnalysis } from "../shared/playerStats.js";
+import { PASS_DIFFICULTY_FORMULA, PROGRESSIVE_PASS_HINT, PROGRESSIVE_PASS_LABEL } from "../shared/metrics.js";
 import { PERIOD_LABEL, periodBoundary, periodScope } from "../shared/periods.js";
 import type { Language, MatchFixture, MatchPeriod, TeamId } from "../shared/types.js";
 import { api, type PlayerNote } from "./api.js";
@@ -230,11 +230,11 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                 <Stat label="Shots" value={selected.shots} /><Stat label="On target" value={selected.shotsOnTarget} />
                 <Stat label="illustrative xG" value={selected.xg.toFixed(2)} hint="Illustrative, uncalibrated shot-quality heuristic" /><Stat label="xG assisted (inferred creator)" value={selected.xa.toFixed(2)} hint="illustrative xG of shots this player is inferred to have set up" />
                 <Stat label="Box touches" value={selected.touchesInBox ?? "—"} hint="Actions in the opposition penalty area" />
-                <Stat label="Top shot speed" value={selected.topShotSpeedKmh === null ? "—" : `${Math.round(selected.topShotSpeedKmh)} km/h`} hint="Fastest shot from the shot's own synthetic ball-flight measurement" />
+                <Stat label="Top shot speed" value={selected.topShotSpeedKmh === null ? "—" : `${Math.round(selected.topShotSpeedKmh)} km/h`} hint="Fastest shot from its recorded speed or its own ball-flight time and distance" />
               </div></div>
               <div className="pa-group"><h3>Passing</h3><div className="pa-stats">
                 <Stat label="Completed" value={`${selected.passesCompleted}/${selected.passes}`} /><Stat label="Accuracy" value={selected.passAccuracy === null ? "—" : `${selected.passAccuracy}%`} />
-                <Stat label="Key passes" value={selected.keyPasses} hint="Passes or corners followed by a shot within 15 s" /><Stat label="Passes gaining ≥15 grid units" value={selected.progressivePasses} hint="Completed passes moving the ball at least 15 grid units towards goal" />
+                <Stat label="Key passes" value={selected.keyPasses} hint="Passes or corners linked to a shot, or the last completed pass by another player within 15 s of a shot (same half)" /><Stat label={PROGRESSIVE_PASS_LABEL} value={selected.progressivePasses} hint={PROGRESSIVE_PASS_HINT} />
                 <Stat label="Possession lost" value={selected.possessionLost} hint="Unsuccessful passes" />
                 <Stat label="Avg length" value={selected.avgPassDistanceM === null ? "—" : `${selected.avgPassDistanceM.toFixed(1)} m`} hint="Mean pass length on a 105 × 68 m pitch" />
                 <Stat label="Avg difficulty (illustrative, uncalibrated)" value={selected.avgPassDifficulty === null ? "—" : selected.avgPassDifficulty.toFixed(0)} hint={PASS_DIFFICULTY_FORMULA.join("; ")} />
@@ -266,7 +266,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                 ))}
               </ul>
               <details className="pa-model"><summary>How the illustrative activity score works</summary>
-                <p className="subtle-text">Score = 6.0 + the sum above, kept within 3–10. Weights per action: goal +{IMPACT_WEIGHTS.goal}, assist +{IMPACT_WEIGHTS.assist}, chance created +{IMPACT_WEIGHTS.keyPass}, shot on target +{IMPACT_WEIGHTS.shotOnTarget}, completed pass +{IMPACT_WEIGHTS.passCompleted}, lost pass {IMPACT_WEIGHTS.passFailed}, pass gaining ≥15 grid units +{IMPACT_WEIGHTS.progressivePass}, tackle won +{IMPACT_WEIGHTS.tackleWon}, pressure +{IMPACT_WEIGHTS.pressure}, save +{IMPACT_WEIGHTS.save} (+{IMPACT_WEIGHTS.savedXg} × xG saved), foul {IMPACT_WEIGHTS.foul}, yellow {IMPACT_WEIGHTS.yellow}, red {IMPACT_WEIGHTS.red}; plus illustrative xG × {IMPACT_WEIGHTS.xg} and xG assisted × {IMPACT_WEIGHTS.xa}. Illustrative and uncalibrated, from logged events only; not a performance rating.</p>
+                <p className="subtle-text">{IMPACT_RATING_FORMULA} Weights per action: goal +{IMPACT_WEIGHTS.goal}, assist +{IMPACT_WEIGHTS.assist}, chance created +{IMPACT_WEIGHTS.keyPass}, shot on target +{IMPACT_WEIGHTS.shotOnTarget}, completed pass +{IMPACT_WEIGHTS.passCompleted}, lost pass {IMPACT_WEIGHTS.passFailed}, {PROGRESSIVE_PASS_LABEL.toLowerCase()} +{IMPACT_WEIGHTS.progressivePass}, tackle won +{IMPACT_WEIGHTS.tackleWon}, pressure +{IMPACT_WEIGHTS.pressure}, save +{IMPACT_WEIGHTS.save} (+{IMPACT_WEIGHTS.savedXg} × xG saved), foul {IMPACT_WEIGHTS.foul}, yellow {IMPACT_WEIGHTS.yellow}, red {IMPACT_WEIGHTS.red}; plus illustrative xG × {IMPACT_WEIGHTS.xg} and xG assisted × {IMPACT_WEIGHTS.xa}. Illustrative and uncalibrated, from logged events only; not a performance rating.</p>
               </details>
             </div>
 
