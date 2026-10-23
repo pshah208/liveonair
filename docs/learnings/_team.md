@@ -11,3 +11,10 @@
 - [mistake] 2026-10-22 A new kind of action needs its own canonical EventType, never an existing type plus ID text. Every runtime schema (zod in server/live/transport.ts) is derived from the shared EVENT_TYPES constant; otherwise Eventstream silently drops the events in production. (data-engineer, backend-engineer)
 - [mistake] 2026-10-22 Generators delete unwanted goals rather than rescinding them. Highlights, Fan View and Opta all read rescinded goals as "ruled out". Assert the final score and the goal order against each scenario description. (data-engineer)
 - [work] 2026-10-22 From v0.15, /api/live/status reports the transport as "eventstream" or "local" (the fallback wrapper), not "fabric-eventstream". (platform-architect)
+
+## 2026-10-23 (v0.16.0 movement + pause/resume)
+- [mistake] `live.current()` deep-clones the view, so identity (WeakMap) caches always miss. Key caches on stable ids + roster/team names, and benchmark the real live call path.
+- [mistake] Live tracking frames must never revise frames already sent. Bound the horizon by a received-event watermark (`publishedThroughSecond`), not the wall-clock ticker.
+- [mistake] Position clamps applied after the velocity/accel limiter reintroduce teleports. Limit targets instead, and measure speed/accel from emitted frames across >=4 scenarios.
+- [work] The generator previously chained passes to x>=95; check the event-coordinate spread before tuning anything spatial. Replay-equality tests need a fresh cache key.
+- [work] QA rounds of 25-60 min, repeated, cost ~8h on this feature. Time-box QA (10-15 min, in-process probes) and run full-match server runs only once, before deploy.
