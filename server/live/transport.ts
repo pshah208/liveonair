@@ -8,26 +8,11 @@ import {
 import { z } from "zod";
 
 import type { LiveEnvelope } from "../../shared/platform.js";
-import type { FixtureSummary, MatchEvent, Team } from "../../shared/types.js";
+import { EVENT_TYPES, type FixtureSummary, type MatchEvent, type Team } from "../../shared/types.js";
 import type { LiveTransportClient } from "../contracts.js";
 
 const teamIdSchema = z.enum(["home", "away"]);
-const eventTypeSchema = z.enum([
-  "pass",
-  "shot",
-  "goal",
-  "save",
-  "tackle",
-  "pressure",
-  "corner",
-  "foul",
-  "yellow_card",
-  "red_card",
-  "substitution",
-  "kickoff",
-  "halftime",
-  "fulltime",
-]);
+const eventTypeSchema = z.enum(EVENT_TYPES);
 const outcomeSchema = z.enum(["success", "fail", "miss", "blocked", "saved", "complete", "incomplete", "none"]);
 
 const playerSchema = z.object({

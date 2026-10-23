@@ -236,6 +236,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
               </div></div>
               <div className="pa-group"><h3>Defending</h3><div className="pa-stats">
                 <Stat label="Tackles won" value={`${selected.tacklesWon}/${selected.tackles}`} /><Stat label="Pressures" value={selected.pressures} />
+                <Stat label="Interceptions" value={selected.interceptions} /><Stat label="Ball recoveries" value={selected.ballRecoveries} />
                 <Stat label="Saves" value={selected.saves} />
               </div></div>
               <div className="pa-group"><h3>Discipline</h3><div className="pa-stats">

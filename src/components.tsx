@@ -165,6 +165,9 @@ const STAT_ROWS: { label: string; hint?: string; get: (stats: TeamStats) => numb
   { label: "Completion vs heuristic (illustrative, uncalibrated)", hint: "Completed passes minus an uncalibrated heuristic baseline, percentage points of attempts", get: (stats) => stats.completionOverExpected, format: (value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} pp`, bar: false },
   { label: "Fastest shot", hint: "Shot's recorded speed, or goal-distance divided by its own flight time; unavailable without either", get: (stats) => stats.fastestShotKmh, format: (value) => `${Math.round(value)} km/h` },
   { label: "Corners", get: (stats) => stats.corners },
+  { label: "Tackles", get: (stats) => stats.tackles },
+  { label: "Interceptions", get: (stats) => stats.interceptions },
+  { label: "Ball recoveries", get: (stats) => stats.ballRecoveries },
   { label: "Cards", get: (stats) => stats.yellowCards + stats.redCards }
 ];
 

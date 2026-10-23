@@ -1,5 +1,5 @@
 import { placeEvent } from "./ballPath.js";
-import type { MatchEvent, MatchFixture, Team, TeamId } from "./types.js";
+import { EVENT_TYPES, type MatchEvent, type MatchFixture, type Team, type TeamId } from "./types.js";
 
 export const TRACKING_PITCH_LENGTH_M = 105;
 export const TRACKING_PITCH_WIDTH_M = 68;
@@ -36,9 +36,9 @@ export type TrackingStreamMessage =
 
 type Point = { x: number; y: number };
 
-const POSSESSION_EVENTS = new Set<MatchEvent["type"]>([
-  "pass", "shot", "goal", "save", "tackle", "pressure", "corner", "foul", "kickoff", "substitution",
-]);
+const POSSESSION_EVENTS = new Set<MatchEvent["type"]>(
+  EVENT_TYPES.filter((type) => !["yellow_card", "red_card", "halftime", "fulltime"].includes(type)),
+);
 
 const FORMATIONS: Record<"4-3-3" | "4-4-2", Array<{ role: string; x: number; y: number }>> = {
   "4-3-3": [

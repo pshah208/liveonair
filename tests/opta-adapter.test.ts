@@ -61,6 +61,41 @@ function pressureMatchSummary(events: MatchEvent[]): { total: number; matched: n
   return { total: pressures.length, matched, rate: pressures.length ? matched / pressures.length : 0 };
 }
 
+function roundTripMismatchCount(events: MatchEvent[]): number {
+  let mismatches = 0;
+  for (const original of events) {
+    const adapted = roundTripCanonicalEvent(original);
+    if (original.rescinded) {
+      if (adapted.kind !== "correction" || adapted.eventId !== original.id) mismatches += 1;
+      continue;
+    }
+    if (adapted.kind !== "event") {
+      mismatches += 1;
+      continue;
+    }
+    const next = adapted.event;
+    const sameCore = next.id === original.id
+      && next.type === original.type
+      && next.teamId === original.teamId
+      && next.playerId === original.playerId
+      && next.outcome === original.outcome
+      && next.minute === original.minute
+      && next.second === original.second
+      && next.revision === original.revision;
+    const sameStart = Math.abs(next.x - original.x) <= 0.02 && Math.abs(next.y - original.y) <= 0.02;
+    const sameEnd = (
+      original.endX === undefined
+      || original.endY === undefined
+      || next.endX === undefined
+      || next.endY === undefined
+      || (Math.abs(next.endX - original.endX) <= 0.02 && Math.abs(next.endY - original.endY) <= 0.02)
+    );
+    const sameXg = original.xg === undefined || next.xg === undefined || Math.abs(next.xg - original.xg) < 1e-9;
+    if (!sameCore || !sameStart || !sameEnd || !sameXg) mismatches += 1;
+  }
+  return mismatches;
+}
+
 test("community type ids and qualifiers map onto canonical events", () => {
   const cases: Array<{ typeId: number; qualifiers?: Array<{ qualifierId: number; value?: string }>; type: string; outcome?: string }> = [
     { typeId: 1, type: "pass", outcome: "complete" },
@@ -174,6 +209,15 @@ test("generator output round-trips through the synthetic Opta-style adapter", ()
     }
   }
   assert.equal(OPTA_STYLE_LABEL, "Opta-style format, synthetic data");
+});
+
+test("late_winner and comeback scenarios have zero Opta round-trip mismatches for required seeds", () => {
+  for (const scenario of ["late_winner", "comeback"] as const) {
+    for (const seed of [1, 42, 2026]) {
+      const fixture = generateMatch({ scenario, seed });
+      assert.equal(roundTripMismatchCount(fixture.events), 0, `${scenario} seed ${seed} keeps 100% Opta round-trip fidelity`);
+    }
+  }
 });
 
 test("pressure matching survives the Opta round-trip and stays stable across five seeds", () => {

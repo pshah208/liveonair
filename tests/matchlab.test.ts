@@ -257,9 +257,11 @@ test("scenario outcomes match descriptions across required seeds", () => {
   const seeds = [1, 11, 42, 77, 2026];
   for (const seed of seeds) {
     const lateWinner = generateMatch({ scenario: "late_winner", seed });
+    assert.equal(lateWinner.events.filter((event) => event.type === "goal" && event.rescinded).length, 0, `late_winner seed ${seed} has no rescinded goals`);
     const lateGoals = lateWinner.events.filter((event) => event.type === "goal" && !event.rescinded).sort((a, b) => secondOf(a) - secondOf(b));
+    assert.ok(lateGoals.some((event) => event.id === lateWinner.correctionEventId), `late_winner seed ${seed} correction target is a live goal`);
     assert.equal(lateGoals.length >= 1, true, `late_winner seed ${seed} has a goal`);
-    assert.equal(lateGoals[lateGoals.length - 1]!.minute >= 80, true, `late_winner seed ${seed} decisive goal is late`);
+    assert.equal(lateGoals[lateGoals.length - 1]!.minute >= 81 && lateGoals[lateGoals.length - 1]!.minute <= 88, true, `late_winner seed ${seed} decisive goal is 81'-88'`);
     const before80 = lateGoals.filter((goal) => secondOf(goal) < 80 * 60);
     const homeBefore = before80.filter((goal) => goal.teamId === "home").length;
     const awayBefore = before80.filter((goal) => goal.teamId === "away").length;
@@ -269,7 +271,9 @@ test("scenario outcomes match descriptions across required seeds", () => {
     assert.notEqual(homeFinal, awayFinal, `late_winner seed ${seed} has a decisive winner`);
 
     const comeback = generateMatch({ scenario: "comeback", seed });
+    assert.equal(comeback.events.filter((event) => event.type === "goal" && event.rescinded).length, 0, `comeback seed ${seed} has no rescinded goals`);
     const comebackGoals = comeback.events.filter((event) => event.type === "goal" && !event.rescinded).sort((a, b) => secondOf(a) - secondOf(b));
+    assert.ok(comebackGoals.some((event) => event.id === comeback.correctionEventId), `comeback seed ${seed} correction target is a live goal`);
     let home = 0;
     let away = 0;
     let trailed = false;

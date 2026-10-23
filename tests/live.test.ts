@@ -10,6 +10,7 @@ import type {
   VerifiedFact,
 } from "../shared/platform.js";
 import type { MatchEvent, MatchFixture, MatchSnapshot } from "../shared/types.js";
+import { EVENT_TYPES } from "../shared/types.js";
 import type {
   AnalyzeFixture,
   BuildFeedPlan,
@@ -671,6 +672,39 @@ test("envelope schema rejects malformed payloads", () => {
     },
   });
   assert.equal(result.success, false);
+});
+
+test("parseLiveEnvelope accepts every event type from EVENT_TYPES", () => {
+  const base = {
+    kind: "match_event" as const,
+    matchId: "m1",
+    sequence: 1,
+    publishedAt: new Date().toISOString(),
+  };
+  const outcomeFor = (type: (typeof EVENT_TYPES)[number]): MatchEvent["outcome"] => {
+    if (type === "pass" || type === "corner") return "complete";
+    if (type === "tackle") return "success";
+    if (type === "yellow_card" || type === "red_card" || type === "kickoff" || type === "halftime" || type === "fulltime" || type === "substitution" || type === "foul") return "none";
+    return "success";
+  };
+
+  for (const [index, type] of EVENT_TYPES.entries()) {
+    const parsed = parseLiveEnvelope({
+      ...base,
+      sequence: index + 1,
+      event: matchEvent({
+        id: `evt-${type}`,
+        type,
+        teamId: "home",
+        playerId: "home-p1",
+        minute: 1,
+        second: 0,
+        outcome: outcomeFor(type),
+      }),
+    });
+    assert.equal(parsed.kind, "match_event");
+    if (parsed.kind === "match_event") assert.equal(parsed.event?.type, type);
+  }
 });
 
 test("live stream validates the optional period and forwards it to the analysis", async () => {

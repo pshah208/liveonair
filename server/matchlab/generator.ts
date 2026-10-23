@@ -891,11 +891,30 @@ function appendShotAndGoal(
   }
 }
 
-function resetGoals(events: MatchEvent[]): void {
+function nonGoalOutcome(rand: () => number): Extract<MatchEvent["outcome"], "saved" | "miss" | "blocked"> {
+  const roll = rand();
+  if (roll < 0.45) return "saved";
+  if (roll < 0.8) return "miss";
+  return "blocked";
+}
+
+function jitterMinute(seed: number, salt: number, min: number, max: number): number {
+  return randomInt(lcg(seed ^ salt), min, max);
+}
+
+function resetGoals(events: MatchEvent[], rand: () => number): void {
+  const linkedShots = new Set<string>();
   for (const event of events) {
-    if (event.type === "goal") event.rescinded = true;
-    if (event.type === "shot" && event.outcome === "success") event.outcome = "saved";
+    if (event.type === "goal" && event.relatedEventId) linkedShots.add(event.relatedEventId);
   }
+  for (const event of events) {
+    if (event.type === "shot" && linkedShots.has(event.id)) {
+      event.outcome = nonGoalOutcome(rand);
+    }
+  }
+  const kept = events.filter((event) => event.type !== "goal");
+  events.length = 0;
+  events.push(...kept);
 }
 
 function applyScenarioAdjustments(
@@ -962,32 +981,37 @@ function applyScenarioAdjustments(
   }
 
   if (scenario === "late_winner") {
-    resetGoals(adjusted);
+    resetGoals(adjusted, rand);
+    const winnerMinute = jitterMinute(seed, 0x1a2b3c4d, 81, 88);
     const lateShot = shots()
       .filter((event) => eventAtSecond(event) >= 80 * 60)
       .sort((left, right) => eventAtSecond(right) - eventAtSecond(left))[0]
       ?? shots().sort((left, right) => eventAtSecond(right) - eventAtSecond(left))[0];
     if (lateShot) {
-      lateShot.minute = 84;
+      lateShot.minute = winnerMinute;
       lateShot.second = 0;
       forceGoalForShot(adjusted, fixtureId, lateShot, "late-winner", rand);
     } else {
-      appendShotAndGoal(adjusted, fixtureId, home, 84 * 60, "late-winner", true, rand);
+      appendShotAndGoal(adjusted, fixtureId, home, winnerMinute * 60, "late-winner", true, rand);
     }
   }
 
   if (scenario === "comeback") {
-    resetGoals(adjusted);
+    resetGoals(adjusted, rand);
+    const awayLeadMinute = jitterMinute(seed, 0x55aa11ee, 18, 30);
+    const homeEqualiserMinute = jitterMinute(seed, 0x66bb22ff, 58, 72);
+    const homeWinnerFloor = Math.max(homeEqualiserMinute + 8, 74);
+    const homeWinnerMinute = jitterMinute(seed, 0x77cc3300, homeWinnerFloor, 88);
     const awayEarlyShot = shots().find((event) => event.teamId === "away" && eventAtSecond(event) < 45 * 60);
     if (awayEarlyShot) {
-      awayEarlyShot.minute = 21;
+      awayEarlyShot.minute = awayLeadMinute;
       awayEarlyShot.second = 0;
       forceGoalForShot(adjusted, fixtureId, awayEarlyShot, "comeback-away", rand);
     } else {
-      appendShotAndGoal(adjusted, fixtureId, away, 21 * 60, "comeback-away-forced", true, rand);
+      appendShotAndGoal(adjusted, fixtureId, away, awayLeadMinute * 60, "comeback-away-forced", true, rand);
     }
     const homeSecondHalfShots = shots().filter((event) => event.teamId === "home" && eventAtSecond(event) >= 45 * 60);
-    const targetTimes = [66 * 60, 82 * 60];
+    const targetTimes = [homeEqualiserMinute * 60, homeWinnerMinute * 60];
     for (let index = 0; index < targetTimes.length; index += 1) {
       const shot = homeSecondHalfShots[index];
       if (shot) {
@@ -1005,7 +1029,7 @@ function applyScenarioAdjustments(
 
 function buildFixture(fixtureId: string, seed: number, title: string, description: string, home: Team, away: Team, events: MatchEvent[]): MatchFixture {
   const sorted = sortEventsStable(events).map((event) => ({ ...event }));
-  const goalEvents = sorted.filter((event) => event.type === "goal");
+  const goalEvents = sorted.filter((event) => event.type === "goal" && !event.rescinded);
   const correctionTarget = goalEvents[Math.min(1, goalEvents.length - 1)] ?? goalEvents[0];
   if (!correctionTarget) {
     throw new Error("Generated fixture must include at least one goal");

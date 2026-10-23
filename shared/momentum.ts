@@ -1,5 +1,5 @@
 import { isMatchedPressureEvent } from "./metrics.js";
-import type { MatchEvent, TeamId } from "./types.js";
+import { EVENT_TYPES, type MatchEvent, type TeamId } from "./types.js";
 import { illustrativeXg } from "./xg.js";
 
 export interface MomentumOptions {
@@ -50,7 +50,9 @@ export interface ControlChaosWindow {
 
 const GRID_COLS = 12;
 const GRID_ROWS = 8;
-const ON_BALL = new Set<MatchEvent["type"]>(["pass", "shot", "goal", "save", "corner", "tackle", "interception", "ball_recovery"]);
+const ON_BALL = new Set<MatchEvent["type"]>(
+  EVENT_TYPES.filter((type) => !["pressure", "foul", "yellow_card", "red_card", "substitution", "kickoff", "halftime", "fulltime"].includes(type)),
+);
 const secondOf = (event: Pick<MatchEvent, "minute" | "second">) => event.minute * 60 + event.second;
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
 

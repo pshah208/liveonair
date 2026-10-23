@@ -43,6 +43,8 @@ export interface PlayerAnalysis {
   touchesInBox: number | null;
   tackles: number;
   tacklesWon: number;
+  interceptions: number;
+  ballRecoveries: number;
   pressures: number;
   saves: number;
   possessionLost: number;
@@ -273,6 +275,8 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       touchesInBox: camera ? null : onBall.filter(inOpponentBox).length,
       tackles: tackles.length,
       tacklesWon,
+      interceptions,
+      ballRecoveries: recoveries,
       pressures,
       saves: saves.length,
       possessionLost: passes.length - passesCompleted,

@@ -1,7 +1,7 @@
 // Pure view-model helpers for the momentum chart, control-vs-chaos card and simulated engagement panel.
 // No DOM, no React: everything here is deterministic and unit-tested in tests/momentum-ui.test.ts.
 import { computeMomentum, controlVsChaos, type ControlChaosWindow, type MomentumMarker, type MomentumPoint, type MomentumSeries } from "../shared/momentum.js";
-import type { MatchEvent, TeamId } from "../shared/types.js";
+import { EVENT_TYPES, type MatchEvent, type TeamId } from "../shared/types.js";
 
 export const MOMENTUM_LABEL = "Illustrative attacking threat (synthetic)";
 export const INSUFFICIENT_COVERAGE_MESSAGE = "Not enough match events yet to draw attacking threat. It appears once the event feed covers a few minutes of play (uploaded video clips are often too sparse).";
@@ -10,7 +10,9 @@ export const SPONSOR_NAME = "Northwind Sports";
 export const SPONSOR_LABEL = `Momentum segment presented by ${SPONSOR_NAME}`;
 export const SIMULATED_ENGAGEMENT_LABEL = "Simulated — no real users";
 
-const ON_BALL = new Set<MatchEvent["type"]>(["pass", "shot", "goal", "save", "corner", "tackle"]);
+const ON_BALL = new Set<MatchEvent["type"]>(
+  EVENT_TYPES.filter((type) => !["pressure", "foul", "yellow_card", "red_card", "substitution", "kickoff", "halftime", "fulltime"].includes(type)),
+);
 const MIN_EVENTS_PER_MINUTE = 1.2;
 const MIN_ELAPSED_MINUTES = 3;
 const SMOOTHING_MINUTES = 3;

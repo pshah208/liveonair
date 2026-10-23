@@ -1,10 +1,25 @@
 export type TeamId = "home" | "away";
 export type Persona = "analyst" | "casual" | "player";
 export type Language = "en" | "es" | "fr" | "pt";
-export type EventType =
-  | "pass" | "shot" | "goal" | "save" | "tackle" | "interception" | "ball_recovery" | "pressure"
-  | "corner" | "foul" | "yellow_card" | "red_card" | "substitution"
-  | "kickoff" | "halftime" | "fulltime";
+export const EVENT_TYPES = [
+  "pass",
+  "shot",
+  "goal",
+  "save",
+  "tackle",
+  "interception",
+  "ball_recovery",
+  "pressure",
+  "corner",
+  "foul",
+  "yellow_card",
+  "red_card",
+  "substitution",
+  "kickoff",
+  "halftime",
+  "fulltime",
+] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
 
 export interface Player {
   id: string;
@@ -132,6 +147,8 @@ export interface TeamStats {
   passAccuracy: number;
   corners: number;
   tackles: number;
+  interceptions?: number;
+  ballRecoveries?: number;
   pressureEvents: number;
   fouls: number;
   yellowCards: number;
