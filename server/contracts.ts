@@ -63,6 +63,12 @@ export interface LiveListener {
 export interface LiveService {
   status(): LiveStatus;
   current(): LiveMatchView | undefined;
+  /**
+   * Received-event watermark: every scheduled feed event due at or before this
+   * second has been received. Live tracking must not look past it. Optional so
+   * test doubles stay valid; consumers fall back to the clock.
+   */
+  publishedThroughSecond?(): number;
   start(request: StartLiveRequest): Promise<LiveStatus>;
   /** Incremental video uses an analysis watermark, not a precomputed event schedule. */
   startProgressive?(fixture: MatchFixture): Promise<LiveStatus>;

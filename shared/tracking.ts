@@ -10,6 +10,13 @@ const MAX_DECEL_MPS2 = 5;
 const SIM_DT_SECONDS = 0.2;
 const PLAYER_MARGIN_M = 3.5;
 const TARGET_MARGIN_M = 3.5;
+/** Last-resort position bound. Braking keeps players inside PLAYER_MARGIN_M, so this should not bite. */
+const HARD_MARGIN_M = 0.5;
+/** Deceleration budget used to brake before a bound; below both MAX_ACCEL_MPS2 and MAX_DECEL_MPS2 so the final pass can always honour it. */
+const EDGE_BRAKE_MPS2 = 3.5;
+/** Goalkeeper depth limits in metres from the own goal line. Targets use both; positions only the hard one. */
+const GK_SETTLED_DEPTH_M = 18;
+const GK_SWEEPING_DEPTH_M = 24;
 
 export interface TrackingPlayer {
   id: string;
@@ -757,6 +764,14 @@ function buildSnapshot(
       targets.set(playerId, { ...point, x: toGlobalX(slot.teamId, Math.min(toLocalX(slot.teamId, point.x), limit)) });
     }
   }
+  // Depth limits act on the goalkeeper's target, never on the position, so a
+  // change of sweeping state is followed at speed/acceleration limits.
+  for (const [playerId, point] of targets) {
+    const slot = slots.get(playerId)!;
+    if (slot.role !== "GK") continue;
+    const maxDepth = goalkeeperSweeping(slot.teamId, ball, point.y) ? GK_SWEEPING_DEPTH_M : GK_SETTLED_DEPTH_M;
+    if (toLocalX(slot.teamId, point.x) > maxDepth) targets.set(playerId, { ...point, x: toGlobalX(slot.teamId, maxDepth) });
+  }
 
   return {
     second: atSecond,
@@ -853,7 +868,8 @@ const INITIAL_CAPACITY_STEPS = 512;
 const timelineCache = new Map<string, CachedTimeline>();
 
 function timelineKey(fixture: MatchFixture): string {
-  return `${fixture.id}:${fixture.seed}:${buildRosterSignature(fixture)}`;
+  // Team ids are always home/away, so names keep two fixtures with the same id+seed apart.
+  return `${fixture.id}:${fixture.seed}:${fixture.home.name}|${fixture.away.name}:${buildRosterSignature(fixture)}`;
 }
 
 function buildRosterSignature(fixture: MatchFixture): string {
@@ -862,52 +878,6 @@ function buildRosterSignature(fixture: MatchFixture): string {
     .sort()
     .join(",");
   return `${fixture.home.id}[${serializeTeam(fixture.home)}]|${fixture.away.id}[${serializeTeam(fixture.away)}]`;
-}
-
-function eventStableString(event: MatchEvent): string {
-  return [
-    event.id,
-    event.revision,
-    event.type,
-    event.minute,
-    event.second,
-    event.teamId,
-    event.playerId,
-    event.outcome,
-    event.x,
-    event.y,
-    event.endX ?? "",
-    event.endY ?? "",
-    event.flightMs ?? "",
-    event.speedKmh ?? "",
-    event.rescinded ? 1 : 0,
-  ].join(":");
-}
-
-function earliestChangedEventSecond(previousFixture: MatchFixture | undefined, nextFixture: MatchFixture): number | undefined {
-  if (!previousFixture) return 0;
-  const previous = new Map<string, MatchEvent>();
-  for (const event of previousFixture.events) {
-    const existing = previous.get(event.id);
-    if (!existing || event.revision >= existing.revision) previous.set(event.id, event);
-  }
-  const next = new Map<string, MatchEvent>();
-  for (const event of nextFixture.events) {
-    const existing = next.get(event.id);
-    if (!existing || event.revision >= existing.revision) next.set(event.id, event);
-  }
-  let earliest: number | undefined;
-  const consider = (atSecond: number) => {
-    earliest = earliest === undefined ? atSecond : Math.min(earliest, atSecond);
-  };
-  for (const [id, previousEvent] of previous.entries()) {
-    const nextEvent = next.get(id);
-    if (!nextEvent || eventStableString(previousEvent) !== eventStableString(nextEvent)) consider(secondOf(previousEvent));
-  }
-  for (const [id, nextEvent] of next.entries()) {
-    if (!previous.has(id)) consider(secondOf(nextEvent));
-  }
-  return earliest;
 }
 
 function buildEventSignature(fixture: MatchFixture): string {
@@ -1027,20 +997,54 @@ function playerActive(playerId: string, atSecond: number, deactivatedAt: Map<str
   return removedAt === undefined || atSecond <= removedAt + 1e-6;
 }
 
-function speedCap(player: SimPlayer, snapshot: TacticalSnapshot): number {
-  if (player.role !== "GK") return MAX_PLAYER_SPEED_MPS;
-  const ballLocalX = toLocalX(player.teamId, snapshot.ball.x);
-  const sweeping = ballLocalX < 24 && Math.abs(snapshot.ball.y - player.y) < 18;
-  return sweeping ? 7.2 : 6.7;
+function goalkeeperSweeping(teamId: TeamId, ball: Point, keeperY: number): boolean {
+  return toLocalX(teamId, ball.x) < GK_SWEEPING_DEPTH_M && Math.abs(ball.y - keeperY) < 18;
 }
 
-function clampGoalkeeperDepth(player: SimPlayer, snapshot: TacticalSnapshot): void {
+function speedCap(player: SimPlayer, snapshot: TacticalSnapshot): number {
+  if (player.role !== "GK") return MAX_PLAYER_SPEED_MPS;
+  return goalkeeperSweeping(player.teamId, snapshot.ball, player.y) ? 7.2 : 6.7;
+}
+
+/**
+ * Caps each velocity component that heads toward a bound to the speed from
+ * which EDGE_BRAKE_MPS2 still stops before it. Bounds are the soft pitch
+ * margin and, for goalkeepers, the hard sweeping depth.
+ */
+function brakeBeforeBounds(player: SimPlayer, x: number, y: number, velocity: Vec): Vec {
+  // Discrete-time braking speed: v <= sqrt(2a(room - v*dt)) also leaves room for this step.
+  const brakeStep = EDGE_BRAKE_MPS2 * SIM_DT_SECONDS;
+  const safe = (room: number) => Math.max(0, -brakeStep + Math.sqrt(brakeStep * brakeStep + 2 * EDGE_BRAKE_MPS2 * Math.max(0, room)));
+  let maxPosX = safe((TRACKING_PITCH_LENGTH_M - PLAYER_MARGIN_M) - x);
+  let maxNegX = safe(x - PLAYER_MARGIN_M);
+  if (player.role === "GK") {
+    const room = safe(GK_SWEEPING_DEPTH_M - toLocalX(player.teamId, x));
+    if (player.teamId === "home") maxPosX = Math.min(maxPosX, room);
+    else maxNegX = Math.min(maxNegX, room);
+  }
+  const maxPosY = safe((TRACKING_PITCH_WIDTH_M - PLAYER_MARGIN_M) - y);
+  const maxNegY = safe(y - PLAYER_MARGIN_M);
+  return {
+    x: clamp(velocity.x, -maxNegX, maxPosX),
+    y: clamp(velocity.y, -maxNegY, maxPosY),
+  };
+}
+
+/** Hard goalkeeper depth bound. The correction itself never exceeds one top-speed step. */
+function clampGoalkeeperHardDepth(player: SimPlayer, start: Point): void {
   if (player.role !== "GK") return;
-  const ballLocalX = toLocalX(player.teamId, snapshot.ball.x);
-  const sweeping = ballLocalX < 24 && Math.abs(snapshot.ball.y - player.y) < 18;
-  const maxDepth = sweeping ? 24 : 18;
-  const localX = toLocalX(player.teamId, player.x);
-  if (localX > maxDepth) player.x = toGlobalX(player.teamId, maxDepth);
+  const excess = toLocalX(player.teamId, player.x) - GK_SWEEPING_DEPTH_M;
+  if (excess <= 0) return;
+  const correction = Math.min(excess, MAX_PLAYER_SPEED_MPS * SIM_DT_SECONDS);
+  player.x += player.teamId === "home" ? -correction : correction;
+  const dx = player.x - start.x;
+  const dy = player.y - start.y;
+  const step = Math.hypot(dx, dy);
+  const maxStep = MAX_PLAYER_SPEED_MPS * SIM_DT_SECONDS;
+  if (step > maxStep) {
+    player.x = start.x + (dx / step) * maxStep;
+    player.y = start.y + (dy / step) * maxStep;
+  }
 }
 
 function createInitialTimeline(fixture: MatchFixture, key: string): CachedTimeline {
@@ -1223,7 +1227,6 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
       player.y += player.vy * SIM_DT_SECONDS;
       player.x = clamp(player.x, PLAYER_MARGIN_M, TRACKING_PITCH_LENGTH_M - PLAYER_MARGIN_M);
       player.y = clamp(player.y, PLAYER_MARGIN_M, TRACKING_PITCH_WIDTH_M - PLAYER_MARGIN_M);
-      clampGoalkeeperDepth(player, now);
     }
 
     for (let settle = 0; settle < 4; settle += 1) enforceSpacing(activePlayers);
@@ -1254,21 +1257,24 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
 
     enforceSpacing(activePlayers);
 
+    // Authoritative kinematic pass: everything above only proposes a position.
+    // Brake before bounds first, then limit acceleration and speed against the
+    // previous emitted velocity, so the emitted step is what gets limited.
     for (const player of activePlayers) {
       const start = stepStart.get(player.id)!;
-      const proposed = {
+      const proposed = brakeBeforeBounds(player, start.x, start.y, {
         x: (player.x - start.x) / SIM_DT_SECONDS,
         y: (player.y - start.y) / SIM_DT_SECONDS,
-      };
+      });
       const limited = limitDeltaVelocity({ x: start.vx, y: start.vy }, proposed, SIM_DT_SECONDS);
       const cap = speedCap(player, now);
       const speed = Math.hypot(limited.x, limited.y);
       const capped = speed > cap
         ? { x: (limited.x / speed) * cap, y: (limited.y / speed) * cap }
         : limited;
-      player.x = clamp(start.x + capped.x * SIM_DT_SECONDS, PLAYER_MARGIN_M, TRACKING_PITCH_LENGTH_M - PLAYER_MARGIN_M);
-      player.y = clamp(start.y + capped.y * SIM_DT_SECONDS, PLAYER_MARGIN_M, TRACKING_PITCH_WIDTH_M - PLAYER_MARGIN_M);
-      clampGoalkeeperDepth(player, now);
+      player.x = clamp(start.x + capped.x * SIM_DT_SECONDS, HARD_MARGIN_M, TRACKING_PITCH_LENGTH_M - HARD_MARGIN_M);
+      player.y = clamp(start.y + capped.y * SIM_DT_SECONDS, HARD_MARGIN_M, TRACKING_PITCH_WIDTH_M - HARD_MARGIN_M);
+      clampGoalkeeperHardDepth(player, start);
       player.vx = (player.x - start.x) / SIM_DT_SECONDS;
       player.vy = (player.y - start.y) / SIM_DT_SECONDS;
     }
@@ -1368,6 +1374,22 @@ export function maxPlayerSpeedMps(previous: TrackingFrame, next: TrackingFrame):
 
 export function speedWithinLimit(previous: TrackingFrame, next: TrackingFrame, limit = MAX_PLAYER_SPEED_MPS): boolean {
   return maxPlayerSpeedMps(previous, next) <= limit;
+}
+
+/** Event marker horizon while the delayed tracking overlay is shown: frame second + one 5 Hz step. */
+export function trackingMarkerHorizon(frameSecond: number): number {
+  return frameSecond + 0.2;
+}
+
+/**
+ * Hides event markers the delayed tracking overlay has not reached yet, so a
+ * goal marker does not appear seconds before the tracked shot. A null horizon
+ * (overlay off) returns the input array unchanged.
+ */
+export function eventsWithinTrackingHorizon<T extends { minute: number; second: number }>(events: T[], horizonSecond: number | null): T[] {
+  if (horizonSecond === null) return events;
+  const visible = events.filter((event) => event.minute * 60 + event.second <= horizonSecond + 1e-6);
+  return visible.length === events.length ? events : visible;
 }
 
 export function isTrackingStreamMessage(value: unknown): value is TrackingStreamMessage {

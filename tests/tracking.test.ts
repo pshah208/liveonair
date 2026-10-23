@@ -3,7 +3,7 @@ import test from "node:test";
 import { performance } from "node:perf_hooks";
 
 import { placeEvent } from "../shared/ballPath.js";
-import { buildTrackingFrame, maxPlayerSpeedMps, TRACKING_DELAY_SECONDS, TRACKING_PITCH_LENGTH_M, TRACKING_PITCH_WIDTH_M } from "../shared/tracking.js";
+import { buildTrackingFrame, eventsWithinTrackingHorizon, maxPlayerSpeedMps, TRACKING_DELAY_SECONDS, TRACKING_PITCH_LENGTH_M, TRACKING_PITCH_WIDTH_M, trackingMarkerHorizon } from "../shared/tracking.js";
 import type { MatchEvent, MatchFixture, Player } from "../shared/types.js";
 import { generateMatch } from "../server/matchlab/generator.js";
 
@@ -515,4 +515,60 @@ test("timeline cache separates same fixture id+seed when lineup changes", () => 
   const goalkeeper = second.players.find((player) => player.id === "home-p8");
   assert.ok(goalkeeper, "new goalkeeper should be present");
   assert.ok(goalkeeper!.x <= 20, `goalkeeper x ${goalkeeper!.x.toFixed(2)}`);
+});
+
+test("emitted frames respect speed and acceleration limits, including goalkeeper depth and touchline edges", () => {
+  // Measured from the emitted 5 Hz frames, not from internal velocities, so
+  // any post-limit clamp that teleports a player shows up here.
+  const cases = [["comeback", 42], ["goal_fest", 17], ["red_card", 7], ["late_winner", 99]] as const;
+  for (const [scenario, seed] of cases) {
+    const match = generateMatch({ scenario, seed });
+    let previous = buildTrackingFrame(match, 0);
+    let previousVelocity = new Map<string, { x: number; y: number }>();
+    const accelerations = new Map<string, number[]>();
+    let maxStep = 0;
+    let maxStepAt = "";
+    for (let step = 1; step <= match.durationSeconds * 5; step += 1) {
+      const second = step / 5;
+      const current = buildTrackingFrame(match, second);
+      const before = new Map(previous.players.map((player) => [player.id, player]));
+      const velocity = new Map<string, { x: number; y: number }>();
+      for (const player of current.players) {
+        const prior = before.get(player.id);
+        if (!prior) continue;
+        const vx = (player.x - prior.x) / 0.2;
+        const vy = (player.y - prior.y) / 0.2;
+        const speed = Math.hypot(vx, vy);
+        if (speed > maxStep) {
+          maxStep = speed;
+          maxStepAt = `${player.id}@${second.toFixed(1)}`;
+        }
+        velocity.set(player.id, { x: vx, y: vy });
+        const priorVelocity = previousVelocity.get(player.id);
+        if (priorVelocity) {
+          const list = accelerations.get(player.id) ?? [];
+          list.push(Math.hypot(vx - priorVelocity.x, vy - priorVelocity.y) / 0.2);
+          accelerations.set(player.id, list);
+        }
+      }
+      previousVelocity = velocity;
+      previous = current;
+    }
+    assert.ok(maxStep <= 9.5 + 1e-3, `${scenario}/${seed}: step ${maxStep.toFixed(2)} m/s at ${maxStepAt}`);
+    for (const [playerId, list] of accelerations) {
+      list.sort((left, right) => left - right);
+      const p99 = list[Math.floor(list.length * 0.99)] ?? 0;
+      assert.ok(p99 <= 6, `${scenario}/${seed}: ${playerId} accel p99 ${p99.toFixed(2)} m/s^2`);
+    }
+  }
+});
+test("event markers are gated to the tracking overlay horizon", () => {
+  const events = [
+    { id: "a", minute: 0, second: 10 },
+    { id: "goal", minute: 0, second: 14 },
+  ];
+  assert.equal(eventsWithinTrackingHorizon(events, null), events, "overlay off: unchanged");
+  assert.deepEqual(eventsWithinTrackingHorizon(events, trackingMarkerHorizon(11)).map((event) => event.id), ["a"]);
+  assert.deepEqual(eventsWithinTrackingHorizon(events, trackingMarkerHorizon(13.8)).map((event) => event.id), ["a", "goal"]);
+  assert.equal(eventsWithinTrackingHorizon(events, 99), events, "nothing hidden: same array for memo stability");
 });

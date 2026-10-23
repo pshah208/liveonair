@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ballRoute, buildBallPath, placeEvent, type BallPoint, type BallSegment } from "../shared/ballPath.js";
 import { difficultyBand, metricOptions, passDifficulty, shotSpeedKmh } from "../shared/metrics.js";
+import { eventsWithinTrackingHorizon } from "../shared/tracking.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
 import { TrackingLayer } from "./TrackingLayer.js";
 import { labelize, teamTint } from "./utils.js";
@@ -95,7 +96,12 @@ export function Pitch({ fixture, events }: PitchProps) {
   const arrowId = (key: string) => `ball-arrow-${uid}-${key}`;
   const glowId = `ball-glow-${uid}`;
   const [mode, setMode] = useState<Mode>("areas");
-  const shown = events;
+  // While the delayed tracking overlay is on, markers wait for the tracked play
+  // to reach them; otherwise a goal marker would lead the shot by ~3 s.
+  const [trackingHorizon, setTrackingHorizon] = useState<number | null>(null);
+  const visibleCount = useMemo(() => eventsWithinTrackingHorizon(events, trackingHorizon).length, [events, trackingHorizon]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const shown = useMemo(() => eventsWithinTrackingHorizon(events, trackingHorizon), [events, visibleCount]);
   const reducedMotion = prefersReducedMotion();
   const metrics = useMemo(() => {
     const options = metricOptions(fixture);
@@ -250,7 +256,7 @@ export function Pitch({ fixture, events }: PitchProps) {
           )}
         </svg>
         <div className="tracking-overlay">
-          <TrackingLayer fixture={fixture} />
+          <TrackingLayer fixture={fixture} onHorizonChange={setTrackingHorizon} />
         </div>
       </div>
       <figcaption className="pitch-legend">

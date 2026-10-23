@@ -46,6 +46,14 @@ type CreateLiveServiceOptions = {
 
 const DEMO_SPEED = 20;
 const DEMO_SEED = 20261027;
+/**
+ * A published envelope that has not come back from the transport within this
+ * wall time is treated as lost, so one dropped Eventstream message cannot
+ * freeze the received watermark for the rest of the match.
+ */
+const RECEIPT_TIMEOUT_MS = 10_000;
+/** Keeps the watermark strictly below the first outstanding due second. */
+const WATERMARK_EPSILON_SECONDS = 0.001;
 
 function defaultScheduler(): LiveScheduler {
   return {
@@ -145,8 +153,16 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   let pausedAtSecond: number | undefined;
   /** Latest progressive analysis held while paused. Flushed on resume so events are not skipped or republished. */
   let deferredProgressive: { fixture: MatchFixture; watermark: number } | undefined;
-  type FeedEntry = StressFeedItem & { published: boolean };
+  type FeedEntry = StressFeedItem & {
+    published: boolean;
+    /** Revision key of the envelope this entry produced; null when it produced none. */
+    deliveredKey?: string | null;
+    /** Service-clock time at which the publish call settled (resolved or failed). */
+    publishSettledAt?: number;
+  };
   let feedPlan: FeedEntry[] = [];
+  /** Feed-plan entries before this index are all received; see publishedThroughSecond(). */
+  let receivedCursor = 0;
   let operationQueue: Promise<unknown> = Promise.resolve();
   const pendingEnvelopes: Array<{ envelope: LiveEnvelope; receivedAt: number }> = [];
   const publishedEvents = new Map<string, MatchEvent>();
@@ -206,6 +222,41 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     pausedAtSecond = undefined;
     deferredProgressive = undefined;
     feedPlan = [];
+    receivedCursor = 0;
+  }
+
+  function revisionKey(event: MatchEvent): string {
+    return `${event.id}@${event.revision}`;
+  }
+
+  function entryReceived(entry: FeedEntry): boolean {
+    // A duplicate, or an envelope that arrived before its own timer fired.
+    if (acceptedRevisions.has(revisionKey(entry.event))) return true;
+    if (entry.publishSettledAt === undefined) return false;
+    if (entry.deliveredKey === null) return true;
+    if (entry.deliveredKey !== undefined && acceptedRevisions.has(entry.deliveredKey)) return true;
+    return now() - entry.publishSettledAt >= RECEIPT_TIMEOUT_MS;
+  }
+
+  /**
+   * Received-event watermark for scheduled feeds. Every feed-plan entry due at
+   * or before the returned second (by publishAtSecond, the feed's own due
+   * time) has come back through the transport subscription, so consumers see
+   * the same events a full replay would. This is receipt-based for both the
+   * local bus and Eventstream: an envelope counts once the consumer accepted
+   * it, and only a publish that has not been received within
+   * RECEIPT_TIMEOUT_MS is skipped as lost. Stress items that are deliberately
+   * late are tracked at their late due second, so they correct the future
+   * rather than hold the whole overlay back. Without a feed plan (progressive
+   * video, or after the match ends) the service clock is the watermark.
+   */
+  function publishedThroughSecond(): number {
+    const duration = activeFixture?.durationSeconds ?? currentView?.fixture.durationSeconds ?? 0;
+    if (!currentView) return 0;
+    if (feedPlan.length === 0) return currentView.clockSecond;
+    while (receivedCursor < feedPlan.length && entryReceived(feedPlan[receivedCursor]!)) receivedCursor += 1;
+    if (receivedCursor >= feedPlan.length) return duration;
+    return Math.max(0, Math.min(duration, feedPlan[receivedCursor]!.publishAtSecond - WATERMARK_EPSILON_SECONDS));
   }
 
   function clearPublishTimers(): void {
@@ -349,7 +400,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     await transport.publish(envelope);
   }
 
-  async function publishRescission(eventId: string): Promise<void> {
+  async function publishRescission(eventId: string): Promise<string | null> {
     const known = [
       ...(activeFixture?.events ?? []),
       ...(currentView?.fixture.events ?? []),
@@ -363,25 +414,26 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         reason: "Deleted event did not match a published event",
         eventId,
       }));
-      return;
+      return null;
     }
     const correction = latest.rescinded
       ? latest
       : { ...latest, revision: latest.revision + 1, rescinded: true };
     const key = `${correction.id}@${correction.revision}`;
-    if (publishedEvents.has(key) || acceptedRevisions.has(key)) return;
+    if (publishedEvents.has(key) || acceptedRevisions.has(key)) return null;
     await publishEnvelope("match_event", { event: correction });
+    return key;
   }
 
-  async function publishFeedEvent(event: MatchEvent): Promise<void> {
+  /** Returns the revision key that was published, or null when nothing was. */
+  async function publishFeedEvent(event: MatchEvent): Promise<string | null> {
     if (liveSource !== "opta-format") {
       await publishEnvelope("match_event", { event });
-      return;
+      return revisionKey(event);
     }
     const adapted = roundTripCanonicalEvent(event);
     if (adapted.kind === "correction") {
-      await publishRescission(adapted.eventId);
-      return;
+      return publishRescission(adapted.eventId);
     }
     if (adapted.kind === "ignored") {
       console.warn(JSON.stringify({
@@ -390,9 +442,10 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         reason: adapted.reason,
         typeId: adapted.typeId,
       }));
-      return;
+      return null;
     }
     await publishEnvelope("match_event", { event: adapted.event });
+    return revisionKey(adapted.event);
   }
 
   async function finishActiveMatch(complete = false): Promise<void> {
@@ -416,6 +469,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       pausedAtSecond = undefined;
       deferredProgressive = undefined;
       feedPlan = [];
+      receivedCursor = 0;
       if (progressive && !complete) {
         pendingEnvelopes.length = 0;
       }
@@ -631,7 +685,10 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     clearWatchdog();
     await startFixture(fixture, speed, Boolean(request.stress), false);
 
-    feedPlan = buildFeedPlan(fixture, Boolean(request.stress)).map((item) => ({ ...item, event: { ...item.event }, published: false }));
+    feedPlan = buildFeedPlan(fixture, Boolean(request.stress))
+      .map((item) => ({ ...item, event: { ...item.event }, published: false }))
+      .sort((left, right) => left.publishAtSecond - right.publishAtSecond);
+    receivedCursor = 0;
     scheduleRemaining(currentMatchId);
 
     return makeStatus();
@@ -650,9 +707,13 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
           if (state !== "running" || currentMatchId !== matchId || entry.published) return;
           entry.published = true;
           try {
-            await publishFeedEvent(entry.event);
+            entry.deliveredKey = await publishFeedEvent(entry.event);
+            entry.publishSettledAt = now();
           } catch (error) {
             entry.published = false;
+            // Not received; the receipt timeout releases the watermark if no retry delivers it.
+            entry.deliveredKey = revisionKey(entry.event);
+            entry.publishSettledAt = now();
             throw error;
           }
         });
@@ -785,6 +846,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     },
     current() {
       return currentView ? cloneView(currentView) : undefined;
+    },
+    publishedThroughSecond() {
+      return publishedThroughSecond();
     },
     start(request) {
       return serialize(() => startBody(request));

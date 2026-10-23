@@ -40,7 +40,11 @@ function hasPositionalData(live: LiveService): boolean {
   return Boolean(view && !view.fixture.id.startsWith("video-"));
 }
 
-/** Dedicated 5 Hz synthetic tracking stream with backpressure dropping/thinning. */
+/**
+ * Dedicated 5 Hz synthetic tracking stream with backpressure dropping/thinning.
+ * Frames never look past the live service's received-event watermark, so a live
+ * frame at t equals buildTrackingFrame(fullFixture, t) for an in-order feed.
+ */
 export function startTrackingStream({
   live,
   response,
@@ -56,6 +60,7 @@ export function startTrackingStream({
   let lastRawClock = Number.NaN;
   let holdingPause = false;
   let lastFrameSecond = -1;
+  let lastTickAt = now();
 
   const sendStatus = (status: "idle" | "no_data" | "ended" | "paused", message: string) => {
     const key = `${status}:${message}`;
@@ -84,6 +89,7 @@ export function startTrackingStream({
       lastRawClock = rawClock;
       baseClock = rawClock;
       baseAt = now();
+      lastTickAt = baseAt;
       sendStatus("paused", "Match paused.");
       return;
     }
@@ -93,15 +99,26 @@ export function startTrackingStream({
       baseClock = rawClock;
       baseAt = now();
     }
-    const elapsed = Math.max(0, (now() - baseAt) / 1000);
-    const projectedSecond = Math.min(view.fixture.durationSeconds, baseClock + elapsed * Math.max(0, status.speed || 0));
-    // Never project the event horizon past the service's published clock.
-    const publishedSecond = Math.min(projectedSecond, rawClock);
-    const delayedSecond = Math.max(0, Math.floor((publishedSecond - TRACKING_DELAY_SECONDS + 1e-6) * 5) / 5);
+    const tickAt = now();
+    const speed = Math.max(0, status.speed || 0);
+    const elapsed = Math.max(0, (tickAt - baseAt) / 1000);
+    const projectedSecond = Math.min(view.fixture.durationSeconds, baseClock + elapsed * speed);
+    // view.clockSecond is the service's wall-clock ticker, not a record of what
+    // has arrived: events land on their own publish timers and can trail it
+    // when the event loop stalls. The received watermark is the only safe
+    // horizon; a frame built past it would be cached with events missing.
+    const watermark = live.publishedThroughSecond?.() ?? rawClock;
+    const horizonSecond = Math.min(projectedSecond, rawClock, watermark);
+    const delayedSecond = Math.max(0, Math.floor((horizonSecond - TRACKING_DELAY_SECONDS + 1e-6) * 5) / 5);
+    // Until the first TRACKING_DELAY_SECONDS of events have arrived, any frame
+    // (even t=0) would be simulated from an incomplete feed and then cached.
+    if (status.state !== "finished" && horizonSecond < TRACKING_DELAY_SECONDS - 1e-6) return;
     // The final published events still need their three seconds of simulated
-    // tracking. Drain them at the ordinary 5 Hz output cadence after finish.
+    // tracking. Drain them at match speed (at least one 0.2 s step per tick).
+    const drainStep = Math.max(0.2, Math.floor(((tickAt - lastTickAt) / 1000) * speed * 5 + 1e-6) / 5);
+    lastTickAt = tickAt;
     let frameSecond = status.state === "finished"
-      ? Math.min(view.fixture.durationSeconds, Math.max(delayedSecond, lastFrameSecond + 0.2))
+      ? Math.min(view.fixture.durationSeconds, watermark, Math.max(delayedSecond, lastFrameSecond + drainStep))
       : delayedSecond;
     if (status.state === "finished" && frameSecond >= view.fixture.durationSeconds - 1e-6) frameSecond = view.fixture.durationSeconds;
     const frame = buildTrackingFrame(view.fixture, frameSecond);

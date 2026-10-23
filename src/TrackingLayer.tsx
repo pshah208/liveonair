@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { TRACKING_DELAY_SECONDS, TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage } from "../shared/tracking.js";
+import { TRACKING_DELAY_SECONDS, TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage, trackingMarkerHorizon } from "../shared/tracking.js";
 import type { MatchFixture } from "../shared/types.js";
 import { teamTint } from "./utils.js";
 
 type TrackingLayerProps = {
   fixture: MatchFixture;
+  /** Latest tracked second (+ one step) while the overlay is shown, null when hidden. */
+  onHorizonChange?: (horizonSecond: number | null) => void;
 };
 
 function reducedMotionNow(): boolean {
@@ -33,7 +35,7 @@ function interpolateFrame(from: TrackingFrame, to: TrackingFrame, t: number): Tr
   };
 }
 
-export function TrackingLayer({ fixture }: TrackingLayerProps) {
+export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) {
   const [statusText, setStatusText] = useState("Connecting synthetic tracking…");
   const [connected, setConnected] = useState(false);
   const [sourceFrame, setSourceFrame] = useState<TrackingFrame | null>(null);
@@ -44,6 +46,13 @@ export function TrackingLayer({ fixture }: TrackingLayerProps) {
   const reducedGateRef = useRef(0);
 
   const enabled = manualEnabled ?? connected;
+  const horizonSecond = enabled && sourceFrame ? trackingMarkerHorizon(sourceFrame.second) : null;
+
+  useEffect(() => {
+    onHorizonChange?.(horizonSecond);
+  }, [horizonSecond, onHorizonChange]);
+
+  useEffect(() => () => onHorizonChange?.(null), [onHorizonChange]);
 
   useEffect(() => {
     let cancelled = false;
