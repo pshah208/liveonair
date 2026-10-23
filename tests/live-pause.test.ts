@@ -462,6 +462,7 @@ test("tracking stream freezes on pause and does not project wall time", async ()
       clearInterval() {},
     },
   });
+
   const tick = ticks[0];
   assert.ok(tick);
   assert.equal(messages.some((message) => message.type === "frame"), true);
@@ -480,6 +481,42 @@ test("tracking stream freezes on pause and does not project wall time", async ()
   assert.ok(resumedFrame?.frame);
   assert.ok(resumedFrame.frame.second < 20, "resume must not add the paused wall interval times speed");
   stop();
+});
+
+test("tracking stream drains the final delayed seconds after the match finishes", () => {
+  const fixture = fixtureWithEvents([], 10);
+  let state: "running" | "finished" = "running";
+  let clock = 9;
+  const frames: number[] = [];
+  let ended = false;
+  const response = {
+    write(chunk: string) {
+      const payload = JSON.parse(chunk.replace(/^data: /, "").trim()) as { type: string; frame?: { second: number } };
+      if (payload.type === "frame") frames.push(payload.frame!.second);
+      return true;
+    },
+    end() { ended = true; },
+    on() {},
+    off() {},
+  };
+  const live = {
+    status: () => ({ state, speed: 30, source: "synthetic" as const, clockSecond: clock, transport: "local" as const, transportConfigured: false, eventsReceived: 0, duplicatesIgnored: 0, stress: false }),
+    current: () => ({ matchId: "final-drain", fixture, clockSecond: clock }),
+  };
+  const ticks: Array<() => void> = [];
+  startTrackingStream({
+    live: live as unknown as Parameters<typeof startTrackingStream>[0]["live"],
+    response: response as unknown as express.Response,
+    now: () => 0,
+    scheduler: { setInterval(callback) { ticks.push(callback); return ticks.length; }, clearInterval() {} },
+  });
+  assert.equal(frames.at(-1), 6);
+  state = "finished";
+  clock = 10;
+  for (let i = 0; i < 20 && !ended; i += 1) ticks[0]!();
+  assert.ok(Math.abs((frames.at(-1) ?? 0) - 10) < 1e-6);
+  assert.equal(ended, true);
+  assert.ok(frames.some((second) => second > 7 && second < 10));
 });
 
 test("Studio shows Pause, Resume and Stop, and the board can say Paused", () => {

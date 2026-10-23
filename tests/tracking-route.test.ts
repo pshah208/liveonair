@@ -117,9 +117,11 @@ test("tracking SSE stream closes when the match ends", async () => {
     const reader = response.body?.getReader();
     assert.ok(reader);
 
-    await scheduler.advance(2_600);
+    // The delayed overlay drains its remaining 3 simulated seconds at 5 Hz
+    // after the fixture clock ends instead of dropping the final ball path.
+    await scheduler.advance(5_200);
     let done = false;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < 32; attempt += 1) {
       const chunk = await reader!.read();
       if (chunk.done) {
         done = true;

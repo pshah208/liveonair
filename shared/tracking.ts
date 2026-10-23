@@ -3,6 +3,7 @@ import { EVENT_TYPES, type MatchEvent, type MatchFixture, type Team, type TeamId
 
 export const TRACKING_PITCH_LENGTH_M = 105;
 export const TRACKING_PITCH_WIDTH_M = 68;
+export const TRACKING_DELAY_SECONDS = 3;
 const MAX_PLAYER_SPEED_MPS = 9.5;
 const MAX_ACCEL_MPS2 = 3.8;
 const MAX_DECEL_MPS2 = 5;
@@ -72,6 +73,7 @@ interface TacticalSnapshot {
   ball: Point;
   targets: Map<string, Point>;
   bursts: Map<string, number>;
+  urgentRunners: Set<string>;
   possessingTeam: TeamId;
   carrierPlayerId?: string;
   eventId?: string;
@@ -135,6 +137,7 @@ interface CachedTimeline {
   touchedAt: number;
   lastEventCount: number;
   lastTail: string;
+  lastEventsRef: MatchEvent[];
   lastFixtureRef?: MatchFixture;
 }
 
@@ -219,9 +222,9 @@ function activePossessionEvents(fixture: MatchFixture): PossessionEvent[] {
     .sort((a, b) => a.atSecond - b.atSecond || a.id.localeCompare(b.id));
 }
 
-function findAnchorIndex(events: PossessionEvent[], atSecond: number): number {
+function findAnchorIndex(events: PossessionEvent[], atSecond: number, end = events.length): number {
   let low = 0;
-  let high = events.length - 1;
+  let high = end - 1;
   let answer = -1;
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
@@ -344,13 +347,16 @@ function buildSnapshot(
   slots: Map<string, PlayerSlot>,
   traits: Map<string, PlayerTraits>,
   atSecond: number,
-  allowLookahead: boolean,
+  end: number,
 ): TacticalSnapshot {
-  const index = findAnchorIndex(events, atSecond);
+  const index = findAnchorIndex(events, atSecond, end);
   const anchor = index >= 0 ? events[index] : undefined;
-  const next = index >= 0 && index + 1 < events.length ? events[index + 1] : undefined;
+  const next = index + 1 < end ? events[index + 1] : undefined;
   const possession = anchor?.teamId ?? "home";
-  const previousDifferent = index > 0 ? [...events.slice(0, index)].reverse().find((event) => event.teamId !== possession) : undefined;
+  let previousDifferent: PossessionEventPoint | undefined;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (events[i]!.teamId !== possession) { previousDifferent = events[i]; break; }
+  }
   const turnover = anchor && previousDifferent && previousDifferent.teamId !== anchor.teamId
     ? { atSecond: anchor.atSecond, winner: anchor.teamId, loser: previousDifferent.teamId }
     : undefined;
@@ -368,13 +374,16 @@ function buildSnapshot(
         ? (anchor.speedKmh / 3.6)
         : (anchor.type === "shot" || anchor.type === "goal" ? 28 : 18);
       const computedFlight = distance / Math.max(0.1, speedMps);
-      anchorFlightSeconds = clamp(configuredFlight ?? computedFlight, SIM_DT_SECONDS, 3.2);
+      anchorFlightSeconds = clamp(configuredFlight ?? computedFlight, SIM_DT_SECONDS, 3);
       const progress = clamp(anchorAge / anchorFlightSeconds, 0, 1);
-      const eased = easeInOut(progress);
       ball = {
-        x: anchor.__point.x + (endPoint.x - anchor.__point.x) * eased,
-        y: anchor.__point.y + (endPoint.y - anchor.__point.y) * eased,
+        x: anchor.__point.x + (endPoint.x - anchor.__point.x) * progress,
+        y: anchor.__point.y + (endPoint.y - anchor.__point.y) * progress,
       };
+      if (anchorAge > anchorFlightSeconds && next && next.atSecond > anchor.atSecond + anchorFlightSeconds) {
+        const travel = easeInOut(clamp((atSecond - anchor.atSecond - anchorFlightSeconds) / (next.atSecond - anchor.atSecond - anchorFlightSeconds), 0, 1));
+        ball = { x: endPoint.x + (next.__point.x - endPoint.x) * travel, y: endPoint.y + (next.__point.y - endPoint.y) * travel };
+      }
     } else if (["tackle", "interception", "recovery", "foul", "carry"].includes(anchor.type)) {
       const snapBlend = clamp(anchorAge / 0.35, 0, 1);
       ball = {
@@ -413,7 +422,7 @@ function buildSnapshot(
     const gap1 = inPossession ? 10 + lineNoise * 3 : 6.2 + lineNoise * 1.2;
     const gap2 = inPossession ? 10 + (1 - lineNoise) * 3 : 6.2 + (1 - lineNoise) * 1.2;
     const lineX = [6, defLineLocal, defLineLocal + gap1, defLineLocal + gap1 + gap2];
-    const lateralShift = clamp((ball.y - 34) * 0.35, -12, 12);
+    const lateralShift = clamp((ball.y - 34) * 0.72, -23, 23);
     const cbSlots = byTeam[teamId].filter((slot) => slot.role === "CB");
     const stSlots = byTeam[teamId].filter((slot) => slot.role === "ST");
     const primarySt = stSlots.length > 0 ? stSlots[hash(`${anchor?.id ?? "none"}:${teamId}:lead-st`) % stSlots.length] : undefined;
@@ -466,7 +475,7 @@ function buildSnapshot(
         } else {
           localY = right ? 23 : 45;
         }
-      } else if (slot.role === "ST" && allowLookahead) {
+      } else if (slot.role === "ST") {
         const lead = next && next.teamId === teamId ? next.atSecond - atSecond : Infinity;
         const dartWindow = lead > 0.35 && lead <= 1.9;
         const sprintWindow = lead > 1.9 && lead <= 4.2;
@@ -495,7 +504,11 @@ function buildSnapshot(
       localX += traitsFor.slotOffset.x + drift.x;
       localY += traitsFor.slotOffset.y + drift.y;
       const kickoffWindow = Boolean(anchor && anchor.type === "kickoff" && atSecond >= anchor.atSecond && atSecond <= anchor.atSecond + 2.5);
-      if (kickoffWindow) localX = Math.min(localX, 52.2);
+      if (kickoffWindow) {
+        // The defending side must stay clear of the centre circle; the
+        // attacking side leaves only the taker at the centre spot.
+        localX = Math.min(localX, teamId === anchor!.teamId ? 50.3 : 43.1);
+      }
       localX = clamp(localX, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M);
       localY = clamp(localY, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M);
       targets.set(slot.playerId, { x: toGlobalX(teamId, localX), y: localY });
@@ -646,7 +659,7 @@ function buildSnapshot(
       markBurst(anchor.playerId, d <= 0.8 ? 1.1 : 0.96);
     }
   }
-  if (allowLookahead && next && next.atSecond >= atSecond) {
+  if (next && next.atSecond >= atSecond) {
     const lead = next.atSecond - atSecond;
     if (lead <= 3.2) {
       const runnerTarget = targets.get(next.playerId);
@@ -661,7 +674,7 @@ function buildSnapshot(
     }
   }
 
-  if (allowLookahead && next) {
+  if (next) {
     const lead = next.atSecond - atSecond;
     const isBoxPhase = lead > 0.2
       && lead <= 3
@@ -685,9 +698,9 @@ function buildSnapshot(
         markBurst(nearPost.playerId, 0.94);
       }
 
-      if (allowLookahead) {
+      {
         const upcomingByPlayer = new Map<string, { point: Point; lead: number }>();
-        for (let i = Math.max(0, index + 1); i < events.length; i += 1) {
+        for (let i = Math.max(0, index + 1); i < end; i += 1) {
           const upcoming = events[i]!;
           const lead = upcoming.atSecond - atSecond;
           if (lead < 0) continue;
@@ -723,11 +736,34 @@ function buildSnapshot(
     }
   }
 
+  // Prepare every upcoming actor, not only the next ball carrier. The horizon is
+  // the sole source of future knowledge; never inspect events beyond it.
+  const prepared = new Set<string>();
+  for (let i = Math.max(0, index + 1); i < end; i += 1) {
+    const upcoming = events[i]!;
+    if (prepared.has(upcoming.playerId) || !targets.has(upcoming.playerId) || (anchor?.type === "kickoff" && atSecond - anchor.atSecond <= 0.2)) continue;
+    prepared.add(upcoming.playerId);
+    targets.set(upcoming.playerId, upcoming.__point);
+    markBurst(upcoming.playerId, 1.05);
+  }
+  if (anchor && atSecond - anchor.atSecond <= 0.4 && targets.has(anchor.playerId)) {
+    targets.set(anchor.playerId, anchor.__point);
+  }
+  if (anchor?.type === "kickoff" && atSecond - anchor.atSecond <= 2.5) {
+    for (const [playerId, point] of targets) {
+      const slot = slots.get(playerId)!;
+      if (slot.teamId === anchor.teamId && playerId === anchor.playerId) continue;
+      const limit = slot.teamId === anchor.teamId ? 50.3 : 43.1;
+      targets.set(playerId, { ...point, x: toGlobalX(slot.teamId, Math.min(toLocalX(slot.teamId, point.x), limit)) });
+    }
+  }
+
   return {
     second: atSecond,
     ball,
     targets,
     bursts,
+    urgentRunners: prepared,
     possessingTeam: possession,
     carrierPlayerId,
     ...(anchor ? { eventId: anchor.id } : {}),
@@ -976,21 +1012,12 @@ function resolveBall(snapshot: TacticalSnapshot, players: SimPlayer[]): Point {
     && snapshot.anchorFlightSeconds !== undefined
     && snapshot.anchorAgeSeconds <= snapshot.anchorFlightSeconds + 0.25,
   );
-  if (!inBallisticFlight && snapshot.carrierPlayerId) {
+  if (!inBallisticFlight && snapshot.anchorAgeSeconds !== undefined && snapshot.anchorAgeSeconds > 0.4 && snapshot.carrierPlayerId) {
     const carrier = players.find((player) => player.id === snapshot.carrierPlayerId);
-    if (carrier) {
-      const dx = projectedBall.x - carrier.x;
-      const dy = projectedBall.y - carrier.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const lead = 0.35 + (carrier.traits.speedNoise * 0.35);
-      projectedBall.x = clamp(carrier.x + (dx / dist) * lead, 0.6, TRACKING_PITCH_LENGTH_M - 0.6);
-      projectedBall.y = clamp(carrier.y + (dy / dist) * lead, 0.6, TRACKING_PITCH_WIDTH_M - 0.6);
+    if (carrier && Math.hypot(carrier.x - projectedBall.x, carrier.y - projectedBall.y) < 2) {
+      projectedBall.x = projectedBall.x * 0.8 + carrier.x * 0.2;
+      projectedBall.y = projectedBall.y * 0.8 + carrier.y * 0.2;
     }
-  }
-  if (!inBallisticFlight && snapshot.anchorEventPoint && snapshot.anchorAgeSeconds !== undefined && snapshot.anchorAgeSeconds <= 0.4) {
-    const blend = clamp(snapshot.anchorAgeSeconds / 0.4, 0, 1);
-    projectedBall.x = snapshot.anchorEventPoint.x + (projectedBall.x - snapshot.anchorEventPoint.x) * blend;
-    projectedBall.y = snapshot.anchorEventPoint.y + (projectedBall.y - snapshot.anchorEventPoint.y) * blend;
   }
   return projectedBall;
 }
@@ -1020,7 +1047,7 @@ function createInitialTimeline(fixture: MatchFixture, key: string): CachedTimeli
   const context = buildTimelineContext(fixture);
   const allSlots = [...context.slotsById.values()];
   const order: TimelineOrderEntry[] = allSlots.map((slot) => ({ id: slot.playerId, teamId: slot.teamId, number: slot.number, role: slot.role }));
-  const initial = buildSnapshot(fixture, context.events, context.slotsById, context.traitsById, 0, true);
+  const initial = buildSnapshot(fixture, context.events, context.slotsById, context.traitsById, 0, findAnchorIndex(context.events, TRACKING_DELAY_SECONDS + 1e-6) + 1);
   const players: SimPlayer[] = allSlots.map((slot) => {
     const point = initial.targets.get(slot.playerId)!;
     return {
@@ -1037,6 +1064,11 @@ function createInitialTimeline(fixture: MatchFixture, key: string): CachedTimeli
     };
   });
   for (let settle = 0; settle < 8; settle += 1) enforceSpacing(players);
+  if (context.events[0]?.type === "kickoff" && context.events[0].atSecond === 0) {
+    for (const player of players) {
+      player.x = player.teamId === "home" ? Math.min(player.x, TRACKING_PITCH_LENGTH_M / 2) : Math.max(player.x, TRACKING_PITCH_LENGTH_M / 2);
+    }
+  }
   const packed = createPackedTimeline(players.length);
   writeStep(packed, 0, players, resolveBall(initial, players), initial.eventId, initial.carrierPlayerId);
   return {
@@ -1053,6 +1085,7 @@ function createInitialTimeline(fixture: MatchFixture, key: string): CachedTimeli
     touchedAt: Date.now(),
     lastEventCount: fixture.events.length,
     lastTail: fixture.events.length > 0 ? `${fixture.events.at(-1)!.id}:${fixture.events.at(-1)!.revision}` : "",
+    lastEventsRef: fixture.events,
     lastFixtureRef: fixture,
   };
 }
@@ -1092,8 +1125,8 @@ function refreshContextIfNeeded(entry: CachedTimeline, fixture: MatchFixture): v
     return;
   }
   const tail = fixture.events.length > 0 ? `${fixture.events.at(-1)!.id}:${fixture.events.at(-1)!.revision}` : "";
-  if (entry.lastFixtureRef === fixture && entry.lastEventCount === fixture.events.length && entry.lastTail === tail) return;
-  if (entry.lastEventCount === fixture.events.length && entry.lastTail === tail) {
+  if (entry.lastFixtureRef === fixture && entry.lastEventsRef === fixture.events && entry.lastEventCount === fixture.events.length && entry.lastTail === tail) return;
+  if (entry.lastEventsRef === fixture.events && entry.lastEventCount === fixture.events.length && entry.lastTail === tail) {
     entry.lastFixtureRef = fixture;
     return;
   }
@@ -1103,29 +1136,26 @@ function refreshContextIfNeeded(entry: CachedTimeline, fixture: MatchFixture): v
   }
   entry.lastEventCount = fixture.events.length;
   entry.lastTail = tail;
+  entry.lastEventsRef = fixture.events;
   entry.lastFixtureRef = fixture;
 }
 
 function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep: number): void {
   refreshContextIfNeeded(entry, fixture);
   const snapshotCache = new Map<string, TacticalSnapshot>();
-  const latestPublishedAt = entry.context.events.length > 0 ? entry.context.events[entry.context.events.length - 1]!.atSecond : -1;
   const getSnapshot = (second: number): TacticalSnapshot => {
     const snapped = clamp(Math.round(second / SIM_DT_SECONDS) * SIM_DT_SECONDS, 0, fixture.durationSeconds);
     const key = snapped.toFixed(3);
     const cached = snapshotCache.get(key);
     if (cached) return cached;
-    const playbackSecond = latestPublishedAt <= snapped + SIM_DT_SECONDS
-      ? Math.max(0, snapped - 2.2)
-      : snapped;
-    const hasFuturePublishedEvent = latestPublishedAt > playbackSecond + 0.2;
+    const horizonEnd = findAnchorIndex(entry.context.events, snapped + TRACKING_DELAY_SECONDS + 1e-6) + 1;
     const snapshot = buildSnapshot(
       fixture,
       entry.context.events,
       entry.context.slotsById,
       entry.context.traitsById,
-      playbackSecond,
-      hasFuturePublishedEvent,
+      snapped,
+      horizonEnd,
     );
     snapshotCache.set(key, snapshot);
     return snapshot;
@@ -1157,10 +1187,12 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
       const dist = Math.hypot(tx, ty);
       const actorCatchup = now.eventActorId === player.id && (now.anchorAgeSeconds ?? Number.POSITIVE_INFINITY) <= 1.4;
       const nearBall = distToBall <= 12;
-      let movementScale = burst >= 1 ? 0.9 : 0.12 + burst * 0.5;
-      if (actorCatchup) movementScale = Math.max(movementScale, 0.85);
-      if (nearBall) movementScale = Math.max(movementScale, 0.55);
-      const speed = desiredSpeed(dist, player.traits, burst) * player.traits.effort * movementScale;
+      const urgent = now.urgentRunners.has(player.id) || actorCatchup;
+      let movementScale = burst >= 1 ? 0.82 : 0.42 + burst * 0.42;
+      if (nearBall) movementScale = Math.max(movementScale, 0.78);
+      if (urgent) movementScale = 1;
+      let speed = desiredSpeed(dist, player.traits, burst) * player.traits.effort * movementScale;
+      if (!urgent && Math.sin(second * Math.PI * 2 / player.traits.sprintCycle + player.traits.sprintPhase) < 0.45) speed = Math.min(speed, 6.8);
       let desired = dist < 0.01
         ? { x: player.vx * 0.7, y: player.vy * 0.7 }
         : { x: (tx / dist) * speed, y: (ty / dist) * speed };
@@ -1168,10 +1200,10 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
       const leftRoom = player.x - PLAYER_MARGIN_M;
       const topRoom = (TRACKING_PITCH_WIDTH_M - PLAYER_MARGIN_M) - player.y;
       const bottomRoom = player.y - PLAYER_MARGIN_M;
-      if (desired.x > 0 && rightRoom < 10) desired = { ...desired, x: desired.x * ((clamp(rightRoom / 10, 0, 1)) ** 2) };
-      if (desired.x < 0 && leftRoom < 10) desired = { ...desired, x: desired.x * ((clamp(leftRoom / 10, 0, 1)) ** 2) };
-      if (desired.y > 0 && topRoom < 6) desired = { ...desired, y: desired.y * ((clamp(topRoom / 6, 0, 1)) ** 2) };
-      if (desired.y < 0 && bottomRoom < 6) desired = { ...desired, y: desired.y * ((clamp(bottomRoom / 6, 0, 1)) ** 2) };
+      if (desired.x > 0 && rightRoom < 3) desired = { ...desired, x: desired.x * clamp(rightRoom / 3, 0, 1) };
+      if (desired.x < 0 && leftRoom < 3) desired = { ...desired, x: desired.x * clamp(leftRoom / 3, 0, 1) };
+      if (desired.y > 0 && topRoom < 3) desired = { ...desired, y: desired.y * clamp(topRoom / 3, 0, 1) };
+      if (desired.y < 0 && bottomRoom < 3) desired = { ...desired, y: desired.y * clamp(bottomRoom / 3, 0, 1) };
       const safePosX = Math.sqrt(Math.max(0, 2 * MAX_DECEL_MPS2 * Math.max(0, rightRoom - 0.1)));
       const safeNegX = -Math.sqrt(Math.max(0, 2 * MAX_DECEL_MPS2 * Math.max(0, leftRoom - 0.1)));
       const safePosY = Math.sqrt(Math.max(0, 2 * MAX_DECEL_MPS2 * Math.max(0, topRoom - 0.1)));
@@ -1242,28 +1274,13 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
     }
 
     const simulatedBall = resolveBall(now, activePlayers);
-    const previousEventId = entry.packed.eventIds[step - 1];
-    const launchSnap = Boolean(
-      now.eventId
-      && now.eventId !== previousEventId
-      && now.anchorEventPoint
-      && (now.anchorType === "pass" || now.anchorType === "shot"),
-    );
-    if (launchSnap && now.anchorEventPoint) {
-      simulatedBall.x = now.anchorEventPoint.x;
-      simulatedBall.y = now.anchorEventPoint.y;
-    }
     const previousBall = readBallXY(entry.packed, step - 1);
     const dx = simulatedBall.x - previousBall.x;
     const dy = simulatedBall.y - previousBall.y;
     const speed = Math.hypot(dx, dy) / SIM_DT_SECONDS;
-    const ballistic = now.anchorType === "shot" || now.anchorType === "goal" || now.anchorType === "pass" || now.anchorType === "corner";
-    const inConfiguredFlight = ballistic
-      && now.anchorAgeSeconds !== undefined
-      && now.anchorFlightSeconds !== undefined
-      && now.anchorAgeSeconds <= now.anchorFlightSeconds + 0.2;
-    const inLaunchWindow = ballistic && (now.anchorAgeSeconds ?? 99) <= SIM_DT_SECONDS + 1e-6;
-    const maxBallSpeed = launchSnap ? Number.POSITIVE_INFINITY : (inLaunchWindow ? 90 : (inConfiguredFlight ? 40 : (ballistic && (now.anchorAgeSeconds ?? 99) <= 0.8 ? 35 : 16)));
+    // Non-flight segments also have to make the next published event origin;
+    // bound the actual emitted step rather than teleporting at the anchor.
+    const maxBallSpeed = 44.9;
     if (speed > maxBallSpeed) {
       const scale = maxBallSpeed / Math.max(1e-6, speed);
       simulatedBall.x = previousBall.x + dx * scale;
@@ -1292,7 +1309,7 @@ export function buildTrackingFrame(fixture: MatchFixture, atSecond: number): Tra
   const sampledAt = Math.abs(rawTick - nearestTick) < 1e-6 ? nearestTick * SIM_DT_SECONDS : at;
   const timeline = getOrCreateTimeline(fixture);
   touchTimeline(timeline);
-  const targetStep = Math.min(Math.floor(fixture.durationSeconds / SIM_DT_SECONDS), Math.ceil(sampledAt / SIM_DT_SECONDS));
+  const targetStep = Math.min(Math.floor(fixture.durationSeconds / SIM_DT_SECONDS), Math.abs(rawTick - nearestTick) < 1e-6 ? nearestTick : Math.ceil(sampledAt / SIM_DT_SECONDS));
   if (targetStep > timeline.builtStep) extendTimeline(timeline, fixture, targetStep);
   const maxStep = Math.max(0, Math.min(targetStep, timeline.packed.stepCount - 1));
   const position = clamp(sampledAt / SIM_DT_SECONDS, 0, maxStep);

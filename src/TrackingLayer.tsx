@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage } from "../shared/tracking.js";
+import { TRACKING_DELAY_SECONDS, TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage } from "../shared/tracking.js";
 import type { MatchFixture } from "../shared/types.js";
 import { teamTint } from "./utils.js";
 
@@ -119,6 +119,7 @@ export function TrackingLayer({ fixture }: TrackingLayerProps) {
     return (
       <div className="tracking-overlay__controls">
         <span className="tag">Synthetic tracking</span>
+        <span className="subtle-text">Tracking ~{TRACKING_DELAY_SECONDS}s behind live</span>
         <label className="switch">
           <input type="checkbox" checked={enabled} onChange={(event) => setManualEnabled(event.target.checked)} />
           <span>Show tracking</span>
@@ -132,6 +133,7 @@ export function TrackingLayer({ fixture }: TrackingLayerProps) {
     <>
       <div className="tracking-overlay__controls">
         <span className="tag">Synthetic tracking</span>
+        <span className="subtle-text">Tracking ~{TRACKING_DELAY_SECONDS}s behind live</span>
         <label className="switch">
           <input type="checkbox" checked={enabled} onChange={(event) => setManualEnabled(event.target.checked)} />
           <span>Show tracking</span>
