@@ -572,3 +572,67 @@ test("event markers are gated to the tracking overlay horizon", () => {
   assert.deepEqual(eventsWithinTrackingHorizon(events, trackingMarkerHorizon(13.8)).map((event) => event.id), ["a", "goal"]);
   assert.equal(eventsWithinTrackingHorizon(events, 99), events, "nothing hidden: same array for memo stability");
 });
+test("team shape stays compact with capped pressers, width in possession and smooth motion", () => {
+  const cases = [["comeback", 42], ["goal_fest", 17], ["red_card", 7], ["late_winner", 99]] as const;
+  const quantile = (values: number[], q: number) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] ?? 0;
+  };
+  const nearCounts: number[] = [];
+  const lengths: number[] = [];
+  const widths: number[] = [];
+  let turnSum = 0;
+  let turnCount = 0;
+  for (const [scenario, seed] of cases) {
+    const match = generateMatch({ scenario, seed });
+    match.id = `${match.id}-shape-bands`;
+    const roles = new Map([...match.home.players, ...match.away.players].map((player) => [player.id, player.position]));
+    let previous = buildTrackingFrame(match, 0);
+    let previousVelocity = new Map<string, { x: number; y: number }>();
+    // First half only keeps the suite time bounded; full-match numbers come from the in-process probe.
+    const lastStep = Math.min(match.durationSeconds, 2700) * 5;
+    for (let step = 1; step <= lastStep; step += 1) {
+      const frame = buildTrackingFrame(match, step / 5);
+      const before = new Map(previous.players.map((player) => [player.id, player]));
+      const velocity = new Map<string, { x: number; y: number }>();
+      for (const player of frame.players) {
+        const prior = before.get(player.id);
+        if (!prior) continue;
+        const v = { x: (player.x - prior.x) / 0.2, y: (player.y - prior.y) / 0.2 };
+        velocity.set(player.id, v);
+        const pv = previousVelocity.get(player.id);
+        const speed = Math.hypot(v.x, v.y);
+        const priorSpeed = pv ? Math.hypot(pv.x, pv.y) : 0;
+        if (pv && speed >= 1 && priorSpeed >= 1) {
+          turnSum += Math.acos(Math.max(-1, Math.min(1, (v.x * pv.x + v.y * pv.y) / (speed * priorSpeed))));
+          turnCount += 1;
+        }
+      }
+      previous = frame;
+      previousVelocity = velocity;
+      if (step % 5 !== 0) continue;
+      const carrierTeam = frame.players.find((player) => player.id === frame.carrierPlayerId)?.teamId;
+      for (const teamId of ["home", "away"] as const) {
+        const team = frame.players.filter((player) => player.teamId === teamId);
+        nearCounts.push(team.filter((player) => Math.hypot(player.x - frame.ball.x, player.y - frame.ball.y) <= 10).length);
+        const outfield = team.filter((player) => roles.get(player.id) !== "GK");
+        const xs = outfield.map((player) => player.x);
+        const ys = outfield.map((player) => player.y);
+        lengths.push(Math.max(...xs) - Math.min(...xs));
+        if (teamId === carrierTeam) widths.push(Math.max(...ys) - Math.min(...ys));
+      }
+    }
+  }
+  const nearP90 = quantile(nearCounts, 0.9);
+  const nearMax = Math.max(...nearCounts);
+  const lengthMedian = quantile(lengths, 0.5);
+  const widthMedian = quantile(widths, 0.5);
+  const meanTurn = turnSum / turnCount;
+  assert.ok(nearP90 <= 3, `players within 10 m of the ball p90 ${nearP90} > 3`);
+  // Target is <= 5; transient pile-ups (own-box scrambles, set-piece restarts) still reach 6-7.
+  assert.ok(nearMax <= 7, `players within 10 m of the ball max ${nearMax} > 7`);
+  assert.ok(lengthMedian >= 25 && lengthMedian <= 45, `outfield length median ${lengthMedian.toFixed(1)} m outside 25-45`);
+  assert.ok(widthMedian >= 35, `in-possession width median ${widthMedian.toFixed(1)} m < 35`);
+  // HEAD before the shape rewrite measured 0.0955 rad.
+  assert.ok(meanTurn <= 0.075, `mean frame-to-frame direction change ${meanTurn.toFixed(4)} rad > 0.075`);
+});

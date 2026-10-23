@@ -12,6 +12,10 @@ const PLAYER_MARGIN_M = 3.5;
 const TARGET_MARGIN_M = 3.5;
 /** Last-resort position bound. Braking keeps players inside PLAYER_MARGIN_M, so this should not bite. */
 const HARD_MARGIN_M = 0.5;
+/** Target smoothing time constant for players without catch-up priority. */
+const TARGET_SMOOTHING_TAU_SECONDS = 0.7;
+/** Inside this distance from the smoothed target, speed ramps down linearly. */
+const ARRIVE_RADIUS_M = 2.5;
 /** Deceleration budget used to brake before a bound; below both MAX_ACCEL_MPS2 and MAX_DECEL_MPS2 so the final pass can always honour it. */
 const EDGE_BRAKE_MPS2 = 3.5;
 /** Goalkeeper depth limits in metres from the own goal line. Targets use both; positions only the hard one. */
@@ -103,6 +107,9 @@ interface SimPlayer {
   y: number;
   vx: number;
   vy: number;
+  /** Exponentially smoothed target; removes high-frequency target wobble. */
+  sx: number;
+  sy: number;
 }
 
 interface TimelineOrderEntry {
@@ -294,8 +301,8 @@ function makeTraits(seed: number, slot: PlayerSlot): PlayerTraits {
     effort: 0.85 + rand() * 0.15,
     reactionDelay: 0.5 + rand(),
     slotOffset: { x: Math.cos(offsetAngle) * offsetRadius, y: Math.sin(offsetAngle) * offsetRadius },
-    lissajousAmp: { x: 0.45 + rand() * 0.35, y: 0.45 + rand() * 0.35 },
-    lissajousPeriod: { x: 6 + rand() * 4, y: 6 + rand() * 4 },
+    lissajousAmp: { x: 0.35 + rand() * 0.3, y: 0.35 + rand() * 0.3 },
+    lissajousPeriod: { x: 14 + rand() * 8, y: 14 + rand() * 8 },
     lissajousPhase: { x: rand() * Math.PI * 2, y: rand() * Math.PI * 2 },
     speedNoise: rand(),
     sprintCycle: 6 + rand() * 4,
@@ -355,6 +362,7 @@ function buildSnapshot(
   traits: Map<string, PlayerTraits>,
   atSecond: number,
   end: number,
+  deactivatedAt?: Map<string, number>,
 ): TacticalSnapshot {
   const index = findAnchorIndex(events, atSecond, end);
   const anchor = index >= 0 ? events[index] : undefined;
@@ -412,350 +420,306 @@ function buildSnapshot(
     return carrierProgress > 0.82 ? next.playerId : anchor.playerId;
   })();
   const targets = new Map<string, Point>();
+  const clampX = (x: number) => clamp(x, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M);
+  const clampY = (y: number) => clamp(y, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M);
+  const active = (playerId: string) => !deactivatedAt || playerActive(playerId, atSecond, deactivatedAt);
+  const distToBall = (point: Point) => Math.hypot(point.x - ball.x, point.y - ball.y);
 
   const byTeam: Record<TeamId, PlayerSlot[]> = { home: [], away: [] };
   for (const slot of slots.values()) byTeam[slot.teamId].push(slot);
+  const sideOf = (slot: PlayerSlot) => (slot.sideNorm >= 0 ? 1 : -1);
   for (const teamId of ["home", "away"] as const) {
     const inPossession = teamId === possession;
     const ballLocalX = toLocalX(teamId, ball.x);
-    const ballWide = Math.abs(ball.y - 34) > 18;
+    const ballSide = ball.y >= 34 ? 1 : -1;
     const lineNoise = lcg(hash(`${fixture.seed}:${teamId}:line-noise`))();
     const widthNoise = lcg(hash(`${fixture.seed}:${teamId}:width-noise`))();
-    const defLineLocal = inPossession
-      ? clamp(ballLocalX - 30, 25, 70)
-      : clamp(ballLocalX - 8 + lineNoise * 2, 24, 62);
-    const blockLength = inPossession ? 35 + lineNoise * 5 : 22 + lineNoise * 3;
-    const blockWidth = inPossession ? 52 + widthNoise * 6 : ballWide ? 20 : 24 + widthNoise * 2;
-    const gap1 = inPossession ? 10 + lineNoise * 3 : 6.2 + lineNoise * 1.2;
-    const gap2 = inPossession ? 10 + (1 - lineNoise) * 3 : 6.2 + (1 - lineNoise) * 1.2;
-    const lineX = [6, defLineLocal, defLineLocal + gap1, defLineLocal + gap1 + gap2];
-    const lateralShift = clamp((ball.y - 34) * 0.72, -23, 23);
-    const cbSlots = byTeam[teamId].filter((slot) => slot.role === "CB");
+    // Compact unit: a back line, a midfield line and a front line whose
+    // positions slide with the ball's x and shift toward the ball side.
+    let backX: number;
+    let midX: number;
+    let frontX: number;
+    if (inPossession) {
+      backX = clamp(ballLocalX - 24 - lineNoise * 3, 9, 58);
+      frontX = clamp(ballLocalX + 16 + lineNoise * 2, 40, 93);
+      if (frontX - backX > 44) backX = frontX - 44;
+      if (frontX - backX < 30) frontX = backX + 30;
+      midX = backX + (frontX - backX) * 0.42;
+    } else {
+      backX = clamp(ballLocalX - 24 - lineNoise * 2, 10, 48);
+      // The midfield line screens ~12 m behind the ball where depth allows.
+      midX = clamp(ballLocalX - 12, backX + 8, backX + 13);
+      frontX = midX + 14 + lineNoise * 4;
+    }
+    const centreY = 34 + clamp((ball.y - 34) * (inPossession ? 0.35 : 0.55), -14, 14);
     const stSlots = byTeam[teamId].filter((slot) => slot.role === "ST");
     const primarySt = stSlots.length > 0 ? stSlots[hash(`${anchor?.id ?? "none"}:${teamId}:lead-st`) % stSlots.length] : undefined;
-    const oppDefLineLocal = (() => {
-      const oppInPossession = opposite(teamId) === possession;
-      const oppBallLocalX = toLocalX(opposite(teamId), ball.x);
-      return oppInPossession ? clamp(oppBallLocalX - 30, 25, 70) : clamp(35 + lineNoise * 10 + (oppBallLocalX - 52.5) * 0.08, 35, 45);
-    })();
     for (const slot of byTeam[teamId]) {
       const traitsFor = traits.get(slot.playerId)!;
-      let localX = lineX[slot.lineIndex] ?? slot.localX;
-      let localY = 34 + slot.sideNorm * (blockWidth / 2) + lateralShift;
-      const nearBallSide = (ball.y >= 34 && slot.sideNorm >= 0) || (ball.y < 34 && slot.sideNorm < 0);
-      const narrow = nearBallSide ? 1 : inPossession ? 0.82 : 0.68;
-      localY = 34 + (localY - 34) * narrow;
-
-      if (slot.role === "GK") {
-        localX = defLineLocal > 47 ? 14 + lineNoise * 4 : 6 + lineNoise * 2;
-        localY = clamp(34 + (ball.y - 34) * 0.15, 25, 43);
-        localX = clamp(localX, 4.5, 18);
-      } else if (slot.role === "DM") {
-        localX = defLineLocal + 8.5 + lineNoise * 1.5;
-      } else if (slot.role === "CB") {
-        const indexOnLine = cbSlots.findIndex((entry) => entry.playerId === slot.playerId);
-        const span = 6 + lineNoise * 1.5;
-        localY = 34 + (indexOnLine === 0 ? -span : span);
-        if (!inPossession && ballLocalX > localX + 7) {
-          const recover = clamp(ballLocalX - localX, 0, 16);
-          localX -= 3.5 + recover * 0.48;
-          markBurst(slot.playerId, 1);
-        }
-      } else if (slot.role === "RB" || slot.role === "LB") {
-        const right = slot.role === "RB";
-        const sameSide = right ? ball.y < 34 : ball.y >= 34;
-        if (inPossession && sameSide && ballLocalX > 45) {
-          localX += 12 + lineNoise * 6;
-          localY = right ? 8 + widthNoise * 2 : 60 - widthNoise * 2;
-          markBurst(slot.playerId, 1);
-        } else if (!sameSide) {
-          localY = 34 + (localY - 34) * 0.6;
-        }
-      } else if (slot.role === "RW" || slot.role === "LW" || slot.role === "RM" || slot.role === "LM") {
-        const right = slot.role === "RW" || slot.role === "RM";
-        const sameSide = right ? ball.y < 34 : ball.y >= 34;
-        const ownFb = byTeam[teamId].find((entry) => entry.role === (right ? "RB" : "LB"));
-        const ownFbPoint = ownFb ? targets.get(ownFb.playerId) : undefined;
-        const fbOverlapping = ownFbPoint ? toLocalX(teamId, ownFbPoint.x) > defLineLocal + 10 : false;
-        if (inPossession && sameSide && !fbOverlapping) {
-          localY = right ? 4 + widthNoise * 2 : 64 - widthNoise * 2;
-        } else {
-          localY = right ? 23 : 45;
-        }
-      } else if (slot.role === "ST") {
-        const lead = next && next.teamId === teamId ? next.atSecond - atSecond : Infinity;
-        const dartWindow = lead > 0.35 && lead <= 1.9;
-        const sprintWindow = lead > 1.9 && lead <= 4.2;
-        const runWindow = inPossession && ballLocalX > 34 && ballLocalX < 82;
-        if (runWindow && primarySt && slot.playerId === primarySt.playerId) {
-          if (sprintWindow) {
-            localX = Math.max(localX, oppDefLineLocal + 12 + traitsFor.speedNoise * 3);
-            markBurst(slot.playerId, 1.15);
+      const side = sideOf(slot);
+      const farSide = side !== ballSide;
+      let localX = midX;
+      let y = centreY;
+      switch (slot.role) {
+        case "GK":
+          localX = backX > 40 ? 14 + lineNoise * 4 : 6 + lineNoise * 2;
+          y = clamp(34 + (ball.y - 34) * 0.15, 25, 43);
+          break;
+        case "CB":
+          localX = backX;
+          y = inPossession
+            ? 34 + side * (ballLocalX < 35 ? 15 : 11) + (ball.y - 34) * 0.15
+            : centreY + side * (5.5 + widthNoise);
+          break;
+        case "RB":
+        case "LB":
+          if (inPossession) {
+            localX = farSide ? backX + 6 : backX + (ballLocalX > 45 ? 18 : 12);
+            y = 34 + side * (farSide ? 21 : 27);
           } else {
-            localX = Math.max(localX, oppDefLineLocal + 11 + traitsFor.speedNoise * 3);
-            markBurst(slot.playerId, 0.94);
+            localX = backX + (farSide ? 0 : 1);
+            y = centreY + side * (16 + widthNoise * 2);
           }
-        } else if (runWindow) {
-          localX = Math.max(localX, oppDefLineLocal + 5 + traitsFor.speedNoise * 3);
-          markBurst(slot.playerId, 0.52);
+          break;
+        case "DM":
+          localX = inPossession ? clamp(ballLocalX - 12, backX + 6, midX) : midX - 4;
+          y = inPossession ? 34 + (ball.y - 34) * 0.4 : centreY;
+          break;
+        case "CM":
+        case "AM":
+          localX = inPossession ? midX + 2 : midX;
+          y = centreY + side * (inPossession ? 11 : stSlots.length >= 2 ? 7 : 9);
+          break;
+        case "RW":
+        case "LW":
+        case "RM":
+        case "LM": {
+          const winger = slot.role === "RW" || slot.role === "LW";
+          if (inPossession) {
+            localX = winger ? frontX - 3 : midX + 6;
+            y = 34 + side * 29;
+          } else {
+            // The far-side wide player stays wide as the counter outlet.
+            localX = winger ? midX + (farSide ? 6 : 2) : midX;
+            y = farSide ? 34 + side * 24 : centreY + side * 19;
+          }
+          break;
         }
-        if (dartWindow && primarySt && slot.playerId === primarySt.playerId) {
-          localY += slot.sideNorm >= 0 ? -3.3 : 3.3;
-          localX = Math.max(localX, oppDefLineLocal + 4.5 + traitsFor.speedNoise * 1.2);
-          markBurst(slot.playerId, 1.02);
+        case "ST":
+        default: {
+          localX = frontX;
+          const pair = stSlots.length >= 2 ? side * 6 : 0;
+          y = 34 + (ball.y - 34) * (inPossession ? 0.3 : 0.4) + pair;
+          if (inPossession && primarySt && slot.playerId === primarySt.playerId && next && next.teamId === teamId) {
+            const lead = next.atSecond - atSecond;
+            if (lead > 1.9 && lead <= 4.2 && ballLocalX > 34 && ballLocalX < 82) {
+              localX = frontX + 4 + traitsFor.speedNoise * 2;
+              markBurst(slot.playerId, 1.15);
+            } else if (lead > 0.35 && lead <= 1.9) {
+              y += slot.sideNorm >= 0 ? -3.3 : 3.3;
+              markBurst(slot.playerId, 0.94);
+            }
+          }
+          break;
         }
       }
-
-      localX += slot.localX >= 45 ? (blockLength - 32) * 0.24 : 0;
-      const drift = lissajous(traitsFor, atSecond);
-      localX += traitsFor.slotOffset.x + drift.x;
-      localY += traitsFor.slotOffset.y + drift.y;
+      if (slot.role !== "GK") {
+        const drift = lissajous(traitsFor, atSecond);
+        localX += traitsFor.slotOffset.x * 0.6 + drift.x;
+        y += traitsFor.slotOffset.y * 0.6 + drift.y;
+      }
       const kickoffWindow = Boolean(anchor && anchor.type === "kickoff" && atSecond >= anchor.atSecond && atSecond <= anchor.atSecond + 2.5);
       if (kickoffWindow) {
         // The defending side must stay clear of the centre circle; the
         // attacking side leaves only the taker at the centre spot.
         localX = Math.min(localX, teamId === anchor!.teamId ? 50.3 : 43.1);
       }
-      localX = clamp(localX, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M);
-      localY = clamp(localY, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M);
-      targets.set(slot.playerId, { x: toGlobalX(teamId, localX), y: localY });
+      targets.set(slot.playerId, { x: clampX(toGlobalX(teamId, clamp(localX, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M))), y: clampY(y) });
     }
   }
 
   const possessionPlayers = [...targets.entries()]
     .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
-    .filter((entry) => entry.slot.teamId === possession);
+    .filter((entry) => entry.slot.teamId === possession && entry.slot.role !== "GK" && active(entry.playerId));
   if (possessionPlayers.length > 0) {
     const nearestToBall = possessionPlayers.reduce((best, entry) => {
-      const dist = Math.hypot(entry.point.x - ball.x, entry.point.y - ball.y);
+      const dist = distToBall(entry.point);
       return !best || dist < best.dist ? { playerId: entry.playerId, dist } : best;
     }, undefined as { playerId: string; dist: number } | undefined);
     carrierPlayerId = nearestToBall?.playerId;
   }
+  const ballInFlight = anchorFlightSeconds !== undefined && anchorAge !== undefined && anchorAge <= anchorFlightSeconds;
+  if (!ballInFlight && carrierPlayerId && targets.has(carrierPlayerId) && slots.get(carrierPlayerId)?.teamId === possession) {
+    targets.set(carrierPlayerId, { x: clampX(ball.x), y: clampY(ball.y) });
+  }
 
-  const carrierPoint = carrierPlayerId ? targets.get(carrierPlayerId) : undefined;
-  if (carrierPoint) {
-    const defenders = [...targets.entries()]
+  // Out of possession: one primary presser goal-side of the ball and one
+  // cover player; a third joins only in the counter-press window.
+  const defending = opposite(possession);
+  const counterPress = Boolean(turnover && turnover.loser === defending && atSecond - turnover.atSecond <= 3);
+  const pressers: string[] = [];
+  {
+    const goalX = defending === "home" ? 0 : TRACKING_PITCH_LENGTH_M;
+    const toGoalX = goalX - ball.x;
+    const toGoalY = 34 - ball.y;
+    const toGoalLen = Math.hypot(toGoalX, toGoalY) || 1;
+    const ux = toGoalX / toGoalLen;
+    const uy = toGoalY / toGoalLen;
+    // Rank against a point that is stable for the whole event segment (where
+    // the ball is going, else where it was played) so roles do not flicker.
+    const rankPoint = next?.__point ?? anchor?.__point ?? ball;
+    const candidates = [...targets.entries()]
       .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
-      .filter((entry) => entry.slot.teamId !== possession)
-      .sort((left, right) => Math.hypot(left.point.x - carrierPoint.x, left.point.y - carrierPoint.y) - Math.hypot(right.point.x - carrierPoint.x, right.point.y - carrierPoint.y));
-    const first = defenders[0];
-    const second = defenders[1];
-    const third = defenders[2];
-    const nearestDist = first ? Math.hypot(first.point.x - carrierPoint.x, first.point.y - carrierPoint.y) : Infinity;
-    const anchorAge = anchor ? atSecond - anchor.atSecond : 99;
-    if (first && nearestDist <= 25) {
-      const vx = carrierPoint.x - first.point.x;
-      const vy = carrierPoint.y - first.point.y;
-      const d = Math.hypot(vx, vy) || 1;
-      targets.set(first.playerId, {
-        x: clamp(carrierPoint.x - (vx / d) * 1.55, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-        y: clamp(carrierPoint.y - (vy / d) * 1.55, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-      });
+      .filter((entry) => entry.slot.teamId === defending && entry.slot.role !== "GK" && active(entry.playerId))
+      .map((entry) => ({ ...entry, dist: Math.min(distToBall(entry.point), Math.hypot(entry.point.x - rankPoint.x, entry.point.y - rankPoint.y)) }))
+      .sort((a, b) => a.dist - b.dist || a.playerId.localeCompare(b.playerId));
+    const first = candidates[0];
+    if (first && first.dist <= 25) {
+      targets.set(first.playerId, { x: clampX(ball.x + ux * 1.6), y: clampY(ball.y + uy * 1.6) });
       markBurst(first.playerId, 1.1);
-    }
-    if (second && nearestDist <= 25 && anchorAge >= 0.9) {
-      const vx = carrierPoint.x - second.point.x;
-      const vy = carrierPoint.y - second.point.y;
-      const d = Math.hypot(vx, vy) || 1;
-      const side = second.slot.sideNorm >= 0 ? 1 : -1;
-      targets.set(second.playerId, {
-        x: clamp(carrierPoint.x - (vx / d) * 2.2, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-        y: clamp(carrierPoint.y - (vy / d) * 2.2 + side * 0.8, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-      });
-      markBurst(second.playerId, 1);
-    }
-    if (third && nearestDist <= 25) {
-      const options = [...targets.entries()]
-        .filter(([playerId]) => playerId !== carrierPlayerId && slots.get(playerId)?.teamId === possession)
-        .map(([playerId, point]) => ({ playerId, point, dist: Math.hypot(point.x - carrierPoint.x, point.y - carrierPoint.y) }))
-        .filter((entry) => entry.dist >= 8)
-        .sort((a, b) => a.dist - b.dist);
-      const lane = options[0]?.point;
-      if (lane) {
-        targets.set(third.playerId, {
-          x: clamp((carrierPoint.x * 0.55) + (lane.x * 0.45), TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-          y: clamp((carrierPoint.y * 0.55) + (lane.y * 0.45), TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-        });
-        markBurst(third.playerId, 0.7);
+      pressers.push(first.playerId);
+      const cover = candidates[1];
+      if (cover && cover.dist <= 25) {
+        const lateral = ball.y >= 34 ? -2 : 2;
+        targets.set(cover.playerId, { x: clampX(ball.x + ux * 6.5), y: clampY(ball.y + uy * 6.5 + lateral) });
+        markBurst(cover.playerId, 0.6);
+        pressers.push(cover.playerId);
       }
-      if (nearestDist <= 25) {
-        for (const [index, defender] of defenders.slice(0, 5).entries()) {
-          const current = targets.get(defender.playerId)!;
-          const toCarrierX = carrierPoint.x - current.x;
-          const toCarrierY = carrierPoint.y - current.y;
-          const d = Math.hypot(toCarrierX, toCarrierY) || 1;
-          const step = Math.max(0, 2.1 - index * 0.35);
-          targets.set(defender.playerId, {
-            x: clamp(current.x + (toCarrierX / d) * step, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-            y: clamp(current.y + (toCarrierY / d) * step, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-          });
-          markBurst(defender.playerId, 0.36 - index * 0.05);
-        }
+      const third = candidates[2];
+      if (counterPress && third && third.dist <= 25) {
+        targets.set(third.playerId, { x: clampX(ball.x - uy * 4.5), y: clampY(ball.y + ux * 4.5) });
+        markBurst(third.playerId, 0.9);
+        pressers.push(third.playerId);
       }
     }
   }
 
+  // Counter-attack after a turnover: forwards break, two support options.
   if (turnover) {
     const elapsed = atSecond - turnover.atSecond;
     if (elapsed <= 6) {
-      const loserTargets = [...targets.entries()]
-        .filter(([playerId]) => slots.get(playerId)?.teamId === turnover.loser)
-        .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
-        .sort((a, b) => Math.hypot(a.point.x - ball.x, a.point.y - ball.y) - Math.hypot(b.point.x - ball.x, b.point.y - ball.y));
-      for (let i = 0; i < loserTargets.length; i += 1) {
-        const entry = loserTargets[i]!;
-        if (i < 3 && elapsed <= 5) {
-          const push = 1 - (elapsed / 5);
-          const toBallX = ball.x - entry.point.x;
-          const toBallY = ball.y - entry.point.y;
-          const d = Math.hypot(toBallX, toBallY) || 1;
-          targets.set(entry.playerId, {
-            x: clamp(entry.point.x + (toBallX / d) * push * (6 - i * 1.5), TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-            y: clamp(entry.point.y + (toBallY / d) * push * (6 - i * 1.5), TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-          });
-          markBurst(entry.playerId, 1.05 - i * 0.13);
-        } else {
-          const dropDuration = entry.slot.role === "CB" ? 4 : 6;
-          const blend = clamp(elapsed / dropDuration, 0, 1);
-          const localX = toLocalX(entry.slot.teamId, entry.point.x) - (1 - blend) * (entry.slot.role === "CB" ? 4 : 8);
-          targets.set(entry.playerId, { x: toGlobalX(entry.slot.teamId, localX), y: entry.point.y });
-        }
-      }
       const winnerTargets = [...targets.entries()]
-        .filter(([playerId]) => slots.get(playerId)?.teamId === turnover.winner)
+        .filter(([playerId]) => slots.get(playerId)?.teamId === turnover.winner && active(playerId))
         .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
-        .sort((a, b) => Math.hypot(a.point.x - ball.x, a.point.y - ball.y) - Math.hypot(b.point.x - ball.x, b.point.y - ball.y));
-      const winnerCarrier = carrierPlayerId && slots.get(carrierPlayerId)?.teamId === turnover.winner ? carrierPlayerId : undefined;
-      const support = winnerCarrier ? winnerTargets.filter((entry) => entry.playerId !== winnerCarrier).slice(0, 2) : [];
+        .sort((a, b) => distToBall(a.point) - distToBall(b.point));
       for (const entry of winnerTargets) {
         const delay = 0.5 + (traits.get(entry.playerId)?.speedNoise ?? 0) * 1.0;
-        if (elapsed < delay) continue;
+        if (elapsed < delay || entry.playerId === carrierPlayerId) continue;
         if (entry.slot.role === "ST" || entry.slot.role === "RW" || entry.slot.role === "LW" || entry.slot.role === "RM" || entry.slot.role === "LM") {
           const localX = toLocalX(entry.slot.teamId, entry.point.x) + 6 + (traits.get(entry.playerId)?.speedNoise ?? 0) * 4;
-          targets.set(entry.playerId, { x: toGlobalX(entry.slot.teamId, localX), y: entry.point.y });
+          targets.set(entry.playerId, { x: clampX(toGlobalX(entry.slot.teamId, localX)), y: entry.point.y });
           markBurst(entry.playerId, 0.98);
-        }
-      }
-      if (winnerCarrier) {
-        const carrier = targets.get(winnerCarrier);
-        if (carrier) {
-          for (const [index, entry] of support.entries()) {
-            const dx = index === 0 ? -8 : 10;
-            const dy = index === 0 ? -7 : 7;
-            const localX = toLocalX(entry.slot.teamId, carrier.x) + dx;
-            targets.set(entry.playerId, {
-              x: clamp(toGlobalX(entry.slot.teamId, localX), TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-              y: clamp(carrier.y + dy, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-            });
-          }
         }
       }
     }
   }
 
+  // In possession: two support options 10-20 m from the ball.
+  if (carrierPlayerId) {
+    const support = [...targets.entries()]
+      .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
+      .filter((entry) => entry.slot.teamId === possession && entry.slot.role !== "GK" && entry.playerId !== carrierPlayerId && active(entry.playerId))
+      .map((entry) => ({ ...entry, dist: distToBall(entry.point) }))
+      .sort((a, b) => a.dist - b.dist || a.playerId.localeCompare(b.playerId))
+      .slice(0, 2);
+    for (const entry of support) {
+      if (entry.dist <= 18) continue;
+      const scale = 15 / entry.dist;
+      targets.set(entry.playerId, { x: clampX(ball.x + (entry.point.x - ball.x) * scale), y: clampY(ball.y + (entry.point.y - ball.y) * scale) });
+    }
+  }
+
+  // Box occupation for an imminent shot or cut-back.
+  if (next) {
+    const lead = next.atSecond - atSecond;
+    const isBoxPhase = lead > 0.2
+      && lead <= 3
+      && next.teamId === possession
+      && (next.type === "shot" || next.type === "goal" || (next.type === "pass" && toLocalX(possession, next.__point.x) > 84 && Math.abs(next.__point.y - 34) < 22));
+    if (isBoxPhase) {
+      const direction = next.teamId === "home" ? 1 : -1;
+      const attackers = [...targets.entries()]
+        .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
+        .filter((entry) => entry.slot.teamId === possession && entry.slot.role !== "GK" && entry.playerId !== carrierPlayerId && entry.playerId !== next.playerId && active(entry.playerId));
+      const nearPost = attackers.find((entry) => ["ST", "RW", "LW"].includes(entry.slot.role));
+      const farPost = attackers.find((entry) => entry !== nearPost && ["ST", "LW", "RW", "RM", "LM"].includes(entry.slot.role));
+      const towardTop = next.__point.y >= 34;
+      if (nearPost) {
+        targets.set(nearPost.playerId, { x: clampX(next.__point.x + direction * 2.4), y: clampY(next.__point.y + (towardTop ? -4 : 4)) });
+        markBurst(nearPost.playerId, 0.94);
+      }
+      if (farPost) {
+        targets.set(farPost.playerId, { x: clampX(next.__point.x + direction * 1.6), y: clampY(next.__point.y + (towardTop ? 7 : -7)) });
+        markBurst(farPost.playerId, 1.02);
+      }
+    }
+  }
+
+  // Event actors: only the anchor actor and the direct receiver (next actor)
+  // get catch-up priority. Nobody else converges on the ball.
+  const prepared = new Set<string>();
   if (anchor) {
     const d = Math.abs(atSecond - anchor.atSecond);
     const actorTarget = targets.get(anchor.playerId);
     if (actorTarget && d <= 2.4) {
       const influence = clamp(1 - d / 2.4, 0, 1);
       targets.set(anchor.playerId, {
-        x: clamp(actorTarget.x + (anchor.__point.x - actorTarget.x) * influence, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-        y: clamp(actorTarget.y + (anchor.__point.y - actorTarget.y) * influence, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
+        x: clampX(actorTarget.x + (anchor.__point.x - actorTarget.x) * influence),
+        y: clampY(actorTarget.y + (anchor.__point.y - actorTarget.y) * influence),
       });
       markBurst(anchor.playerId, d <= 0.8 ? 1.1 : 0.96);
     }
   }
-  if (next && next.atSecond >= atSecond) {
-    const lead = next.atSecond - atSecond;
-    if (lead <= 3.2) {
-      const runnerTarget = targets.get(next.playerId);
-      if (runnerTarget) {
-        const influence = clamp(1 - lead / 3.2, 0, 1);
-        targets.set(next.playerId, {
-          x: clamp(runnerTarget.x + (next.__point.x - runnerTarget.x) * influence, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-          y: clamp(runnerTarget.y + (next.__point.y - runnerTarget.y) * influence, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-        });
-        markBurst(next.playerId, lead <= 1.2 ? 1.08 : 0.86);
-      }
-    }
-  }
-
-  if (next) {
-    const lead = next.atSecond - atSecond;
-    const isBoxPhase = lead > 0.2
-      && lead <= 3
-      && next.teamId === possession
-      && (next.type === "shot" || next.type === "goal" || (next.type === "pass" && next.__point.x > 84 && Math.abs(next.__point.y - 34) < 22));
-    if (isBoxPhase) {
-      const direction = next.teamId === "home" ? 1 : -1;
-      const attackers = [...targets.entries()]
-        .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)! }))
-        .filter((entry) => entry.slot.teamId === possession && entry.slot.role !== "GK");
-      const pickRole = (roles: string[]) => attackers.find((entry) => roles.includes(entry.slot.role));
-      const nearPost = pickRole(["ST", "RW", "LW"]);
-      const farPost = attackers.find((entry) => entry !== nearPost && ["ST", "LW", "RW", "RM", "LM"].includes(entry.slot.role));
-      const edge = attackers.find((entry) => entry !== nearPost && entry !== farPost && ["CM", "DM", "AM", "RM", "LM"].includes(entry.slot.role));
-      const towardTop = next.__point.y >= 34;
-      if (nearPost) {
-        targets.set(nearPost.playerId, {
-          x: clamp(next.__point.x + direction * 2.4, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-          y: clamp(next.__point.y + (towardTop ? -2.8 : 2.8), TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-        });
-        markBurst(nearPost.playerId, 0.94);
-      }
-
-      {
-        const upcomingByPlayer = new Map<string, { point: Point; lead: number }>();
-        for (let i = Math.max(0, index + 1); i < end; i += 1) {
-          const upcoming = events[i]!;
-          const lead = upcoming.atSecond - atSecond;
-          if (lead < 0) continue;
-          if (lead > 12) break;
-          if (!targets.has(upcoming.playerId) || upcomingByPlayer.has(upcoming.playerId)) continue;
-          upcomingByPlayer.set(upcoming.playerId, { point: upcoming.__point, lead });
-        }
-        for (const [playerId, upcoming] of upcomingByPlayer.entries()) {
-          const base = targets.get(playerId);
-          if (!base) continue;
-          const influence = (clamp(1 - upcoming.lead / 12, 0, 1)) ** 2;
-          targets.set(playerId, {
-            x: clamp(base.x + (upcoming.point.x - base.x) * influence * 0.9, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-            y: clamp(base.y + (upcoming.point.y - base.y) * influence * 0.9, TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-          });
-          if (upcoming.lead <= 3.2) markBurst(playerId, 1.02);
-        }
-      }
-      if (farPost) {
-        targets.set(farPost.playerId, {
-          x: clamp(next.__point.x + direction * 1.6, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-          y: clamp(next.__point.y + (towardTop ? 5.8 : -5.8), TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-        });
-        markBurst(farPost.playerId, 1.02);
-      }
-      if (edge) {
-        targets.set(edge.playerId, {
-          x: clamp(next.__point.x - direction * 8.5, TARGET_MARGIN_M, TRACKING_PITCH_LENGTH_M - TARGET_MARGIN_M),
-          y: clamp(next.__point.y + (towardTop ? 1.8 : -1.8), TARGET_MARGIN_M, TRACKING_PITCH_WIDTH_M - TARGET_MARGIN_M),
-        });
-        markBurst(edge.playerId, 0.9);
-      }
-    }
-  }
-
-  // Prepare every upcoming actor, not only the next ball carrier. The horizon is
-  // the sole source of future knowledge; never inspect events beyond it.
-  const prepared = new Set<string>();
-  for (let i = Math.max(0, index + 1); i < end; i += 1) {
-    const upcoming = events[i]!;
-    if (prepared.has(upcoming.playerId) || !targets.has(upcoming.playerId) || (anchor?.type === "kickoff" && atSecond - anchor.atSecond <= 0.2)) continue;
-    prepared.add(upcoming.playerId);
-    targets.set(upcoming.playerId, upcoming.__point);
-    markBurst(upcoming.playerId, 1.05);
+  if (next && next.atSecond >= atSecond && targets.has(next.playerId) && !(anchor?.type === "kickoff" && atSecond - anchor.atSecond <= 0.2)) {
+    prepared.add(next.playerId);
+    targets.set(next.playerId, next.__point);
+    markBurst(next.playerId, 1.05);
   }
   if (anchor && atSecond - anchor.atSecond <= 0.4 && targets.has(anchor.playerId)) {
     targets.set(anchor.playerId, anchor.__point);
   }
+
+  // Crowd cap: at most three of a team near the ball (two out of possession
+  // outside the counter-press). Priority roles are never displaced.
+  {
+    const priority = new Set<string>([...pressers, ...prepared]);
+    if (anchor) priority.add(anchor.playerId);
+    if (carrierPlayerId) priority.add(carrierPlayerId);
+    // Targets use a wider ring than the 10 m band so lagging positions stay outside it.
+    const CAP_RADIUS_M = 12;
+    const PUSH_RADIUS_M = 15;
+    for (const teamId of ["home", "away"] as const) {
+      const quota = teamId !== possession && counterPress ? 3 : 2;
+      const near = [...targets.entries()]
+        .filter(([playerId]) => slots.get(playerId)!.teamId === teamId && active(playerId))
+        .map(([playerId, point]) => ({ playerId, point, slot: slots.get(playerId)!, dist: distToBall(point) }))
+        .filter((entry) => entry.dist < PUSH_RADIUS_M)
+        .sort((a, b) => {
+          const pa = a.slot.role === "GK" || priority.has(a.playerId) ? 0 : 1;
+          const pb = b.slot.role === "GK" || priority.has(b.playerId) ? 0 : 1;
+          return pa - pb || a.dist - b.dist || a.playerId.localeCompare(b.playerId);
+        });
+      let kept = 0;
+      for (const entry of near) {
+        const fixed = entry.slot.role === "GK" || priority.has(entry.playerId);
+        if (fixed || (kept < quota && entry.dist < CAP_RADIUS_M)) {
+          if (entry.dist < CAP_RADIUS_M) kept += 1;
+          continue;
+        }
+        if (entry.dist >= CAP_RADIUS_M && kept < quota) continue;
+        // Push radially out, biased toward the player's own goal so the
+        // displaced player drops into the block rather than past the ball.
+        const ownGoalX = teamId === "home" ? -1 : 1;
+        let ux = entry.point.x - ball.x;
+        let uy = entry.point.y - ball.y;
+        const len = Math.hypot(ux, uy);
+        if (len < 0.5) { ux = ownGoalX; uy = 0; } else { ux /= len; uy /= len; }
+        targets.set(entry.playerId, { x: clampX(ball.x + ux * PUSH_RADIUS_M), y: clampY(ball.y + uy * PUSH_RADIUS_M) });
+        markBurst(entry.playerId, 0.85);
+      }
+    }
+  }
+
   if (anchor?.type === "kickoff" && atSecond - anchor.atSecond <= 2.5) {
     for (const [playerId, point] of targets) {
       const slot = slots.get(playerId)!;
@@ -817,18 +781,23 @@ function limitDeltaVelocity(current: Vec, desired: Vec, dt: number, accelLimit =
   return { x: current.x + dvx * scale, y: current.y + dvy * scale };
 }
 
-function enforceSpacing(players: SimPlayer[]): void {
+/**
+ * Minimum separation of ~2 m between any two players, except the duel between
+ * the ball carrier and an opponent, which may close to 1.2 m.
+ */
+function enforceSpacing(players: SimPlayer[], carrierId?: string): void {
   for (let i = 0; i < players.length; i += 1) {
     for (let j = i + 1; j < players.length; j += 1) {
       const a = players[i]!;
       const b = players[j]!;
-      const min = a.teamId === b.teamId ? 2 : 1.2;
+      const duel = a.teamId !== b.teamId && carrierId !== undefined && (a.id === carrierId || b.id === carrierId);
+      const min = duel ? 1.2 : 2;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const dist = Math.hypot(dx, dy);
       if (dist >= min) continue;
       const push = (min - (dist || 0.001)) / 2;
-      const bounded = Math.min(push, 0.32);
+      const bounded = Math.min(push, 0.2);
       const ux = dist < 0.001 ? 1 : dx / dist;
       const uy = dist < 0.001 ? 0 : dy / dist;
       a.x = clamp(a.x - ux * bounded, PLAYER_MARGIN_M, TRACKING_PITCH_LENGTH_M - PLAYER_MARGIN_M);
@@ -1051,7 +1020,7 @@ function createInitialTimeline(fixture: MatchFixture, key: string): CachedTimeli
   const context = buildTimelineContext(fixture);
   const allSlots = [...context.slotsById.values()];
   const order: TimelineOrderEntry[] = allSlots.map((slot) => ({ id: slot.playerId, teamId: slot.teamId, number: slot.number, role: slot.role }));
-  const initial = buildSnapshot(fixture, context.events, context.slotsById, context.traitsById, 0, findAnchorIndex(context.events, TRACKING_DELAY_SECONDS + 1e-6) + 1);
+  const initial = buildSnapshot(fixture, context.events, context.slotsById, context.traitsById, 0, findAnchorIndex(context.events, TRACKING_DELAY_SECONDS + 1e-6) + 1, context.deactivatedAt);
   const players: SimPlayer[] = allSlots.map((slot) => {
     const point = initial.targets.get(slot.playerId)!;
     return {
@@ -1065,6 +1034,8 @@ function createInitialTimeline(fixture: MatchFixture, key: string): CachedTimeli
       y: point.y,
       vx: 0,
       vy: 0,
+      sx: point.x,
+      sy: point.y,
     };
   });
   for (let settle = 0; settle < 8; settle += 1) enforceSpacing(players);
@@ -1160,6 +1131,7 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
       entry.context.traitsById,
       snapped,
       horizonEnd,
+      entry.context.deactivatedAt,
     );
     snapshotCache.set(key, snapshot);
     return snapshot;
@@ -1184,18 +1156,32 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
       const immediateBurst = now.bursts.get(player.id) ?? 0;
       const reactionDelay = Math.max(0.05, (player.traits.reactionDelay * quick + (ballSideFar ? 0.25 : 0)) - immediateBurst * 1.1);
       const perceived = immediateBurst >= 0.9 ? now : getSnapshot(second - reactionDelay);
-      const target = perceived.targets.get(player.id) ?? { x: player.x, y: player.y };
+      const nowTarget = now.targets.get(player.id);
+      // Clear-out: a player near the ball whose current target is outside the ring leaves without reaction delay.
+      const clearOut = Boolean(nowTarget) && distToBall < 11 && Math.hypot(nowTarget!.x - now.ball.x, nowTarget!.y - now.ball.y) > 12;
+      const rawTarget = (clearOut ? nowTarget : perceived.targets.get(player.id)) ?? { x: player.x, y: player.y };
       const burst = Math.max(immediateBurst, perceived.bursts.get(player.id) ?? 0);
-      const tx = target.x - player.x;
-      const ty = target.y - player.y;
-      const dist = Math.hypot(tx, ty);
       const actorCatchup = now.eventActorId === player.id && (now.anchorAgeSeconds ?? Number.POSITIVE_INFINITY) <= 1.4;
-      const nearBall = distToBall <= 12;
       const urgent = now.urgentRunners.has(player.id) || actorCatchup;
+      // EMA on the target (tau ~0.7 s, ~0.35 s for pressers); event actors and
+      // the direct receiver track their raw target so event spots are reached.
+      const tau = urgent ? 0 : burst >= 0.9 || clearOut ? 0.35 : TARGET_SMOOTHING_TAU_SECONDS;
+      const alpha = tau <= 0 ? 1 : 1 - Math.exp(-SIM_DT_SECONDS / tau);
+      player.sx += (rawTarget.x - player.sx) * alpha;
+      player.sy += (rawTarget.y - player.sy) * alpha;
+      const tx = player.sx - player.x;
+      const ty = player.sy - player.y;
+      const dist = Math.hypot(tx, ty);
       let movementScale = burst >= 1 ? 0.82 : 0.42 + burst * 0.42;
-      if (nearBall) movementScale = Math.max(movementScale, 0.78);
+      // Out-of-shape players hurry back; anyone inside the ball ring whose
+      // target is outside it clears out instead of lingering near the ball.
+      movementScale = Math.min(0.82, movementScale + clamp((dist - 4) / 16, 0, 1) * 0.3);
+      const targetBallDist = Math.hypot(player.sx - now.ball.x, player.sy - now.ball.y);
+      if (distToBall < 11 && targetBallDist > 12) movementScale = Math.max(movementScale, 0.8);
       if (urgent) movementScale = 1;
-      let speed = desiredSpeed(dist, player.traits, burst) * player.traits.effort * movementScale;
+      // Arrive smoothly: speed ramps down inside the last few metres.
+      const arrive = urgent ? 1 : clamp(dist / ARRIVE_RADIUS_M, 0, 1);
+      let speed = desiredSpeed(dist, player.traits, burst) * player.traits.effort * movementScale * arrive;
       if (!urgent && Math.sin(second * Math.PI * 2 / player.traits.sprintCycle + player.traits.sprintPhase) < 0.45) speed = Math.min(speed, 6.8);
       let desired = dist < 0.01
         ? { x: player.vx * 0.7, y: player.vy * 0.7 }
@@ -1229,7 +1215,7 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
       player.y = clamp(player.y, PLAYER_MARGIN_M, TRACKING_PITCH_WIDTH_M - PLAYER_MARGIN_M);
     }
 
-    for (let settle = 0; settle < 4; settle += 1) enforceSpacing(activePlayers);
+    for (let settle = 0; settle < 4; settle += 1) enforceSpacing(activePlayers, now.carrierPlayerId);
 
     if (now.carrierPlayerId) {
       const carrier = activePlayers.find((player) => player.id === now.carrierPlayerId);
@@ -1250,12 +1236,12 @@ function extendTimeline(entry: CachedTimeline, fixture: MatchFixture, targetStep
           entry.player.x = clamp(entry.player.x + (dx / d) * step, PLAYER_MARGIN_M, TRACKING_PITCH_LENGTH_M - PLAYER_MARGIN_M);
           entry.player.y = clamp(entry.player.y + (dy / d) * step, PLAYER_MARGIN_M, TRACKING_PITCH_WIDTH_M - PLAYER_MARGIN_M);
         };
-        nudgeToward(defenders[0], 2.2, 0.35);
-        if (anchorAge >= 0.9) nudgeToward(defenders[1], 3.1, 0.28);
+        // Only the primary presser closes the carrier down; the cover holds.
+        if (anchorAge >= 0.9) nudgeToward(defenders[0], 2.2, 0.25);
       }
     }
 
-    enforceSpacing(activePlayers);
+    enforceSpacing(activePlayers, now.carrierPlayerId);
 
     // Authoritative kinematic pass: everything above only proposes a position.
     // Brake before bounds first, then limit acceleration and speed against the
