@@ -7,7 +7,7 @@ import { api, ApiError, applyStudioAuth, fetchStudioStreamTicket, getStudioToken
 import { clipTitle, BIG_CHANCE_LABEL } from "../src/highlightRenderer.js";
 import { scenarioLabel, SYNTHETIC_BADGE_TEXT, transportBadge } from "../src/utils.js";
 import { PROGRESSIVE_PASS_HINT, PROGRESSIVE_PASS_LABEL } from "../shared/metrics.js";
-import { IMPACT_RATING_FORMULA } from "../shared/playerStats.js";
+import { IMPACT_RATING_FORMULA, IMPACT_WEIGHT_DESCRIPTIONS } from "../shared/playerStats.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -49,7 +49,8 @@ test("sprint counts are not rendered and tracking labels say synthetic", () => {
   const analysis = read("src/PlayerAnalysis.tsx");
   assert.doesNotMatch(analysis, /SPRINT_THRESHOLD_KMH/);
   assert.match(analysis, /Distance \(synthetic minute aggregate\)/);
-  assert.match(analysis, /Top speed \(synthetic peak-speed milestone\)/);
+  assert.match(analysis, /Maximum speed in synthetic minute samples/);
+  assert.match(read("src/fan/PlayerCardSection.tsx"), /Maximum speed in synthetic minute samples/);
   for (const file of sourceFiles("src").filter((name) => name.endsWith(".tsx"))) {
     assert.doesNotMatch(read(file), /"Sprints?\b|>\s*Sprints?\b/, file);
   }
@@ -64,11 +65,15 @@ test("metric labels use the illustrative wording", () => {
   assert.equal(PROGRESSIVE_PASS_LABEL, "Progressive passes (≥25% closer to goal)");
   assert.match(PROGRESSIVE_PASS_HINT, /completed passes ending at least 25% closer to the goal centre/i);
   assert.match(analysis, /label=\{PROGRESSIVE_PASS_LABEL\}[^>]*hint=\{PROGRESSIVE_PASS_HINT\}/);
-  assert.match(analysis, /PROGRESSIVE_PASS_LABEL\.toLowerCase\(\)/);
+  assert.match(analysis, /IMPACT_WEIGHT_DESCRIPTIONS\.join/);
+  assert.ok(IMPACT_WEIGHT_DESCRIPTIONS.some((label) => label.startsWith("tackle lost -")));
+  assert.ok(IMPACT_WEIGHT_DESCRIPTIONS.some((label) => label.startsWith("shot off target +")));
   assert.match(analysis, /\{IMPACT_RATING_FORMULA\}/);
   assert.match(IMPACT_RATING_FORMULA, /tanh\(sum of the displayed contributions ÷ 4\.5\)/);
   assert.match(analysis, /Fastest shot from its recorded speed or its own ball-flight time and distance/);
   const components = read("src/components.tsx");
+  assert.match(components, /Shot's recorded speed, or goal-distance divided by its own flight time/);
+  assert.match(read("server/metricStories.ts"), /Speed uses the shot's recorded speed, or goal-distance divided by its own flight time/);
   assert.match(components, /label: "illustrative xG"/);
   assert.match(components, /Completion vs heuristic \(illustrative, uncalibrated\)/);
   assert.doesNotMatch(components, /expected performance/i);

@@ -139,31 +139,58 @@ function inOpponentBox(event: MatchEvent): boolean {
  * cannot overwhelm goals and chance creation; the total is mapped through a smooth curve.
  */
 export const IMPACT_WEIGHTS = {
-  goal: 1.4,
-  assist: 0.6,
-  keyPass: 0.12,
-  xa: 0.5,
+  goal: 0.9,
+  assist: 0.4,
+  keyPass: 0.08,
+  xa: 0.3,
   shotOnTarget: 0.12,
   shotOffTarget: 0.04,
-  xg: 0.4,
-  passCompleted: 0.003,
+  xg: 0.3,
+  passCompleted: 0.002,
   passFailed: -0.02,
   progressivePass: 0.025,
   tackleWon: 0.018,
-  tackleLost: 0.002,
+  tackleLost: -0.02,
   pressure: 0.002,
-  save: 0.3,
-  savedXg: 0.8,
+  save: 0.22,
+  savedXg: 0.5,
   foul: -0.08,
   yellow: -0.25,
   red: -1.0,
 };
 
-export const IMPACT_RATING_FORMULA = "Score = clamp(6.2 + 3.8 × tanh(sum of the displayed contributions ÷ 4.5), 3, 10), rounded to 0.1. Routine actions have small weights so logged event volume alone cannot dominate.";
+export const IMPACT_RATING_BASELINE = 6.2;
+export const IMPACT_RATING_SPAN = 3.8;
+export const IMPACT_RATING_SCALE = 4.5;
+export const IMPACT_RATING_MIN = 3;
+export const IMPACT_RATING_MAX = 10;
+export const IMPACT_RATING_FORMULA = `Score = clamp(${IMPACT_RATING_BASELINE} + ${IMPACT_RATING_SPAN} × tanh(sum of the displayed contributions ÷ ${IMPACT_RATING_SCALE}), ${IMPACT_RATING_MIN}, ${IMPACT_RATING_MAX}), rounded to 0.1. Routine actions have small weights so logged event volume alone cannot dominate.`;
+
+/** Heuristic colour bands for full-match synthetic fixtures; neutral includes the zero-action baseline. */
+export const IMPACT_RATING_TIERS = { excellent: 7.7, good: 7.0, neutral: IMPACT_RATING_BASELINE } as const;
+
+export function impactRatingTone(rating: number): "excellent" | "good" | "neutral" | "poor" {
+  if (rating >= IMPACT_RATING_TIERS.excellent) return "excellent";
+  if (rating >= IMPACT_RATING_TIERS.good) return "good";
+  if (rating >= IMPACT_RATING_TIERS.neutral) return "neutral";
+  return "poor";
+}
+
+/** Labels cover every IMPACT_WEIGHTS entry, so the UI cannot silently omit a contribution. */
+export const IMPACT_WEIGHT_LABELS: Record<keyof typeof IMPACT_WEIGHTS, string> = {
+  goal: "goal", assist: "assist", keyPass: "chance created", xa: "xG assisted",
+  shotOnTarget: "shot on target", shotOffTarget: "shot off target", xg: "illustrative xG",
+  passCompleted: "completed pass", passFailed: "lost pass", progressivePass: "progressive pass",
+  tackleWon: "tackle won", tackleLost: "tackle lost", pressure: "pressure",
+  save: "save", savedXg: "xG saved", foul: "foul", yellow: "yellow", red: "red",
+};
+
+export const IMPACT_WEIGHT_DESCRIPTIONS = (Object.keys(IMPACT_WEIGHTS) as (keyof typeof IMPACT_WEIGHTS)[])
+  .map((key) => `${IMPACT_WEIGHT_LABELS[key]} ${IMPACT_WEIGHTS[key] >= 0 ? "+" : ""}${IMPACT_WEIGHTS[key]}${["xa", "xg", "savedXg"].includes(key) ? " per xG" : " per action"}`);
 
 /** Smoothly compress exceptional activity without hard-capping typical players. */
 export function impactRating(total: number): number {
-  return round(Math.min(10, Math.max(3, 6.2 + 3.8 * Math.tanh(total / 4.5))), 1);
+  return round(Math.min(IMPACT_RATING_MAX, Math.max(IMPACT_RATING_MIN, IMPACT_RATING_BASELINE + IMPACT_RATING_SPAN * Math.tanh(total / IMPACT_RATING_SCALE))), 1);
 }
 
 /**

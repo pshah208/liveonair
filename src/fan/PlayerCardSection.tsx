@@ -34,7 +34,7 @@ export interface PlayerCardSectionProps {
 
 /** UI-only relabels for shared card rows (data keys unchanged). */
 const ROW_LABEL: Record<string, string> = {
-  topSpeed: "Top speed (synthetic peak-speed milestone)",
+  topSpeed: "Maximum speed in synthetic minute samples",
   hardestPass: "Hardest pass (illustrative, uncalibrated)"
 };
 

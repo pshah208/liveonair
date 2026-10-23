@@ -54,6 +54,13 @@ const ON_BALL = new Set<MatchEvent["type"]>(["pass", "shot", "goal", "save", "co
 const secondOf = (event: Pick<MatchEvent, "minute" | "second">) => event.minute * 60 + event.second;
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
 
+function isOnBall(event: MatchEvent): boolean {
+  if (!ON_BALL.has(event.type)) return false;
+  if (event.type !== "tackle") return true;
+  if (event.id.includes("-interception-") || event.id.includes("-recovery-")) return false;
+  return event.outcome === "success" || event.outcome === "complete";
+}
+
 function latestEvents(events: MatchEvent[]): MatchEvent[] {
   const latestById = new Map<string, MatchEvent>();
   for (const event of events) {
@@ -106,7 +113,7 @@ function movingAverage(values: number[], windowMinutes: number): number[] {
 
 function contributesCarry(from: MatchEvent, to: MatchEvent): boolean {
   if (from.teamId !== to.teamId) return false;
-  if (!ON_BALL.has(from.type) || !ON_BALL.has(to.type)) return false;
+  if (!isOnBall(from) || !isOnBall(to)) return false;
   const gap = secondOf(to) - secondOf(from);
   return gap > 0 && gap <= 12;
 }
@@ -157,7 +164,7 @@ export function computeMomentum(events: MatchEvent[], opts: MomentumOptions = {}
   }));
 
   const minEventsPerMinute = opts.minEventsPerMinute ?? 1.2;
-  const qualifyingEvents = open.filter((event) => ON_BALL.has(event.type)).length;
+  const qualifyingEvents = open.filter((event) => isOnBall(event)).length;
   // The point grid extends to 90 for display; unplayed future minutes are not observed coverage.
   const observedMinutes = open.length ? minuteOf(secondOf(open[open.length - 1]!)) + 1 : 0;
   const insufficientCoverage = observedMinutes === 0 || qualifyingEvents < observedMinutes * minEventsPerMinute;
@@ -189,7 +196,7 @@ export function controlVsChaos(events: MatchEvent[], windowMinutes = 5): Control
     const completedPasses = passes.filter((event) => event.outcome === "complete").length;
     const passShare = passes.length ? completedPasses / passes.length : null;
     const shots = scoped.filter((event) => event.type === "shot").length;
-    const onBall = scoped.filter((event) => ON_BALL.has(event.type));
+    const onBall = scoped.filter((event) => isOnBall(event));
     let possessionChanges = 0;
     for (let index = 1; index < onBall.length; index += 1) {
       if (onBall[index]!.teamId !== onBall[index - 1]!.teamId) possessionChanges += 1;

@@ -22,6 +22,32 @@ function rangeStats(fixture: MatchFixture, teamId: "home" | "away"): { passes: n
   };
 }
 
+function defensiveStats(fixture: MatchFixture): {
+  tackles: number;
+  tacklesWon: number;
+  interceptions: number;
+  recoveries: number;
+  pressuresHome: number;
+  pressuresAway: number;
+  maxTacklesByPlayer: number;
+} {
+  const open = fixture.events.filter((event) => !event.rescinded);
+  const tackles = open.filter((event) => event.type === "tackle");
+  const pressuresHome = open.filter((event) => event.type === "pressure" && event.teamId === "home").length;
+  const pressuresAway = open.filter((event) => event.type === "pressure" && event.teamId === "away").length;
+  const tacklesByPlayer = new Map<string, number>();
+  for (const tackle of tackles) tacklesByPlayer.set(tackle.playerId, (tacklesByPlayer.get(tackle.playerId) ?? 0) + 1);
+  return {
+    tackles: tackles.length,
+    tacklesWon: tackles.filter((event) => event.outcome === "success" || event.outcome === "complete").length,
+    interceptions: open.filter((event) => event.id.includes("-interception-")).length,
+    recoveries: open.filter((event) => event.id.includes("-recovery-")).length,
+    pressuresHome,
+    pressuresAway,
+    maxTacklesByPlayer: Math.max(0, ...tacklesByPlayer.values()),
+  };
+}
+
 function assertFixtureSemantics(fixture: MatchFixture): void {
   assert.equal(fixture.id, `gen-${fixture.id.split("-")[1]}-${fixture.seed}`);
   assert.equal(fixture.durationSeconds, 5400);
@@ -149,6 +175,59 @@ test("generated fixtures hit possession-first volume targets across seeds", () =
       assert.ok(stats.passPct >= 0.78 && stats.passPct <= 0.88, `${seed}-${teamId} completion ${stats.passPct.toFixed(3)}`);
     }
   }
+});
+
+test("generated fixtures keep realistic defensive-action density across five seeds", () => {
+  const seeds = [11, 42, 77, 2026, 9090];
+  let aggregateWon = 0;
+  let aggregateTackles = 0;
+  for (const seed of seeds) {
+    const fixture = generateMatch({ scenario: "goal_fest", seed });
+    const stats = defensiveStats(fixture);
+    const attemptedShare = stats.tackles === 0 ? 0 : stats.tacklesWon / stats.tackles;
+    aggregateWon += stats.tacklesWon;
+    aggregateTackles += stats.tackles;
+    assert.ok(stats.tackles >= 30 && stats.tackles <= 45, `seed ${seed} tackles ${stats.tackles}`);
+    assert.ok(attemptedShare >= 0.53 && attemptedShare <= 0.67, `seed ${seed} tackle won share ${attemptedShare.toFixed(3)}`);
+    assert.ok(stats.interceptions > 0, `seed ${seed} has interceptions`);
+    assert.ok(stats.recoveries > 0, `seed ${seed} has recoveries`);
+    assert.ok(stats.maxTacklesByPlayer <= 10, `seed ${seed} max tackles by player ${stats.maxTacklesByPlayer}`);
+    assert.ok(stats.pressuresHome >= 120 && stats.pressuresHome <= 180, `seed ${seed} home pressure ${stats.pressuresHome}`);
+    assert.ok(stats.pressuresAway >= 120 && stats.pressuresAway <= 180, `seed ${seed} away pressure ${stats.pressuresAway}`);
+  }
+  const aggregateShare = aggregateTackles === 0 ? 0 : aggregateWon / aggregateTackles;
+  assert.ok(aggregateShare >= 0.55 && aggregateShare <= 0.65, `aggregate tackle won share ${aggregateShare.toFixed(3)}`);
+});
+
+test("generated squads exclude staff roles from player lists", () => {
+  const fixture = generateMatch({ scenario: "comeback", seed: 17 });
+  const isStaff = (position: string) => position.toLowerCase().includes("coach");
+  assert.ok(fixture.home.players.every((player) => !isStaff(player.position)));
+  assert.ok(fixture.away.players.every((player) => !isStaff(player.position)));
+});
+
+test("scenario variants produce visible differences and red_card includes a dismissal with ten-player aftermath", () => {
+  const seed = 2028;
+  const scenarios = ["comeback", "red_card", "set_piece", "late_winner", "goal_fest"] as const;
+  const fixtures = scenarios.map((scenario) => generateMatch({ scenario, seed }));
+  const signatures = fixtures.map((fixture) => JSON.stringify({
+    goals: fixture.events.filter((event) => event.type === "goal").length,
+    shots: fixture.events.filter((event) => event.type === "shot").length,
+    corners: fixture.events.filter((event) => event.type === "corner").length,
+    redCards: fixture.events.filter((event) => event.type === "red_card").length,
+  }));
+  assert.equal(new Set(signatures).size, scenarios.length, "each scenario changes the match shape");
+
+  const byScenario = new Map(fixtures.map((fixture) => [fixture.id.split("-")[1]!, fixture]));
+  const redCardFixture = byScenario.get("red_card")!;
+  const redCard = redCardFixture.events.find((event) => event.type === "red_card");
+  assert.ok(redCard, "red_card scenario emits a dismissal");
+  const afterCardTeamEvents = redCardFixture.events.filter((event) => (
+    event.teamId === redCard!.teamId && secondOf(event) > secondOf(redCard!)
+  ));
+  const playersAfter = new Set(afterCardTeamEvents.map((event) => event.playerId));
+  assert.equal(playersAfter.has(redCard!.playerId), false, "dismissed player has no later events");
+  assert.ok(playersAfter.size <= 10, `dismissed side uses at most ten players after card (saw ${playersAfter.size})`);
 });
 
 test("possession transitions are explicit and pressure is matched to passes", () => {

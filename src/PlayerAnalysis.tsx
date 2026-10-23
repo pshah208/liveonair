@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { analysePlayers, heatGrid, IMPACT_RATING_FORMULA, IMPACT_WEIGHTS, TRACKING_METRICS, type PlayerAnalysis } from "../shared/playerStats.js";
+import { analysePlayers, heatGrid, IMPACT_RATING_FORMULA, IMPACT_WEIGHT_DESCRIPTIONS, impactRatingTone, TRACKING_METRICS, type PlayerAnalysis } from "../shared/playerStats.js";
 import { PASS_DIFFICULTY_FORMULA, PROGRESSIVE_PASS_HINT, PROGRESSIVE_PASS_LABEL } from "../shared/metrics.js";
 import { PERIOD_LABEL, periodBoundary, periodScope } from "../shared/periods.js";
 import type { Language, MatchFixture, MatchPeriod, TeamId } from "../shared/types.js";
@@ -19,13 +19,6 @@ type MapMode = "heat" | "actions";
 type SortMode = "impact" | "number";
 
 const toY = (y: number) => (y / 100) * 68;
-
-function ratingTone(rating: number): string {
-  if (rating >= 7.5) return "excellent";
-  if (rating >= 6.6) return "good";
-  if (rating >= 5.8) return "neutral";
-  return "poor";
-}
 
 function PitchLines() {
   return (
@@ -90,7 +83,7 @@ const HIDDEN_TRACKING_KEYS = new Set(["sprints"]);
 /** UI labels for the tracked physical tiles; the synthetic feed only supports minute aggregates and milestones. */
 const TRACKING_LABEL: Record<string, string> = {
   distance: "Distance (synthetic minute aggregate)",
-  top_speed: "Top speed (synthetic peak-speed milestone)"
+  top_speed: "Maximum speed in synthetic minute samples"
 };
 
 /** A tracked physical figure for a TRACKING_METRICS tile, or null when this player has no tracking value. */
@@ -183,7 +176,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
               <button type="button" className={`pa-row${entry.player.id === selectedId ? " is-active" : ""}`} onClick={() => setSelectedId(entry.player.id)} aria-pressed={entry.player.id === selectedId}>
                 <span className="pa-row__number mono" style={{ borderColor: teamTint(entry.teamId) }}>{entry.player.number || "–"}</span>
                 <span className="pa-row__name">{entry.player.name}<small>{entry.player.position || "Player"} · {scopeMessage ? "—" : `${entry.involvements} actions`}</small></span>
-                <span className={`pa-rating pa-rating--${scopeMessage ? "neutral" : ratingTone(entry.impact.rating)}`}>{scopeMessage ? "—" : entry.impact.rating.toFixed(1)}</span>
+                <span className={`pa-rating pa-rating--${scopeMessage ? "neutral" : impactRatingTone(entry.impact.rating)}`}>{scopeMessage ? "—" : entry.impact.rating.toFixed(1)}</span>
               </button>
             </li>
           ))}
@@ -205,7 +198,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
               <h2 id="pa-player-title">{selected.player.name}</h2>
               <p className="subtle-text">{selected.involvements} logged actions{period === "full" ? "" : ` in the ${PERIOD_LABEL[period]}`} · {selected.involvementShare}% of the team's · match clock {Math.floor(clockSecond / 60)}'</p>
             </div>
-            <div className={`pa-hero__rating pa-rating--${ratingTone(selected.impact.rating)}`}>
+            <div className={`pa-hero__rating pa-rating--${impactRatingTone(selected.impact.rating)}`}>
               <strong>{selected.impact.rating.toFixed(1)}</strong><span>Illustrative activity score</span>
             </div>
           </header>
@@ -266,7 +259,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
                 ))}
               </ul>
               <details className="pa-model"><summary>How the illustrative activity score works</summary>
-                <p className="subtle-text">{IMPACT_RATING_FORMULA} Weights per action: goal +{IMPACT_WEIGHTS.goal}, assist +{IMPACT_WEIGHTS.assist}, chance created +{IMPACT_WEIGHTS.keyPass}, shot on target +{IMPACT_WEIGHTS.shotOnTarget}, completed pass +{IMPACT_WEIGHTS.passCompleted}, lost pass {IMPACT_WEIGHTS.passFailed}, {PROGRESSIVE_PASS_LABEL.toLowerCase()} +{IMPACT_WEIGHTS.progressivePass}, tackle won +{IMPACT_WEIGHTS.tackleWon}, pressure +{IMPACT_WEIGHTS.pressure}, save +{IMPACT_WEIGHTS.save} (+{IMPACT_WEIGHTS.savedXg} × xG saved), foul {IMPACT_WEIGHTS.foul}, yellow {IMPACT_WEIGHTS.yellow}, red {IMPACT_WEIGHTS.red}; plus illustrative xG × {IMPACT_WEIGHTS.xg} and xG assisted × {IMPACT_WEIGHTS.xa}. Illustrative and uncalibrated, from logged events only; not a performance rating.</p>
+                <p className="subtle-text">{IMPACT_RATING_FORMULA} Weights: {IMPACT_WEIGHT_DESCRIPTIONS.join("; ")}. Illustrative and uncalibrated, from logged events only; not a performance rating.</p>
               </details>
             </div>
 
@@ -308,7 +301,7 @@ export function PlayerAnalysisPage({ fixture, clockSecond, aiReady, onOpenLiveDe
               })}
             </div>
             <p className="subtle-text">{fixture.tracking
-              ? "Distance is a synthetic minute aggregate and top speed a synthetic peak-speed milestone, from seeded samples (one per outfield player per minute). They are illustrative, not measured; a real broadcast would use optical tracking or GPS vests."
+              ? "Distance is a synthetic minute aggregate and maximum speed is the highest value in synthetic minute samples (one per outfield player per minute). They are illustrative, not measured; a real broadcast would use optical tracking or GPS vests."
               : "Event feeds record what happened on the ball, not how far players ran. Distance and speed need player tracking: positions for every player many times a second, from optical tracking or GPS vests."}</p>
           </div>
         </section>
