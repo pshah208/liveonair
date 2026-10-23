@@ -77,6 +77,8 @@ const EVENT_STYLES: Record<MatchEvent["type"], { color: string; shape: "circle" 
   goal: { color: "#16db93", shape: "diamond" },
   save: { color: "#f18f01", shape: "square" },
   tackle: { color: "#9c89ff", shape: "square" },
+  interception: { color: "#8b5cf6", shape: "square" },
+  ball_recovery: { color: "#6366f1", shape: "square" },
   pressure: { color: "#9c89ff", shape: "circle" },
   corner: { color: "#5eead4", shape: "square" },
   foul: { color: "#ff7aa2", shape: "diamond" },

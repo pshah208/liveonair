@@ -65,6 +65,7 @@ test("community type ids and qualifiers map onto canonical events", () => {
   const cases: Array<{ typeId: number; qualifiers?: Array<{ qualifierId: number; value?: string }>; type: string; outcome?: string }> = [
     { typeId: 1, type: "pass", outcome: "complete" },
     { typeId: 7, type: "tackle", outcome: "success" },
+    { typeId: 7, type: "tackle", outcome: "fail", qualifiers: [] },
     { typeId: 10, type: "save", outcome: "success" },
     { typeId: 13, type: "shot", outcome: "miss" },
     { typeId: 14, type: "shot", outcome: "blocked" },
@@ -74,9 +75,16 @@ test("community type ids and qualifiers map onto canonical events", () => {
     { typeId: 17, qualifiers: [{ qualifierId: 32, value: "second" }], type: "red_card", outcome: "none" },
     { typeId: 17, qualifiers: [{ qualifierId: 33, value: "red" }], type: "red_card", outcome: "none" },
     { typeId: 19, type: "substitution", outcome: "none" },
+    { typeId: 9107, type: "interception", outcome: "success" },
+    { typeId: 9108, type: "ball_recovery", outcome: "success" },
   ];
   for (const item of cases) {
-    const adapted = adaptOptaEvent(opta({ id: `t-${item.typeId}-${item.type}`, typeId: item.typeId, qualifiers: item.qualifiers ?? [] }), teams, () => undefined);
+    const adapted = adaptOptaEvent(opta({
+      id: `t-${item.typeId}-${item.type}-${item.outcome}`,
+      typeId: item.typeId,
+      outcome: item.outcome === "fail" ? 0 : 1,
+      qualifiers: item.qualifiers ?? [],
+    }), teams, () => undefined);
     assert.equal(adapted.kind, "event", `type ${item.typeId}`);
     if (adapted.kind !== "event") continue;
     assert.equal(adapted.event.type, item.type);

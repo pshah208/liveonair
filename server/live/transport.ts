@@ -28,7 +28,7 @@ const eventTypeSchema = z.enum([
   "halftime",
   "fulltime",
 ]);
-const outcomeSchema = z.enum(["success", "miss", "blocked", "saved", "complete", "incomplete", "none"]);
+const outcomeSchema = z.enum(["success", "fail", "miss", "blocked", "saved", "complete", "incomplete", "none"]);
 
 const playerSchema = z.object({
   id: z.string().trim().min(1),

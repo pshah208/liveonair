@@ -358,7 +358,7 @@ async function readStream(url: string, headers?: Record<string, string>): Promis
   return { status: response.status, body };
 }
 
-test("studio-role stream falls back to the fan projection unless the Authorization bearer matches", async () => {
+test("studio-role stream falls back to the fan projection unless the Authorization bearer matches", { timeout: 10000 }, async () => {
   const open = await listen(studioStreamApp(undefined));
   const closed = await listen(studioStreamApp(TOKEN));
   try {

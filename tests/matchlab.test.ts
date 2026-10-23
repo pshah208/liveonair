@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 import { buildFeedPlan } from "../server/matchlab/feed.js";
 import { generateMatch } from "../server/matchlab/generator.js";
@@ -39,9 +41,9 @@ function defensiveStats(fixture: MatchFixture): {
   for (const tackle of tackles) tacklesByPlayer.set(tackle.playerId, (tacklesByPlayer.get(tackle.playerId) ?? 0) + 1);
   return {
     tackles: tackles.length,
-    tacklesWon: tackles.filter((event) => event.outcome === "success" || event.outcome === "complete").length,
-    interceptions: open.filter((event) => event.id.includes("-interception-")).length,
-    recoveries: open.filter((event) => event.id.includes("-recovery-")).length,
+    tacklesWon: tackles.filter((event) => event.outcome === "success").length,
+    interceptions: open.filter((event) => event.type === "interception").length,
+    recoveries: open.filter((event) => event.type === "ball_recovery").length,
     pressuresHome,
     pressuresAway,
     maxTacklesByPlayer: Math.max(0, ...tacklesByPlayer.values()),
@@ -188,7 +190,7 @@ test("generated fixtures keep realistic defensive-action density across five see
     aggregateWon += stats.tacklesWon;
     aggregateTackles += stats.tackles;
     assert.ok(stats.tackles >= 30 && stats.tackles <= 45, `seed ${seed} tackles ${stats.tackles}`);
-    assert.ok(attemptedShare >= 0.53 && attemptedShare <= 0.67, `seed ${seed} tackle won share ${attemptedShare.toFixed(3)}`);
+    assert.ok(attemptedShare >= 0.55 && attemptedShare <= 0.65, `seed ${seed} tackle won share ${attemptedShare.toFixed(3)}`);
     assert.ok(stats.interceptions > 0, `seed ${seed} has interceptions`);
     assert.ok(stats.recoveries > 0, `seed ${seed} has recoveries`);
     assert.ok(stats.maxTacklesByPlayer <= 10, `seed ${seed} max tackles by player ${stats.maxTacklesByPlayer}`);
@@ -197,6 +199,115 @@ test("generated fixtures keep realistic defensive-action density across five see
   }
   const aggregateShare = aggregateTackles === 0 ? 0 : aggregateWon / aggregateTackles;
   assert.ok(aggregateShare >= 0.55 && aggregateShare <= 0.65, `aggregate tackle won share ${aggregateShare.toFixed(3)}`);
+});
+
+test("shot volume is spread across halves", () => {
+  const seeds = [1, 11, 42, 77, 2026];
+  for (const seed of seeds) {
+    const fixture = generateMatch({ scenario: "goal_fest", seed });
+    const shots = fixture.events.filter((event) => event.type === "shot");
+    const firstHalf = shots.filter((event) => secondOf(event) < 45 * 60).length;
+    const secondHalf = shots.length - firstHalf;
+    const secondHalfShare = shots.length ? secondHalf / shots.length : 0;
+    assert.ok(secondHalfShare >= 0.45 && secondHalfShare <= 0.55, `seed ${seed} second-half share ${secondHalfShare.toFixed(3)}`);
+  }
+});
+
+test("interceptions and recoveries never count as tackles or reduce player ratings", async () => {
+  const { analysePlayers } = await import("../shared/playerStats.js");
+  const fixture = generateMatch({ scenario: "set_piece", seed: 2026 });
+  const withBallWins: MatchFixture = {
+    ...fixture,
+    events: [
+      ...fixture.events,
+      {
+        id: "interception-only",
+        revision: 1,
+        minute: 70,
+        second: 10,
+        type: "interception",
+        teamId: "home",
+        playerId: fixture.home.players[2]!.id,
+        outcome: "success",
+        x: 58,
+        y: 48,
+      },
+      {
+        id: "recovery-only",
+        revision: 1,
+        minute: 71,
+        second: 15,
+        type: "ball_recovery",
+        teamId: "home",
+        playerId: fixture.home.players[2]!.id,
+        outcome: "success",
+        x: 61,
+        y: 46,
+      },
+    ],
+  };
+  const baseline = analysePlayers(fixture).find((player) => player.player.id === fixture.home.players[2]!.id)!;
+  const updated = analysePlayers(withBallWins).find((player) => player.player.id === fixture.home.players[2]!.id)!;
+  assert.equal(updated.tackles, baseline.tackles, "ball wins are not counted as tackles");
+  assert.equal(updated.tacklesWon, baseline.tacklesWon, "ball wins are not counted as tackles won");
+  assert.ok(updated.impact.total >= baseline.impact.total, "ball wins do not lower rating");
+});
+
+test("scenario outcomes match descriptions across required seeds", () => {
+  const seeds = [1, 11, 42, 77, 2026];
+  for (const seed of seeds) {
+    const lateWinner = generateMatch({ scenario: "late_winner", seed });
+    const lateGoals = lateWinner.events.filter((event) => event.type === "goal" && !event.rescinded).sort((a, b) => secondOf(a) - secondOf(b));
+    assert.equal(lateGoals.length >= 1, true, `late_winner seed ${seed} has a goal`);
+    assert.equal(lateGoals[lateGoals.length - 1]!.minute >= 80, true, `late_winner seed ${seed} decisive goal is late`);
+    const before80 = lateGoals.filter((goal) => secondOf(goal) < 80 * 60);
+    const homeBefore = before80.filter((goal) => goal.teamId === "home").length;
+    const awayBefore = before80.filter((goal) => goal.teamId === "away").length;
+    assert.equal(homeBefore, awayBefore, `late_winner seed ${seed} stays level until late phase`);
+    const homeFinal = lateGoals.filter((goal) => goal.teamId === "home").length;
+    const awayFinal = lateGoals.filter((goal) => goal.teamId === "away").length;
+    assert.notEqual(homeFinal, awayFinal, `late_winner seed ${seed} has a decisive winner`);
+
+    const comeback = generateMatch({ scenario: "comeback", seed });
+    const comebackGoals = comeback.events.filter((event) => event.type === "goal" && !event.rescinded).sort((a, b) => secondOf(a) - secondOf(b));
+    let home = 0;
+    let away = 0;
+    let trailed = false;
+    for (const goal of comebackGoals) {
+      if (goal.teamId === "home") home += 1;
+      else away += 1;
+      if (home < away) trailed = true;
+    }
+    assert.equal(trailed, true, `comeback seed ${seed} includes a trailing phase`);
+    assert.ok(home > away, `comeback seed ${seed} finishes ahead`);
+    assert.ok(comebackGoals.some((goal) => goal.teamId === "away" && secondOf(goal) < 45 * 60), `comeback seed ${seed} away leads in first half`);
+    assert.ok(comebackGoals.filter((goal) => goal.teamId === "home" && secondOf(goal) >= 45 * 60).length >= 2, `comeback seed ${seed} home recovers after break`);
+  }
+});
+
+test("production code does not infer event kind from event id text", () => {
+  const targets = [
+    path.resolve("shared"),
+    path.resolve("server"),
+    path.resolve("src"),
+  ];
+  const badPatterns = ["-interception-", "-recovery-"];
+  for (const root of targets) {
+    const stack = [root];
+    while (stack.length) {
+      const current = stack.pop()!;
+      const stat = fs.statSync(current);
+      if (stat.isDirectory()) {
+        for (const entry of fs.readdirSync(current)) stack.push(path.join(current, entry));
+        continue;
+      }
+      if (!current.endsWith(".ts") && !current.endsWith(".tsx")) continue;
+      const text = fs.readFileSync(current, "utf8");
+      for (const pattern of badPatterns) {
+        assert.equal(text.includes(pattern), false, `${path.relative(process.cwd(), current)} contains ${pattern}`);
+      }
+    }
+  }
 });
 
 test("generated squads exclude staff roles from player lists", () => {
@@ -222,6 +333,7 @@ test("scenario variants produce visible differences and red_card includes a dism
   const redCardFixture = byScenario.get("red_card")!;
   const redCard = redCardFixture.events.find((event) => event.type === "red_card");
   assert.ok(redCard, "red_card scenario emits a dismissal");
+  assert.ok(secondOf(redCard!) >= 53 * 60 && secondOf(redCard!) <= 58 * 60, `red card timing ${secondOf(redCard!)}s`);
   const afterCardTeamEvents = redCardFixture.events.filter((event) => (
     event.teamId === redCard!.teamId && secondOf(event) > secondOf(redCard!)
   ));

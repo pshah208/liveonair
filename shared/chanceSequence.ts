@@ -14,11 +14,11 @@ import type { MatchEvent, MatchFixture, TeamId } from "./types.js";
  *   Equal match-clock seconds keep feed order: the first array index of that event id, not `id`
  *   sort. A later revision does not move the event. A pass supplied immediately before a shot in
  *   the same second stays before that shot.
- * - The sequence is same-team on-ball actions: pass (any outcome), shot, goal, save, corner, and a tackle
- *   only when `outcome === "success"` (tackle won). Pressure and unsuccessful tackles are skipped: they are
- *   not on-ball and do not break the chain.
+ * - The sequence is same-team on-ball actions: pass (any outcome), shot, goal, save, corner, interception,
+ *   ball recovery, and a tackle only when `outcome === "success"` (tackle won). Pressure and unsuccessful
+ *   tackles are skipped: they are not on-ball and do not break the chain.
  * - Stop, without including the boundary event, at:
- *   - an opponent on-ball action (pass, shot, goal, corner, save, or tackle won) — boundary `turnover`
+ *   - an opponent on-ball action (pass, shot, goal, corner, save, interception, ball recovery, or tackle won) — boundary `turnover`
  *   - a restart or stoppage (kickoff, halftime, fulltime, foul, yellow card, red card, substitution),
  *     either team — boundary `stoppage`
  *   - a match-clock gap greater than 15 seconds between consecutive included actions — boundary `time_gap`
@@ -236,6 +236,7 @@ function isTackleWon(event: MatchEvent): boolean {
 }
 
 function isOnBall(event: MatchEvent): boolean {
+  if (event.type === "interception" || event.type === "ball_recovery") return true;
   return ON_BALL_TYPES.has(event.type) || isTackleWon(event);
 }
 

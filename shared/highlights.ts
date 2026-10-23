@@ -391,7 +391,7 @@ export function buildHighlightReel(
       if (classified) { push(event, classified.kind, classified.bonus); continue; }
       if (event.type === "shot") push(event, "shot", Math.round((event.xg ?? 0) * 40));
       else if (event.type === "save") push(event, "key_save", 0);
-      else if (event.type === "tackle" && (event.outcome === "success" || event.outcome === "complete")) push(event, "tackle", 0);
+      else if (event.type === "tackle" && event.outcome === "success") push(event, "tackle", 0);
       else if (event.type === "pass" && event.outcome === "complete") {
         const difficulty = passDifficulty(event, events, metricOpts);
         if (difficulty && difficulty.score >= HARD_PASS_MIN) push(event, "hard_pass", difficulty.score - HARD_PASS_MIN, { detail: { difficulty: difficulty.score } });

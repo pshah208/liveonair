@@ -2,7 +2,7 @@ export type TeamId = "home" | "away";
 export type Persona = "analyst" | "casual" | "player";
 export type Language = "en" | "es" | "fr" | "pt";
 export type EventType =
-  | "pass" | "shot" | "goal" | "save" | "tackle" | "pressure"
+  | "pass" | "shot" | "goal" | "save" | "tackle" | "interception" | "ball_recovery" | "pressure"
   | "corner" | "foul" | "yellow_card" | "red_card" | "substitution"
   | "kickoff" | "halftime" | "fulltime";
 
@@ -33,7 +33,7 @@ export interface MatchEvent {
   type: EventType;
   teamId: TeamId;
   playerId: string;
-  outcome: "success" | "miss" | "blocked" | "saved" | "complete" | "incomplete" | "none";
+  outcome: "success" | "fail" | "miss" | "blocked" | "saved" | "complete" | "incomplete" | "none";
   x: number;
   y: number;
   endX?: number;

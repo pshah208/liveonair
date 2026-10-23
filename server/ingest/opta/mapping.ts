@@ -26,6 +26,8 @@ export const OPTA_MAPPING = {
     kickoff: { typeId: 9104, origin: "synthetic-extension", canonical: "kickoff" },
     halftime: { typeId: 9105, origin: "synthetic-extension", canonical: "halftime" },
     fulltime: { typeId: 9106, origin: "synthetic-extension", canonical: "fulltime" },
+    interception: { typeId: 9107, origin: "synthetic-extension", canonical: "interception" },
+    ballRecovery: { typeId: 9108, origin: "synthetic-extension", canonical: "ball_recovery" },
   },
   qualifiers: {
     passEndX: { qualifierId: 140, origin: "community", meaning: "pass end x, 0-100" },

@@ -20,12 +20,14 @@ interface TeamTargets {
   passes: TeamCounter;
   completedPasses: TeamCounter;
   shots: TeamCounter;
+  secondHalfShots: TeamCounter;
 }
 
 interface TeamProgress {
   passes: TeamCounter;
   completedPasses: TeamCounter;
   shots: TeamCounter;
+  secondHalfShots: TeamCounter;
 }
 
 interface Point {
@@ -46,12 +48,19 @@ const PITCH_LENGTH_M = 105;
 const PITCH_WIDTH_M = 68;
 const PRESSURE_CHANCE_BASE = 0.34;
 const MAX_TACKLES_PER_PLAYER = 10;
-const TURNOVER_EVENT_RATE = 0.14;
-const TACKLE_TURNOVER_SHARE = 0.33;
-const INTERCEPTION_TURNOVER_SHARE = 0.37;
-const LOST_TACKLE_CHANCE = 0.009;
+const TURNOVER_EVENT_RATE = 0.16;
+const TURNOVER_CAP_PER_MINUTE = 0.5;
+const TURNOVER_CAP_BASE_ALLOWANCE = 4;
+const TACKLE_TURNOVER_SHARE = 0.68;
+const INTERCEPTION_TURNOVER_SHARE = 0.2;
+const LOST_TACKLE_CHANCE = 0.026;
+const SECOND_HALF_SHOT_SHARE_MIN = 0.45;
+const SECOND_HALF_SHOT_SHARE_MAX = 0.55;
+const RED_CARD_MIN_SECOND = 53 * 60;
+const RED_CARD_MAX_SECOND = 58 * 60;
+const TURNOVER_TYPES = new Set<MatchEvent["type"]>(["tackle", "interception", "ball_recovery"]);
 
-type TurnoverEventKind = "tackle" | "interception" | "recovery" | "none";
+type TurnoverEventKind = "tackle" | "interception" | "ball_recovery" | "none";
 
 interface ScenarioConfig {
   randomSalt: number;
@@ -300,17 +309,32 @@ function buildTargets(rand: () => number, config: ScenarioConfig): TeamTargets {
     home: PASS_COMPLETION_MIN + rand() * (PASS_COMPLETION_MAX - PASS_COMPLETION_MIN),
     away: PASS_COMPLETION_MIN + rand() * (PASS_COMPLETION_MAX - PASS_COMPLETION_MIN),
   };
+  const shots: TeamCounter = {
+    home: randomInt(rand, shotMin, shotMax),
+    away: randomInt(rand, shotMin, shotMax),
+  };
   return {
     passes,
     completedPasses: {
       home: Math.round(passes.home * completionRates.home),
       away: Math.round(passes.away * completionRates.away),
     },
-    shots: {
-      home: randomInt(rand, shotMin, shotMax),
-      away: randomInt(rand, shotMin, shotMax),
+    shots,
+    secondHalfShots: {
+      home: secondHalfTarget(shots.home, rand),
+      away: secondHalfTarget(shots.away, rand),
     },
   };
+}
+
+function secondHalfTarget(totalShots: number, rand: () => number): number {
+  const share = SECOND_HALF_SHOT_SHARE_MIN + rand() * (SECOND_HALF_SHOT_SHARE_MAX - SECOND_HALF_SHOT_SHARE_MIN);
+  return Math.max(1, Math.min(totalShots - 1, Math.round(totalShots * share)));
+}
+
+function turnoverCapBySecond(second: number): number {
+  const minute = Math.max(0, Math.floor(second / 60));
+  return TURNOVER_CAP_BASE_ALLOWANCE + Math.floor(minute * TURNOVER_CAP_PER_MINUTE);
 }
 
 function hasCompletedTargets(targets: TeamTargets, progress: TeamProgress): boolean {
@@ -318,6 +342,7 @@ function hasCompletedTargets(targets: TeamTargets, progress: TeamProgress): bool
     progress.passes[teamId] >= targets.passes[teamId]
     && progress.completedPasses[teamId] >= targets.completedPasses[teamId]
     && progress.shots[teamId] >= targets.shots[teamId]
+    && progress.secondHalfShots[teamId] >= targets.secondHalfShots[teamId]
   ));
 }
 
@@ -344,6 +369,17 @@ function enforcePassCompletionFloor(events: MatchEvent[], teamId: TeamId, minRat
   const incomplete = passes.filter((event) => event.outcome !== "complete");
   for (const pass of incomplete) {
     pass.outcome = "complete";
+    const passSecond = eventAtSecond(pass);
+    const turnoverIndex = events.findIndex((event) => (
+      TURNOVER_TYPES.has(event.type)
+      && event.teamId !== teamId
+      && !event.rescinded
+      && eventAtSecond(event) >= passSecond
+      && eventAtSecond(event) <= passSecond + 2
+      && Math.abs(event.x - (pass.endX ?? pass.x)) <= 1.5
+      && Math.abs(event.y - (pass.endY ?? pass.y)) <= 1.5
+    ));
+    if (turnoverIndex >= 0) events.splice(turnoverIndex, 1);
     completed += 1;
     if (completed >= required) break;
   }
@@ -354,7 +390,7 @@ function chooseTurnoverEventKind(rand: () => number): TurnoverEventKind {
   const roll = rand();
   if (roll < TACKLE_TURNOVER_SHARE) return "tackle";
   if (roll < TACKLE_TURNOVER_SHARE + INTERCEPTION_TURNOVER_SHARE) return "interception";
-  return "recovery";
+  return "ball_recovery";
 }
 
 function addPossessionChange(
@@ -368,18 +404,14 @@ function addPossessionChange(
   kind: TurnoverEventKind,
 ): MatchEvent | undefined {
   if (kind === "none") return undefined;
-  const outcome: MatchEvent["outcome"] = kind === "interception"
-    ? "complete"
-    : kind === "recovery"
-      ? "saved"
-      : "success";
+  const eventType: MatchEvent["type"] = kind === "tackle" ? "tackle" : kind;
   const turnover = createEvent({
     id: `${fixtureId}-${kind}-${sequence}`,
     atSecond: second,
-    type: "tackle",
+    type: eventType,
     teamId,
     playerId: defenderId,
-    outcome,
+    outcome: "success",
     x: at.x,
     y: at.y,
   });
@@ -402,7 +434,7 @@ function addLostTackleAttempt(
     type: "tackle",
     teamId,
     playerId: defenderId,
-    outcome: "incomplete",
+    outcome: "fail",
     x: at.x,
     y: at.y,
   });
@@ -441,12 +473,13 @@ function generatePossessionEvents(
     passes: { home: 0, away: 0 },
     completedPasses: { home: 0, away: 0 },
     shots: { home: 0, away: 0 },
+    secondHalfShots: { home: 0, away: 0 },
   };
   const events: MatchEvent[] = [];
   const dismissedByTeam: Record<TeamId, Set<string>> = { home: new Set<string>(), away: new Set<string>() };
   const tackleAttemptsByPlayer = new Map<string, number>();
-  let tackleEventsLogged = 0;
-  const redCardSecond = config.forceRedCard ? randomInt(rand, 49 * 60, 67 * 60) : null;
+  let turnoverEventsLogged = 0;
+  const redCardSecond = config.forceRedCard ? randomInt(rand, RED_CARD_MIN_SECOND, RED_CARD_MAX_SECOND) : null;
   const redCardTeam: TeamId = rand() < 0.5 ? "home" : "away";
   let redCardIssued = false;
   const homeKickoff = firstByRole(home, "ST", 10);
@@ -494,10 +527,20 @@ function generatePossessionEvents(
     for (let step = 0; step < steps && second < MAX_MATCH_SECOND; step += 1) {
       const passesRemaining = targets.passes[teamId] - progress.passes[teamId];
       const shotsRemaining = targets.shots[teamId] - progress.shots[teamId];
-      const mustShootSoon = shotsRemaining > 0 && (targets.shots[teamId] - progress.shots[teamId]) > (targets.passes[teamId] - progress.passes[teamId]) / 28;
+      const inSecondHalf = second >= 45 * 60;
+      const secondHalfShotsRemaining = targets.secondHalfShots[teamId] - progress.secondHalfShots[teamId];
+      const firstHalfShotCap = targets.shots[teamId] - targets.secondHalfShots[teamId];
+      const firstHalfCapReached = !inSecondHalf && progress.shots[teamId] >= firstHalfShotCap;
+      const mustShootSoon = shotsRemaining > 0 && (
+        (targets.shots[teamId] - progress.shots[teamId]) > (targets.passes[teamId] - progress.passes[teamId]) / 28
+        || (inSecondHalf && secondHalfShotsRemaining > 0)
+      );
       const canPass = passesRemaining > 0;
       const shootChance = 0.12 + step * 0.06 + (config.shotTargetShift > 0 ? 0.03 : 0);
-      const shootNow = (mustShootSoon || (shotsRemaining > 0 && step >= 1 && rand() < shootChance)) && (step >= 1 || !canPass);
+      const canShootByHalfPlan = !firstHalfCapReached || !canPass;
+      const shootNow = canShootByHalfPlan
+        && (mustShootSoon || (shotsRemaining > 0 && step >= 1 && rand() < shootChance))
+        && (step >= 1 || !canPass);
 
       if (shootNow) {
         const setPieceShot = rand() < config.setPieceShotChance;
@@ -542,6 +585,7 @@ function generatePossessionEvents(
         });
         events.push(shot);
         progress.shots[teamId] += 1;
+        if (second >= 45 * 60) progress.secondHalfShots[teamId] += 1;
         position = shotFrom;
 
         if (shotOutcomeValue === "saved") {
@@ -579,7 +623,7 @@ function generatePossessionEvents(
         }
 
         // Possession changes explicitly after every terminal shot action.
-        const turnoverKind = tackleEventsLogged >= 45 ? "none" : chooseTurnoverEventKind(rand);
+        const turnoverKind = turnoverEventsLogged >= turnoverCapBySecond(second) ? "none" : chooseTurnoverEventKind(rand);
         const defenderId = turnoverKind === "none"
           ? choosePlayer(opponents, rand, "midfield", dismissedByTeam[otherTeam(teamId)])
           : pickDefenderForTackle(opponents, rand, dismissedByTeam[otherTeam(teamId)], tackleAttemptsByPlayer);
@@ -593,7 +637,7 @@ function generatePossessionEvents(
           defenderId,
           turnoverKind,
         );
-        if (turnover) tackleEventsLogged += 1;
+        if (turnover) turnoverEventsLogged += 1;
         second = turnover ? eventSecond(turnover) : Math.min(MAX_MATCH_SECOND, second + 1);
         teamId = otherTeam(teamId);
         ended = true;
@@ -631,7 +675,7 @@ function generatePossessionEvents(
         }
       }
 
-      if (outcome === "complete" && tackleEventsLogged < 45 && rand() < LOST_TACKLE_CHANCE) {
+      if (outcome === "complete" && turnoverEventsLogged < turnoverCapBySecond(passSecond) && rand() < LOST_TACKLE_CHANCE) {
         const presser = pickDefenderForTackle(opponents, rand, dismissedByTeam[otherTeam(teamId)], tackleAttemptsByPlayer);
         addLostTackleAttempt(
           events,
@@ -642,7 +686,7 @@ function generatePossessionEvents(
           mirrorPoint(position),
           presser,
         );
-        tackleEventsLogged += 1;
+        turnoverEventsLogged += 1;
       }
 
       const end = passEnd(rand, position, outcome === "complete");
@@ -666,7 +710,7 @@ function generatePossessionEvents(
       position = end;
 
       if (outcome !== "complete") {
-        const turnoverKind = tackleEventsLogged >= 45 ? "none" : chooseTurnoverEventKind(rand);
+        const turnoverKind = turnoverEventsLogged >= turnoverCapBySecond(second) ? "none" : chooseTurnoverEventKind(rand);
         const defenderId = turnoverKind === "none"
           ? choosePlayer(opponents, rand, "midfield", dismissedByTeam[otherTeam(teamId)])
           : pickDefenderForTackle(opponents, rand, dismissedByTeam[otherTeam(teamId)], tackleAttemptsByPlayer);
@@ -680,7 +724,7 @@ function generatePossessionEvents(
           defenderId,
           turnoverKind,
         );
-        if (turnover) tackleEventsLogged += 1;
+        if (turnover) turnoverEventsLogged += 1;
         second = turnover ? eventSecond(turnover) : Math.min(MAX_MATCH_SECOND, second + 1);
         teamId = otherTeam(teamId);
         ended = true;
@@ -689,7 +733,7 @@ function generatePossessionEvents(
     }
 
     if (!ended) {
-      const turnoverKind = tackleEventsLogged >= 45 ? "none" : chooseTurnoverEventKind(rand);
+      const turnoverKind = turnoverEventsLogged >= turnoverCapBySecond(second) ? "none" : chooseTurnoverEventKind(rand);
       const defendingTeam = otherTeam(teamId) === "home" ? home : away;
       const defenderId = turnoverKind === "none"
         ? choosePlayer(defendingTeam, rand, "midfield", dismissedByTeam[otherTeam(teamId)])
@@ -704,7 +748,7 @@ function generatePossessionEvents(
         defenderId,
         turnoverKind,
       );
-      if (turnover) tackleEventsLogged += 1;
+      if (turnover) turnoverEventsLogged += 1;
       second = turnover ? eventSecond(turnover) : Math.min(MAX_MATCH_SECOND, second + 1);
       teamId = otherTeam(teamId);
     }
@@ -719,7 +763,7 @@ function generatePossessionEvents(
     const dismissed = choosePlayer(bookedTeam, rand, "defenders", dismissedByTeam[side]);
     events.push(createEvent({
       id: `${fixtureId}-red-card-${sequence++}`,
-      atSecond: randomInt(rand, 50 * 60, 70 * 60),
+      atSecond: randomInt(rand, RED_CARD_MIN_SECOND, RED_CARD_MAX_SECOND),
       type: "red_card",
       teamId: side,
       playerId: dismissed,
@@ -728,9 +772,37 @@ function generatePossessionEvents(
       y: clampCoord(34 + rand() * 32),
     }));
   }
-  events.push(createEvent({ id: `${fixtureId}-fulltime`, atSecond: DURATION_SECONDS, type: "fulltime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 }));
   enforcePassCompletionFloor(events, "home");
   enforcePassCompletionFloor(events, "away");
+  const openTackles = () => events.filter((event) => event.type === "tackle" && !event.rescinded);
+  const tackleWonShare = () => {
+    const tackles = openTackles();
+    if (tackles.length === 0) return 0;
+    const won = tackles.filter((event) => event.outcome === "success").length;
+    return won / tackles.length;
+  };
+  let guard = 0;
+  while ((openTackles().length < 30 || tackleWonShare() < 0.55 || tackleWonShare() > 0.65) && openTackles().length < 45 && guard < 80) {
+    const currentShare = tackleWonShare();
+    const mustAddWin = currentShare < 0.55;
+    const outcome: MatchEvent["outcome"] = mustAddWin ? "success" : "fail";
+    const teamIdForBalance: TeamId = rand() < 0.5 ? "home" : "away";
+    const teamForBalance = teamIdForBalance === "home" ? home : away;
+    const defender = pickDefenderForTackle(teamForBalance, rand, dismissedByTeam[teamIdForBalance], tackleAttemptsByPlayer);
+    const atSecond = randomInt(rand, 8 * 60, 88 * 60);
+    events.push(createEvent({
+      id: `${fixtureId}-tackle-balance-${sequence++}`,
+      atSecond,
+      type: "tackle",
+      teamId: teamIdForBalance,
+      playerId: defender,
+      outcome,
+      x: clampCoord(34 + rand() * 32),
+      y: clampCoord(18 + rand() * 64),
+    }));
+    guard += 1;
+  }
+  events.push(createEvent({ id: `${fixtureId}-fulltime`, atSecond: DURATION_SECONDS, type: "fulltime", teamId: "home", playerId: firstByRole(home, "GK", 0), outcome: "none", x: 50, y: 50 }));
   return sortEventsStable(events);
 }
 
@@ -764,7 +836,7 @@ function ensureGoals(events: MatchEvent[], fixtureId: string, rand: () => number
 function forceGoalForShot(events: MatchEvent[], fixtureId: string, shot: MatchEvent, suffix: string, rand: () => number): void {
   shot.outcome = "success";
   const goalAt = Math.min(MAX_MATCH_SECOND, eventAtSecond(shot) + 1);
-  if (!events.some((event) => event.type === "goal" && event.relatedEventId === shot.id)) {
+  if (!events.some((event) => event.type === "goal" && !event.rescinded && event.relatedEventId === shot.id)) {
     events.push(createEvent({
       id: `${fixtureId}-${suffix}`,
       atSecond: goalAt,
@@ -782,12 +854,14 @@ function forceGoalForShot(events: MatchEvent[], fixtureId: string, shot: MatchEv
 function appendShotAndGoal(
   events: MatchEvent[],
   fixtureId: string,
-  teamId: TeamId,
-  playerId: string,
+  team: Team,
   atSecond: number,
   suffix: string,
   asGoal: boolean,
+  rand: () => number,
 ): void {
+  const teamId = team.id;
+  const playerId = choosePlayer(team, rand, "attackers");
   const shotId = `${fixtureId}-${suffix}-shot`;
   const shotPointX = clampCoord(82 + ((atSecond / 17) % 7));
   const shotPointY = clampCoord(45 + ((atSecond / 23) % 11));
@@ -817,28 +891,38 @@ function appendShotAndGoal(
   }
 }
 
+function resetGoals(events: MatchEvent[]): void {
+  for (const event of events) {
+    if (event.type === "goal") event.rescinded = true;
+    if (event.type === "shot" && event.outcome === "success") event.outcome = "saved";
+  }
+}
+
 function applyScenarioAdjustments(
   events: MatchEvent[],
   scenario: GenerateMatchRequest["scenario"],
   fixtureId: string,
   seed: number,
+  home: Team,
+  away: Team,
 ): MatchEvent[] {
   const adjusted = [...events];
   const rand = lcg(seed ^ 0xa5a5a5a5);
-  const shots = adjusted.filter((event) => event.type === "shot");
-  const goals = () => adjusted.filter((event) => event.type === "goal");
+  const shots = () => adjusted.filter((event) => event.type === "shot" && !event.rescinded);
+  const goals = () => adjusted.filter((event) => event.type === "goal" && !event.rescinded);
 
   if (scenario === "goal_fest") {
     const targetGoals = 5;
     let index = 0;
-    while (goals().length < targetGoals && index < shots.length) {
-      forceGoalForShot(adjusted, fixtureId, shots[index]!, `goalfest-${index}`, rand);
+    const currentShots = shots();
+    while (goals().length < targetGoals && index < currentShots.length) {
+      forceGoalForShot(adjusted, fixtureId, currentShots[index]!, `goalfest-${index}`, rand);
       index += 1;
     }
     for (const teamId of ["home", "away"] as const) {
       const teamShots = () => adjusted.filter((event) => event.type === "shot" && event.teamId === teamId).length;
       if (teamShots() < 15) {
-        appendShotAndGoal(adjusted, fixtureId, teamId, `${teamId}-p9`, teamId === "home" ? 52 * 60 : 74 * 60, `goalfest-extra-${teamId}`, true);
+        appendShotAndGoal(adjusted, fixtureId, teamId === "home" ? home : away, teamId === "home" ? 38 * 60 : 74 * 60, `goalfest-extra-${teamId}`, true, rand);
       }
     }
   }
@@ -855,7 +939,7 @@ function applyScenarioAdjustments(
         atSecond,
         type: "corner",
         teamId,
-        playerId: `${teamId}-p8`,
+        playerId: choosePlayer(teamId === "home" ? home : away, rand, "midfield"),
         outcome: "complete",
         x: 100,
         y: index % 2 ? 95 : 5,
@@ -867,7 +951,7 @@ function applyScenarioAdjustments(
         atSecond: Math.min(MAX_MATCH_SECOND, atSecond + 6),
         type: "shot",
         teamId,
-        playerId: `${teamId}-p4`,
+        playerId: choosePlayer(teamId === "home" ? home : away, rand, "attackers"),
         outcome: "saved",
         x: 84,
         y: 50,
@@ -878,36 +962,41 @@ function applyScenarioAdjustments(
   }
 
   if (scenario === "late_winner") {
-    const lateGoalExists = goals().some((event) => event.minute >= 80);
-    if (!lateGoalExists) {
-      const lateShot = shots
-        .filter((event) => event.minute >= 78)
-        .sort((left, right) => eventAtSecond(right) - eventAtSecond(left))[0]
-        ?? shots.sort((left, right) => eventAtSecond(right) - eventAtSecond(left))[0];
-      if (lateShot && lateShot.minute >= 78) forceGoalForShot(adjusted, fixtureId, lateShot, "late-winner", rand);
-      else appendShotAndGoal(adjusted, fixtureId, "home", "home-p9", 84 * 60, "late-winner", true);
+    resetGoals(adjusted);
+    const lateShot = shots()
+      .filter((event) => eventAtSecond(event) >= 80 * 60)
+      .sort((left, right) => eventAtSecond(right) - eventAtSecond(left))[0]
+      ?? shots().sort((left, right) => eventAtSecond(right) - eventAtSecond(left))[0];
+    if (lateShot) {
+      lateShot.minute = 84;
+      lateShot.second = 0;
+      forceGoalForShot(adjusted, fixtureId, lateShot, "late-winner", rand);
+    } else {
+      appendShotAndGoal(adjusted, fixtureId, home, 84 * 60, "late-winner", true, rand);
     }
   }
 
   if (scenario === "comeback") {
-    const firstHalfAwayGoal = goals().some((event) => event.teamId === "away" && event.minute < 45);
-    if (!firstHalfAwayGoal) {
-      const awayShot = shots.find((event) => event.teamId === "away" && event.minute < 45);
-      if (awayShot) forceGoalForShot(adjusted, fixtureId, awayShot, "comeback-away", rand);
+    resetGoals(adjusted);
+    const awayEarlyShot = shots().find((event) => event.teamId === "away" && eventAtSecond(event) < 45 * 60);
+    if (awayEarlyShot) {
+      awayEarlyShot.minute = 21;
+      awayEarlyShot.second = 0;
+      forceGoalForShot(adjusted, fixtureId, awayEarlyShot, "comeback-away", rand);
+    } else {
+      appendShotAndGoal(adjusted, fixtureId, away, 21 * 60, "comeback-away-forced", true, rand);
     }
-    const secondHalfHomeGoals = goals().filter((event) => event.teamId === "home" && event.minute >= 45).length;
-    if (secondHalfHomeGoals < 2) {
-      const homeSecondHalfShots = shots.filter((event) => event.teamId === "home" && event.minute >= 45);
-      for (let index = secondHalfHomeGoals; index < 2 && index < homeSecondHalfShots.length; index += 1) {
-        forceGoalForShot(adjusted, fixtureId, homeSecondHalfShots[index]!, `comeback-home-${index}`, rand);
+    const homeSecondHalfShots = shots().filter((event) => event.teamId === "home" && eventAtSecond(event) >= 45 * 60);
+    const targetTimes = [66 * 60, 82 * 60];
+    for (let index = 0; index < targetTimes.length; index += 1) {
+      const shot = homeSecondHalfShots[index];
+      if (shot) {
+        shot.minute = Math.floor(targetTimes[index]! / 60);
+        shot.second = targetTimes[index]! % 60;
+        forceGoalForShot(adjusted, fixtureId, shot, `comeback-home-${index}`, rand);
+      } else {
+        appendShotAndGoal(adjusted, fixtureId, home, targetTimes[index]!, `comeback-home-forced-${index + 1}`, true, rand);
       }
-      if (homeSecondHalfShots.length < 2) {
-        appendShotAndGoal(adjusted, fixtureId, "home", "home-p9", 66 * 60, "comeback-home-forced-1", true);
-        appendShotAndGoal(adjusted, fixtureId, "home", "home-p10", 82 * 60, "comeback-home-forced-2", true);
-      }
-    }
-    if (!firstHalfAwayGoal) {
-      appendShotAndGoal(adjusted, fixtureId, "away", "away-p9", 24 * 60, "comeback-away-forced", true);
     }
   }
 
@@ -952,7 +1041,7 @@ export function generateMatch(request: GenerateMatchRequest): MatchFixture {
   const fixtureId = `gen-${request.scenario}-${request.seed}`;
   const meta = scenarioTitle(request.scenario, home, away);
   const base = generatePossessionEvents(fixtureId, request.seed, request.scenario, home, away);
-  const scenaried = applyScenarioAdjustments(base, request.scenario, fixtureId, request.seed);
-  const secured = ensureGoals(scenaried, fixtureId, lcg(request.seed ^ 0x9e3779b9));
-  return buildFixture(fixtureId, request.seed, meta.title, meta.description, home, away, secured);
+  const secured = ensureGoals(base, fixtureId, lcg(request.seed ^ 0x9e3779b9));
+  const scenaried = applyScenarioAdjustments(secured, request.scenario, fixtureId, request.seed, home, away);
+  return buildFixture(fixtureId, request.seed, meta.title, meta.description, home, away, scenaried);
 }

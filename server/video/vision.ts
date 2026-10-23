@@ -25,7 +25,7 @@ export interface VisionAnalyzer {
   analyzeBatch(input: { frames: VisionFrameInput[]; request: VideoJobRequest; knownKits?: { home: string; away: string }; intervalSeconds: number }): Promise<VisionBatchResult>;
 }
 
-const OUTCOMES = ["success", "miss", "blocked", "saved", "complete", "incomplete", "none"] as const;
+const OUTCOMES = ["success", "fail", "miss", "blocked", "saved", "complete", "incomplete", "none"] as const;
 const BATCH_DEADLINE_MS = 120_000;
 
 const detectionSchema = z.object({

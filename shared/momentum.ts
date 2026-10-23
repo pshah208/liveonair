@@ -50,15 +50,14 @@ export interface ControlChaosWindow {
 
 const GRID_COLS = 12;
 const GRID_ROWS = 8;
-const ON_BALL = new Set<MatchEvent["type"]>(["pass", "shot", "goal", "save", "corner", "tackle"]);
+const ON_BALL = new Set<MatchEvent["type"]>(["pass", "shot", "goal", "save", "corner", "tackle", "interception", "ball_recovery"]);
 const secondOf = (event: Pick<MatchEvent, "minute" | "second">) => event.minute * 60 + event.second;
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
 
 function isOnBall(event: MatchEvent): boolean {
   if (!ON_BALL.has(event.type)) return false;
   if (event.type !== "tackle") return true;
-  if (event.id.includes("-interception-") || event.id.includes("-recovery-")) return false;
-  return event.outcome === "success" || event.outcome === "complete";
+  return event.outcome === "success";
 }
 
 function latestEvents(events: MatchEvent[]): MatchEvent[] {

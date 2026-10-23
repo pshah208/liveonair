@@ -47,11 +47,11 @@ export type OptaLog = (entry: {
 }) => void;
 
 const EVENT_TYPES = new Set<EventType>([
-  "pass", "shot", "goal", "save", "tackle", "pressure", "corner", "foul",
+  "pass", "shot", "goal", "save", "tackle", "interception", "ball_recovery", "pressure", "corner", "foul",
   "yellow_card", "red_card", "substitution", "kickoff", "halftime", "fulltime",
 ]);
 
-const OUTCOMES = new Set<MatchEvent["outcome"]>(["success", "miss", "blocked", "saved", "complete", "incomplete", "none"]);
+const OUTCOMES = new Set<MatchEvent["outcome"]>(["success", "fail", "miss", "blocked", "saved", "complete", "incomplete", "none"]);
 
 const Q = OPTA_MAPPING.qualifiers;
 const T = OPTA_MAPPING.types;
@@ -74,6 +74,8 @@ const TYPE_BY_ID = new Map<number, { canonical: string; outcome?: MatchEvent["ou
   [T.kickoff.typeId, { canonical: "kickoff" }],
   [T.halftime.typeId, { canonical: "halftime" }],
   [T.fulltime.typeId, { canonical: "fulltime" }],
+  [T.interception.typeId, { canonical: "interception" }],
+  [T.ballRecovery.typeId, { canonical: "ball_recovery" }],
 ]);
 
 function defaultLog(entry: Parameters<OptaLog>[0]): void {
@@ -150,6 +152,12 @@ export function canonicalEventToOpta(event: MatchEvent): OptaStyleEvent {
         break;
       case "tackle":
         typeId = T.tackle.typeId;
+        break;
+      case "interception":
+        typeId = T.interception.typeId;
+        break;
+      case "ball_recovery":
+        typeId = T.ballRecovery.typeId;
         break;
       case "save":
         typeId = T.save.typeId;
@@ -287,7 +295,8 @@ function finiteNumber(value: unknown): number | undefined {
 function inferredOutcome(canonical: EventType, bit: 0 | 1, shotOutcome: MatchEvent["outcome"] | undefined): MatchEvent["outcome"] {
   if (canonical === "pass" || canonical === "corner") return bit === 1 ? "complete" : "incomplete";
   if (canonical === "shot") return shotOutcome ?? (bit === 1 ? "saved" : "miss");
-  if (canonical === "tackle") return bit === 1 ? "success" : "incomplete";
+  if (canonical === "tackle") return bit === 1 ? "success" : "fail";
+  if (canonical === "interception" || canonical === "ball_recovery") return "success";
   if (canonical === "yellow_card" || canonical === "red_card" || canonical === "substitution" || canonical === "kickoff" || canonical === "halftime" || canonical === "fulltime" || canonical === "foul") {
     return "none";
   }

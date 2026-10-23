@@ -151,6 +151,8 @@ export const IMPACT_WEIGHTS = {
   progressivePass: 0.025,
   tackleWon: 0.018,
   tackleLost: -0.02,
+  interception: 0.01,
+  ballRecovery: 0.008,
   pressure: 0.002,
   save: 0.22,
   savedXg: 0.5,
@@ -181,7 +183,7 @@ export const IMPACT_WEIGHT_LABELS: Record<keyof typeof IMPACT_WEIGHTS, string> =
   goal: "goal", assist: "assist", keyPass: "chance created", xa: "xG assisted",
   shotOnTarget: "shot on target", shotOffTarget: "shot off target", xg: "illustrative xG",
   passCompleted: "completed pass", passFailed: "lost pass", progressivePass: "progressive pass",
-  tackleWon: "tackle won", tackleLost: "tackle lost", pressure: "pressure",
+  tackleWon: "tackle won", tackleLost: "tackle lost", interception: "interception", ballRecovery: "ball recovery", pressure: "pressure",
   save: "save", savedXg: "xG saved", foul: "foul", yellow: "yellow", red: "red",
 };
 
@@ -225,7 +227,9 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
     const passesCompleted = passes.filter((pass) => pass.outcome === "complete").length;
     const progressivePasses = passes.filter(isProgressivePass).length;
     const tackles = own.filter((event) => event.type === "tackle");
-    const tacklesWon = tackles.filter((tackle) => tackle.outcome === "success" || tackle.outcome === "complete").length;
+    const tacklesWon = tackles.filter((tackle) => tackle.outcome === "success").length;
+    const interceptions = own.filter((event) => event.type === "interception").length;
+    const recoveries = own.filter((event) => event.type === "ball_recovery").length;
     const saves = own.filter((event) => event.type === "save");
     const savedXg = saves.reduce((sum, save) => sum + ((save.relatedEventId ? byId.get(save.relatedEventId)?.xg : undefined) ?? 0), 0);
     const fouls = own.filter((event) => event.type === "foul").length;
@@ -242,7 +246,7 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       { key: "scoring", label: "Scoring", value: goals * w.goal + (shotsOnTarget - goals) * w.shotOnTarget + (shots.length + unshotGoals.length - shotsOnTarget) * w.shotOffTarget + xg * w.xg },
       { key: "creating", label: "Chance creation", value: assists * w.assist + createdShots.length * w.keyPass + xa * w.xa },
       { key: "passing", label: "Passing", value: passesCompleted * w.passCompleted + (passes.length - passesCompleted) * w.passFailed + progressivePasses * w.progressivePass },
-      { key: "defending", label: "Defending", value: tacklesWon * w.tackleWon + (tackles.length - tacklesWon) * w.tackleLost + pressures * w.pressure },
+      { key: "defending", label: "Defending", value: tacklesWon * w.tackleWon + (tackles.length - tacklesWon) * w.tackleLost + interceptions * w.interception + recoveries * w.ballRecovery + pressures * w.pressure },
       { key: "goalkeeping", label: "Goalkeeping", value: saves.length * w.save + savedXg * w.savedXg },
       { key: "discipline", label: "Discipline", value: fouls * w.foul + yellowCards * w.yellow + redCards * w.red },
     ].map((component) => ({ ...component, value: round(component.value) })) as ImpactComponent[];
