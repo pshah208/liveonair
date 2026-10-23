@@ -89,6 +89,9 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
     };
     source.onerror = () => {
       if (!cancelled) {
+        // Drop the stale frame so the board falls back to arrows; EventSource reconnects
+        // on its own and the next frame repopulates the overlay.
+        reset();
         setConnected(false);
         setStatusText("Tracking unavailable.");
       }
@@ -134,7 +137,12 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
   }, [sourceFrame, reduced]);
 
   const frame = enabled ? view?.frame ?? null : null;
-  const crowded = useMemo(() => (frame ? crowdedPlayerIds(frame.players) : new Set<string>()), [frame]);
+  const crowdedRef = useRef<Set<string>>(new Set());
+  const crowded = useMemo(() => {
+    // Hysteresis via the previous result: hide below 2 m, show again only above 2.5 m.
+    crowdedRef.current = frame ? crowdedPlayerIds(frame.players, undefined, crowdedRef.current) : new Set<string>();
+    return crowdedRef.current;
+  }, [frame]);
 
   const controls = (
     <div className="tracking-overlay__controls" role="group" aria-label="Tracking overlay controls">
@@ -170,7 +178,7 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
             );
           })}
           {trail.slice(0, -1).map((point) => {
-            const fresh = 1 - (latestAt - point.at) / TRACKING_BALL_TRAIL_MS;
+            const fresh = Math.min(1, Math.max(0, 1 - (latestAt - point.at) / TRACKING_BALL_TRAIL_MS));
             return <circle key={point.at} cx={point.x} cy={flipY(point.y)} r={BALL_RADIUS_M * (0.35 + 0.45 * fresh)} className="tracking-ball-trail" opacity={0.45 * fresh} />;
           })}
           <g transform={`translate(${frame.ball.x} ${flipY(frame.ball.y)})`}>

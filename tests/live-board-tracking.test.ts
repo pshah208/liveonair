@@ -80,6 +80,47 @@ test("numbers are dropped only for dots closer than 2 m", () => {
   assert.deepEqual([...crowded].sort(), ["a", "b"]);
 });
 
+test("shirt numbers use hysteresis: hide below 2 m, show again only above 2.5 m", () => {
+  const at = (gap: number) => frame(1, 0, [["a", 10, 10], ["b", 10 + gap, 10]]).players;
+  let crowded = crowdedPlayerIds(at(1.9));
+  assert.deepEqual([...crowded].sort(), ["a", "b"]);
+  // Drifting between 2 and 2.5 m keeps the numbers hidden (no flicker).
+  crowded = crowdedPlayerIds(at(2.2), undefined, crowded);
+  assert.deepEqual([...crowded].sort(), ["a", "b"]);
+  // Without history the same 2.2 m gap shows numbers.
+  assert.equal(crowdedPlayerIds(at(2.2)).size, 0);
+  crowded = crowdedPlayerIds(at(2.6), undefined, crowded);
+  assert.equal(crowded.size, 0);
+  // Once released, 2.2 m stays shown until the gap drops below 2 m again.
+  crowded = crowdedPlayerIds(at(2.2), undefined, crowded);
+  assert.equal(crowded.size, 0);
+  const layer = read("src/TrackingLayer.tsx");
+  assert.match(layer, /crowdedPlayerIds\(frame\.players, undefined, crowdedRef\.current\)/);
+});
+
+test("stream error clears the stale frame so the board falls back to arrows", () => {
+  const src = read("src/TrackingLayer.tsx");
+  const onError = src.slice(src.indexOf("source.onerror"), src.indexOf("return () =>", src.indexOf("source.onerror")));
+  assert.match(onError, /reset\(\);/);
+  assert.match(onError, /setConnected\(false\)/);
+  // reset() must clear the source frame and the drawn view.
+  const reset = src.slice(src.indexOf("const reset = () =>"), src.indexOf("reset();", src.indexOf("const reset = () =>")));
+  assert.match(reset, /setSourceFrame\(null\)/);
+  assert.match(reset, /setView\(null\)/);
+});
+
+test("ball-trail freshness is clamped to [0, 1]", () => {
+  const src = read("src/TrackingLayer.tsx");
+  assert.match(src, /const fresh = Math\.min\(1, Math\.max\(0, 1 - \(latestAt - point\.at\) \/ TRACKING_BALL_TRAIL_MS\)\);/);
+});
+
+test("crowd-cap comment matches the 2 / 3 (counter-press) quota", () => {
+  const src = read("shared/tracking.ts");
+  assert.match(src, /at most two of a team near the ball, or three for the team out of\s*\/\/ possession during a counter-press/);
+  assert.match(src, /const quota = teamId !== possession && counterPress \? 3 : 2;/);
+  assert.doesNotMatch(src, /at most three of a team near the ball/);
+});
+
 test("ball trail keeps only the last 0.6 s", () => {
   let trail = pushTrail([], { x: 0, y: 0, at: 0 });
   trail = pushTrail(trail, { x: 1, y: 0, at: 300 });

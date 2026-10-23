@@ -42,14 +42,27 @@ export function shouldSnap(from: TrackingFrame | null, to: TrackingFrame, reduce
   return maxDisplacement(from, to) > TRACKING_SNAP_DISTANCE_M;
 }
 
-/** IDs of players with another player closer than `minGapM`; their numbers are hidden. */
-export function crowdedPlayerIds(players: TrackingPlayer[], minGapM = TRACKING_NUMBER_MIN_GAP_M): Set<string> {
+/** A hidden number only comes back once the nearest dot is farther than this (hysteresis). */
+export const TRACKING_NUMBER_RELEASE_GAP_M = 2.5;
+
+/**
+ * IDs of players with another player closer than `minGapM`; their numbers are hidden.
+ * Pass the previous result as `previous` for hysteresis: a pair that was already crowded
+ * stays crowded until it separates beyond `releaseGapM`, so numbers do not flicker at 2 m.
+ */
+export function crowdedPlayerIds(
+  players: TrackingPlayer[],
+  minGapM = TRACKING_NUMBER_MIN_GAP_M,
+  previous?: ReadonlySet<string>,
+  releaseGapM = TRACKING_NUMBER_RELEASE_GAP_M,
+): Set<string> {
   const crowded = new Set<string>();
   for (let i = 0; i < players.length; i += 1) {
     for (let j = i + 1; j < players.length; j += 1) {
       const a = players[i]!;
       const b = players[j]!;
-      if (Math.hypot(a.x - b.x, a.y - b.y) < minGapM) {
+      const sticky = previous !== undefined && previous.has(a.id) && previous.has(b.id);
+      if (Math.hypot(a.x - b.x, a.y - b.y) < (sticky ? Math.max(minGapM, releaseGapM) : minGapM)) {
         crowded.add(a.id);
         crowded.add(b.id);
       }

@@ -679,8 +679,9 @@ function buildSnapshot(
     targets.set(anchor.playerId, anchor.__point);
   }
 
-  // Crowd cap: at most three of a team near the ball (two out of possession
-  // outside the counter-press). Priority roles are never displaced.
+  // Crowd cap: at most two of a team near the ball, or three for the team out of
+  // possession during a counter-press. The presser and cover count toward that
+  // quota; priority roles are never displaced.
   {
     const priority = new Set<string>([...pressers, ...prepared]);
     if (anchor) priority.add(anchor.playerId);
