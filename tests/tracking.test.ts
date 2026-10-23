@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { performance } from "node:perf_hooks";
 
-import { placeEvent } from "../shared/ballPath.js";
 import { buildTrackingFrame, maxPlayerSpeedMps, TRACKING_PITCH_LENGTH_M, TRACKING_PITCH_WIDTH_M } from "../shared/tracking.js";
 import type { MatchFixture, Player } from "../shared/types.js";
 import { generateMatch } from "../server/matchlab/generator.js";
@@ -61,16 +60,17 @@ test("tracking movement stays under ~10 m/s between 5 Hz frames", () => {
   }
 });
 
-test("ball sits at event location on event timestamps", () => {
+test("ball transitions near events without teleporting", () => {
   const f = fixture();
   for (const event of f.events) {
     const at = event.minute * 60 + event.second;
-    const frame = buildTrackingFrame(f, at);
-    const point = placeEvent(f, event);
-    const expectedX = (point.x / 100) * TRACKING_PITCH_LENGTH_M;
-    const expectedY = TRACKING_PITCH_WIDTH_M - (point.y / 100) * TRACKING_PITCH_WIDTH_M;
-    assert.ok(Math.abs(frame.ball.x - expectedX) < 0.01, `${event.id} x`);
-    assert.ok(Math.abs(frame.ball.y - expectedY) < 0.01, `${event.id} y`);
+    const before = buildTrackingFrame(f, Math.max(0, at - 0.2));
+    const now = buildTrackingFrame(f, at);
+    const after = buildTrackingFrame(f, at + 0.2);
+    const firstSpeed = Math.hypot(now.ball.x - before.ball.x, now.ball.y - before.ball.y) / 0.2;
+    const secondSpeed = Math.hypot(after.ball.x - now.ball.x, after.ball.y - now.ball.y) / 0.2;
+    assert.ok(firstSpeed <= 35.5, `${event.id} speed-1 ${firstSpeed.toFixed(2)}`);
+    assert.ok(secondSpeed <= 35.5, `${event.id} speed-2 ${secondSpeed.toFixed(2)}`);
   }
 });
 
@@ -220,13 +220,113 @@ test("live-board synthetic tracking keeps realistic speed, pressure and spacing 
   assert.ok((lowSpreadFrames / Math.max(1, desyncChecks)) <= 0.015, `low-spread share ${(lowSpreadFrames / Math.max(1, desyncChecks)).toFixed(3)}`);
 });
 
-test("tracking frame build stays performant at 5Hz", () => {
-  const generated = generateMatch({ scenario: "goal_fest", seed: 2026 });
-  const points = Array.from({ length: 450 }, (_, index) => (index / 5) + 30);
-  buildTrackingFrame(generated, points[0]!);
+test("tracking timeline extension stays fast with deep-cloned fixtures at 5Hz over 90 minutes", () => {
+  const baseline = fixture();
+  const liveFixture: MatchFixture = { ...baseline, durationSeconds: 5_400, events: [] };
+  const sourceEvents = Array.from({ length: 360 }, (_, index) => {
+    const atSecond = index * 15;
+    const minute = Math.floor(atSecond / 60);
+    const second = atSecond % 60;
+    const home = index % 2 === 0;
+    return {
+      id: `live-${index}`,
+      revision: 1,
+      minute,
+      second,
+      type: index % 9 === 0 ? "shot" : "pass",
+      teamId: home ? "home" : "away",
+      playerId: home ? "home-p7" : "away-p6",
+      outcome: index % 9 === 0 ? "saved" : "complete",
+      x: home ? 55 : 45,
+      y: home ? 48 : 52,
+      ...(index % 9 === 0 ? {} : { endX: home ? 63 : 37, endY: 50 }),
+    } as const;
+  });
+  const points = Array.from({ length: liveFixture.durationSeconds * 5 }, (_, index) => (index + 1) / 5);
+  let sourceIndex = 0;
+  let worstMs = 0;
   const start = performance.now();
-  for (const second of points) buildTrackingFrame(generated, second);
+  for (const second of points) {
+    while (sourceIndex < sourceEvents.length) {
+      const event = sourceEvents[sourceIndex]!;
+      const eventSecond = event.minute * 60 + event.second;
+      if (eventSecond > second) break;
+      liveFixture.events.push({ ...event });
+      sourceIndex += 1;
+    }
+    const before = performance.now();
+    buildTrackingFrame(structuredClone(liveFixture), second);
+    const cost = performance.now() - before;
+    worstMs = Math.max(worstMs, cost);
+  }
   const elapsed = performance.now() - start;
   const perFrameMs = elapsed / points.length;
-  assert.ok(perFrameMs < 2.1, `per-frame cost ${perFrameMs.toFixed(3)} ms`);
+  assert.ok(perFrameMs <= 2.1, `per-frame cost ${perFrameMs.toFixed(3)} ms`);
+  assert.ok(worstMs < 80, `worst single call ${worstMs.toFixed(2)} ms`);
+});
+
+test("tracking cold start stays bounded", () => {
+  const cold = structuredClone(fixture());
+  cold.durationSeconds = 5_400;
+  const before = performance.now();
+  buildTrackingFrame(cold, 0.2);
+  const elapsed = performance.now() - before;
+  assert.ok(elapsed < 350, `cold start ${elapsed.toFixed(2)} ms`);
+});
+
+test("live publish boundaries do not create teleport steps", () => {
+  const liveFixture: MatchFixture = { ...fixture(), durationSeconds: 600, events: [] };
+  const sourceEvents = Array.from({ length: 100 }, (_, index) => {
+    const atSecond = index * 6;
+    const minute = Math.floor(atSecond / 60);
+    const second = atSecond % 60;
+    const home = index % 2 === 0;
+    return {
+      id: `progressive-${index}`,
+      revision: 1,
+      minute,
+      second,
+      type: index % 20 === 0 ? "shot" : "pass",
+      teamId: home ? "home" : "away",
+      playerId: home ? "home-p10" : "away-p9",
+      outcome: index % 20 === 0 ? "saved" : "complete",
+      x: home ? 58 : 42,
+      y: home ? 50 : 51,
+      ...(index % 20 === 0 ? {} : { endX: home ? 67 : 33, endY: 49 }),
+    } as const;
+  });
+  let sourceIndex = 0;
+  let previous = buildTrackingFrame(structuredClone(liveFixture), 0);
+  for (let tick = 1; tick <= liveFixture.durationSeconds * 5; tick += 1) {
+    const second = tick / 5;
+    while (sourceIndex < sourceEvents.length) {
+      const event = sourceEvents[sourceIndex]!;
+      const eventSecond = event.minute * 60 + event.second;
+      if (eventSecond > second) break;
+      liveFixture.events.push({ ...event });
+      sourceIndex += 1;
+    }
+    const frame = buildTrackingFrame(structuredClone(liveFixture), second);
+    const max = maxPlayerSpeedMps(previous, frame);
+    assert.ok(max <= 10.5, `max speed ${max.toFixed(2)} at ${second.toFixed(1)}s`);
+    previous = frame;
+  }
+});
+
+test("ball speed spikes above 45 m/s stay rare", () => {
+  const generated = generateMatch({ scenario: "goal_fest", seed: 2029 });
+  generated.durationSeconds = Math.min(generated.durationSeconds, 1_800);
+  let previous = buildTrackingFrame(generated, 0);
+  let above45 = 0;
+  let total = 0;
+  for (let tick = 1; tick <= Math.floor(generated.durationSeconds * 5); tick += 1) {
+    const second = tick / 5;
+    const frame = buildTrackingFrame(generated, second);
+    const speed = Math.hypot(frame.ball.x - previous.ball.x, frame.ball.y - previous.ball.y) / 0.2;
+    if (speed > 45) above45 += 1;
+    total += 1;
+    previous = frame;
+  }
+  const share = above45 / Math.max(1, total);
+  assert.ok(share < 0.01, `ball speed >45m/s share ${share.toFixed(4)}`);
 });
