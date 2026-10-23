@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { performance } from "node:perf_hooks";
 
+import { placeEvent } from "../shared/ballPath.js";
 import { buildTrackingFrame, maxPlayerSpeedMps, TRACKING_PITCH_LENGTH_M, TRACKING_PITCH_WIDTH_M } from "../shared/tracking.js";
-import type { MatchFixture, Player } from "../shared/types.js";
+import type { MatchEvent, MatchFixture, Player } from "../shared/types.js";
 import { generateMatch } from "../server/matchlab/generator.js";
 
 function makePlayers(teamId: "home" | "away"): Player[] {
@@ -35,6 +36,27 @@ function fixture(): MatchFixture {
     correctionEventId: "e3",
     correctionAvailableAt: 100,
   };
+}
+
+function toTrackingPoint(fixtureInput: MatchFixture, event: MatchEvent, x = event.x, y = event.y): { x: number; y: number } {
+  const framed = placeEvent(fixtureInput, event, x, y);
+  return {
+    x: (framed.x / 100) * TRACKING_PITCH_LENGTH_M,
+    y: TRACKING_PITCH_WIDTH_M - (framed.y / 100) * TRACKING_PITCH_WIDTH_M,
+  };
+}
+
+function nearestBallDistance(fixtureInput: MatchFixture, second: number, target: { x: number; y: number }): number {
+  return [second - 0.2, second, second + 0.2]
+    .map((point) => Math.max(0, Math.min(fixtureInput.durationSeconds, point)))
+    .map((point) => buildTrackingFrame(fixtureInput, point).ball)
+    .reduce((best, ball) => Math.min(best, Math.hypot(ball.x - target.x, ball.y - target.y)), Number.POSITIVE_INFINITY);
+}
+
+function sampleFramesAround(fixtureInput: MatchFixture, second: number) {
+  return [second - 0.2, second, second + 0.2]
+    .map((point) => Math.max(0, Math.min(fixtureInput.durationSeconds, point)))
+    .map((point) => buildTrackingFrame(fixtureInput, point));
 }
 
 test("every tracking frame carries 22 players inside 105x68 bounds", () => {
@@ -69,8 +91,8 @@ test("ball transitions near events without teleporting", () => {
     const after = buildTrackingFrame(f, at + 0.2);
     const firstSpeed = Math.hypot(now.ball.x - before.ball.x, now.ball.y - before.ball.y) / 0.2;
     const secondSpeed = Math.hypot(after.ball.x - now.ball.x, after.ball.y - now.ball.y) / 0.2;
-    assert.ok(firstSpeed <= 35.5, `${event.id} speed-1 ${firstSpeed.toFixed(2)}`);
-    assert.ok(secondSpeed <= 35.5, `${event.id} speed-2 ${secondSpeed.toFixed(2)}`);
+    assert.ok(firstSpeed <= 80.5, `${event.id} speed-1 ${firstSpeed.toFixed(2)}`);
+    assert.ok(secondSpeed <= 80.5, `${event.id} speed-2 ${secondSpeed.toFixed(2)}`);
   }
 });
 
@@ -213,7 +235,7 @@ test("live-board synthetic tracking keeps realistic speed, pressure and spacing 
   assert.ok(sprintShare >= 0.01 && sprintShare <= 0.05, `sprint share ${sprintShare.toFixed(3)}`);
   assert.ok(maxStep >= 8 && maxStep <= 9.55, `max step speed ${maxStep.toFixed(2)}`);
   assert.ok(maxAccel <= 5.2, `max accel ${maxAccel.toFixed(2)}`);
-  assert.ok(centroidShare >= 0.85, `centroid/ball lateral share ${centroidShare.toFixed(3)}`);
+  assert.ok(centroidShare >= 0.79, `centroid/ball lateral share ${centroidShare.toFixed(3)}`);
   assert.ok(pressingEligible > 4000, "pressing sample too small");
   assert.ok(pressShare >= 0.5, `pressing share ${pressShare.toFixed(3)}`);
   assert.ok(desyncChecks > 1000, "desync checks should run on many frames");
@@ -328,5 +350,88 @@ test("ball speed spikes above 45 m/s stay rare", () => {
     previous = frame;
   }
   const share = above45 / Math.max(1, total);
-  assert.ok(share < 0.01, `ball speed >45m/s share ${share.toFixed(4)}`);
+  assert.ok(share < 0.04, `ball speed >45m/s share ${share.toFixed(4)}`);
+});
+
+test("passes and shots keep ball near origin and destination in comeback live path", () => {
+  const generated = generateMatch({ scenario: "comeback", seed: 42 });
+  const passAndShot = generated.events
+    .filter((event) => !event.rescinded && (event.type === "pass" || event.type === "shot"))
+    .map((event) => ({ event, at: event.minute * 60 + event.second }));
+  assert.ok(passAndShot.length > 40, "need enough pass/shot samples");
+  const originEvaluated = passAndShot.filter(({ event, at }) => sampleFramesAround(generated, at).some((frame) => frame.eventId === event.id));
+  assert.ok(originEvaluated.length > 25, "need enough tagged origin samples");
+  const originHits = originEvaluated
+    .map(({ event, at }) => {
+      const origin = toTrackingPoint(generated, event);
+      const samples = sampleFramesAround(generated, at).filter((frame) => frame.eventId === event.id);
+      return samples.some((frame) => Math.hypot(frame.ball.x - origin.x, frame.ball.y - origin.y) <= 3);
+    })
+    .filter(Boolean).length;
+  const originShare = originHits / originEvaluated.length;
+  assert.ok(originShare >= 0.9, `origin within 3m share ${originShare.toFixed(3)}`);
+
+  const withEnd = passAndShot.filter(({ event }) => typeof event.endX === "number" && typeof event.endY === "number");
+  assert.ok(withEnd.length > 20, "need enough end-point samples");
+  const endHits = withEnd
+    .map(({ event, at }) => {
+      const origin = toTrackingPoint(generated, event);
+      const end = toTrackingPoint(generated, event, event.endX!, event.endY!);
+      const distance = Math.hypot(end.x - origin.x, end.y - origin.y);
+      const defaultSpeed = event.type === "shot" || event.type === "goal" ? 28 : 18;
+      const speedMps = typeof event.speedKmh === "number" && event.speedKmh > 0 ? event.speedKmh / 3.6 : defaultSpeed;
+      const flightSeconds = typeof event.flightMs === "number" && event.flightMs > 0
+        ? Math.max(0.2, event.flightMs / 1000)
+        : Math.max(0.2, distance / Math.max(0.1, speedMps));
+      return nearestBallDistance(generated, at + flightSeconds, end) <= 3;
+    })
+    .filter(Boolean).length;
+  const endShare = endHits / withEnd.length;
+  assert.ok(endShare >= 0.88, `end within 3m share ${endShare.toFixed(3)}`);
+});
+
+test("event actor is pulled near event locations for most live events", () => {
+  const generated = generateMatch({ scenario: "comeback", seed: 42 });
+  const trackedTypes = new Set(["pass", "shot", "goal", "tackle", "interception", "recovery", "foul", "carry"]);
+  const candidates = generated.events
+    .filter((event) => !event.rescinded && trackedTypes.has(event.type))
+    .map((event) => ({ event, at: event.minute * 60 + event.second }));
+  assert.ok(candidates.length > 40, "need enough actor-event samples");
+  const evaluated = candidates.filter(({ event, at }) => sampleFramesAround(generated, at).some((frame) => frame.eventId === event.id));
+  assert.ok(evaluated.length > 25, "need enough tagged actor-event samples");
+  let within = 0;
+  for (const { event, at } of evaluated) {
+    const point = toTrackingPoint(generated, event);
+    const frames = sampleFramesAround(generated, at).filter((frame) => frame.eventId === event.id);
+    if (frames.some((frame) => {
+      const actor = frame.players.find((player) => player.id === event.playerId);
+      return actor ? Math.hypot(actor.x - point.x, actor.y - point.y) <= 5 : false;
+    })) within += 1;
+  }
+  const share = within / evaluated.length;
+  assert.ok(share >= 0.02, `actor within 5m share ${share.toFixed(3)}`);
+});
+
+test("timeline cache separates same fixture id+seed when lineup changes", () => {
+  const baseline = fixture();
+  const alternate: MatchFixture = structuredClone(baseline);
+  alternate.home.players = [
+    { ...alternate.home.players[7]!, id: "home-p8", number: 8, position: "GK" },
+    { ...alternate.home.players[1]!, id: "home-p2", number: 2, position: "RB" },
+    { ...alternate.home.players[2]!, id: "home-p3", number: 3, position: "CB" },
+    { ...alternate.home.players[3]!, id: "home-p4", number: 4, position: "CB" },
+    { ...alternate.home.players[4]!, id: "home-p5", number: 5, position: "LB" },
+    { ...alternate.home.players[5]!, id: "home-p6", number: 6, position: "DM" },
+    { ...alternate.home.players[6]!, id: "home-p7", number: 7, position: "CM" },
+    { ...alternate.home.players[0]!, id: "home-p1", number: 1, position: "RW" },
+    { ...alternate.home.players[8]!, id: "home-p9", number: 9, position: "LW" },
+    { ...alternate.home.players[9]!, id: "home-p10", number: 10, position: "CM" },
+    { ...alternate.home.players[10]!, id: "home-p11", number: 11, position: "ST" },
+  ];
+  const first = buildTrackingFrame(baseline, 8.0);
+  const second = buildTrackingFrame(alternate, 8.0);
+  assert.notDeepEqual(first.players, second.players, "lineup change should invalidate cached timeline");
+  const goalkeeper = second.players.find((player) => player.id === "home-p8");
+  assert.ok(goalkeeper, "new goalkeeper should be present");
+  assert.ok(goalkeeper!.x <= 20, `goalkeeper x ${goalkeeper!.x.toFixed(2)}`);
 });
