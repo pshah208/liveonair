@@ -31,7 +31,7 @@ export interface TrackingFrame {
 
 export type TrackingStreamMessage =
   | { type: "frame"; frame: TrackingFrame }
-  | { type: "status"; status: "idle" | "no_data" | "ended"; message: string }
+  | { type: "status"; status: "idle" | "no_data" | "ended" | "paused"; message: string }
   | { type: "heartbeat"; at: string };
 
 type Point = { x: number; y: number };

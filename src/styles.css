@@ -287,6 +287,8 @@ input[type="range"] { width: 100%; accent-color: var(--cp-accent); }
 .live-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .live-pill--running { background: var(--cp-live); border-color: var(--cp-live); color: #ffffff; box-shadow: 0 0 16px color-mix(in srgb, var(--cp-live) 45%, transparent); }
 .live-pill--running::before { animation: blink 1.2s ease-in-out infinite; }
+.live-pill--paused { background: var(--cp-warning); border-color: var(--cp-warning); color: #111114; }
+.match-controls { display: flex; gap: 8px; flex-wrap: wrap; }
 @keyframes blink { 50% { opacity: 0.3; } }
 
 .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--cp-border); }

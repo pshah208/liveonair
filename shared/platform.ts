@@ -204,13 +204,18 @@ export interface LiveEnvelope {
 }
 
 export interface LiveStatus {
-  state: "idle" | "running" | "finished";
+  state: "idle" | "running" | "paused" | "finished";
   transport: LiveTransport;
   transportConfigured: boolean;
   matchId?: string;
   fixtureId?: string;
   title?: string;
   clockSecond: number;
+  /**
+   * Match second frozen by pause. Present only while `state` is `paused`.
+   * `clockSecond` is the same value; this field is the explicit pause marker.
+   */
+  pausedAtSecond?: number;
   speed: number;
   eventsReceived: number;
   duplicatesIgnored: number;
@@ -222,6 +227,11 @@ export interface LiveStatus {
   fallbackReason?: string | null;
   /** Active feed source for the running match, or the configured source while idle. */
   source?: LiveFeedSource;
+}
+
+/** Running or paused: the match is still this match, and the clock is the live second rather than full time. */
+export function isMatchInProgress(state: LiveStatus["state"] | undefined): boolean {
+  return state === "running" || state === "paused";
 }
 
 export interface StartLiveRequest {

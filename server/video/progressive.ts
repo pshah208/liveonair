@@ -8,6 +8,7 @@ import {
 } from "../../shared/progressiveVideo.js";
 import type { MatchEvent, MatchFixture } from "../../shared/types.js";
 import { MAX_UPLOAD_BYTES, MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type VideoFrame, type VideoJobRequest, type VisionDetection } from "../../shared/video.js";
+import { isMatchInProgress } from "../../shared/platform.js";
 import type { LiveService } from "../contracts.js";
 import { jobIdSchema, kitSchema, nameSchema, parseOr400 } from "../routes/video.js";
 import { HttpError } from "../validation.js";
@@ -119,7 +120,7 @@ export function createProgressiveVideoService(options: ProgressiveVideoOptions):
 
   function ownStreamRunning(session: Session): boolean {
     const status = live.status();
-    return status.state === "running" && status.fixtureId === session.value.fixtureId
+    return isMatchInProgress(status.state) && status.fixtureId === session.value.fixtureId
       && session.matchId !== undefined && status.matchId === session.matchId;
   }
 
@@ -148,7 +149,7 @@ export function createProgressiveVideoService(options: ProgressiveVideoOptions):
     // Replacement status may be provisional; its fixture is not ours to remove in any state.
     const status = live.status();
     if (status.fixtureId === session.value.fixtureId
-      && (status.state === "running" || status.matchId !== session.matchId)) return;
+      && (isMatchInProgress(status.state) || status.matchId !== session.matchId)) return;
     try {
       options.unregisterFixture(session.value.fixtureId);
       session.registered = false;
@@ -177,7 +178,7 @@ export function createProgressiveVideoService(options: ProgressiveVideoOptions):
     if (!session.ready || session.value.stage !== "streaming") return false;
     const status = live.status();
     if (status.fixtureId === session.value.fixtureId && status.matchId === session.matchId
-      && (status.state === "running" || (session.completing && status.state === "finished"))) return true;
+      && (isMatchInProgress(status.state) || (session.completing && status.state === "finished"))) return true;
     session.value.stage = "stopped";
     session.value.error = "The video live stream was stopped or replaced";
     discardImages(session);
@@ -397,7 +398,7 @@ export function createProgressiveVideoService(options: ProgressiveVideoOptions):
       creating = true;
       try {
         await sweep();
-        if (live.status().state === "running" || [...sessions.values()].some((session) => session.value.stage === "streaming")) {
+        if (isMatchInProgress(live.status().state) || [...sessions.values()].some((session) => session.value.stage === "streaming")) {
           throw new HttpError(409, "Stop the active live stream before starting another video");
         }
         if (sessions.size >= PROGRESSIVE_SESSION_LIMIT) throw new HttpError(429, "Video session limit reached; wait for idle sessions to expire");

@@ -218,7 +218,34 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
     try { setFixture(await api.getLiveFixture()); } catch { /* the stream refreshes it */ }
   }
 
+  async function handlePause() {
+    setSubmitting(true);
+    setPageError(null);
+    try {
+      const next = await api.pauseLive();
+      if (next) adoptStatus(next);
+    } catch (error: unknown) {
+      setPageError(actionError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleResume() {
+    setSubmitting(true);
+    setPageError(null);
+    try {
+      const next = await api.resumeLive();
+      if (next) adoptStatus(next);
+    } catch (error: unknown) {
+      setPageError(actionError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleStop() {
+    if (typeof window !== "undefined" && !window.confirm("End this match? You cannot resume it.")) return;
     setSubmitting(true);
     try {
       const ownProgressive = progressiveSession && status?.fixtureId === progressiveSession.fixtureId;
@@ -280,6 +307,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
 
   const progressiveForMatch = progressiveSession?.fixtureId === status?.fixtureId ? progressiveSession : null;
   const state = progressiveForMatch && progressiveForMatch.stage !== "complete" && status?.state === "finished" ? "idle" : status?.state ?? "idle";
+  const inPlay = state === "running" || state === "paused";
   const analyzedSecond = progressiveForMatch?.analyzedThrough ?? status?.clockSecond ?? 0;
   const recapFootage = progressiveFootage?.fixtureId === fixture?.id ? progressiveFootage : null;
   const score = snapshot?.score ?? computeScoreFromEvents(fixture);
@@ -296,7 +324,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
   const analysisStoppedEarly = progressiveForMatch?.stage === "stopped" || progressiveForMatch?.stage === "failed";
   const aiConfigured = Boolean(health?.ai.configured);
   // Game rhythm cards follow the live (or analysed) minute; at full time they cover the whole match.
-  const rhythmMinute = progressiveForMatch ? Math.floor(analyzedSecond / 60) : state === "running" ? Math.floor((status?.clockSecond ?? 0) / 60) : null;
+  const rhythmMinute = progressiveForMatch ? Math.floor(analyzedSecond / 60) : inPlay ? Math.floor((status?.clockSecond ?? 0) / 60) : null;
   const homeName = fixture?.home.name ?? "Home";
   const awayName = fixture?.away.name ?? "Away";
   const momentum = useMemo(() => (fixture ? momentumUpTo(fixture.events, rhythmMinute) : EMPTY_MOMENTUM), [fixture, rhythmMinute]);
@@ -366,17 +394,24 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
         <PlayerCam />
       </div>
 
-      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} period={period} onPeriodChange={setPeriod} />}
+      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : inPlay ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} period={period} onPeriodChange={setPeriod} />}
       {tab === "recap" && labHighlights && <LabHighlightReel lab={labHighlights} theme={theme} onEdit={() => setTab("video")} onClose={() => setLabHighlights(null)} />}
 
       {tab === "video" || tab === "player" || tab === "players" ? null : tab === "live" ? (
         <div className="desk-grid">
           <div className="desk-col">
-            <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>
-              {state === "running" ? (
+            <Panel eyebrow="Match feed" title={state === "paused" ? "Match paused" : state === "running" ? "Match in progress" : "Start a match"}>
+              {inPlay ? (
                 <div className="running-summary">
-                  <p className="subtle-text">{fixture?.title} · {progressiveForMatch ? "Progressive video: analysis runs independently of local playback." : `${status?.speed}× speed.`} Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
-                  <button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop match</button>
+                  <p className="subtle-text">{fixture?.title} · {state === "paused" ? "Paused. The clock is frozen and events are held." : progressiveForMatch ? "Progressive video: analysis runs independently of local playback." : `${status?.speed}× speed.`} Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
+                  <div className="match-controls">
+                    {state === "paused" ? (
+                      <button type="button" className="button button--primary" onClick={() => void handleResume()} disabled={submitting}>Resume</button>
+                    ) : (
+                      <button type="button" className="button button--primary" onClick={() => void handlePause()} disabled={submitting}>Pause</button>
+                    )}
+                    <button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop match</button>
+                  </div>
                 </div>
               ) : (
                 <div className="setup">
@@ -403,12 +438,12 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
               )}
             </Panel>
             <Panel eyebrow="Correction desk" title="Match events">
-              {fixture ? <EventFeed fixture={fixture} onCorrect={state === "running" ? (id) => void handleCorrection(id) : undefined} correctingId={correctingId} /> : <div className="empty-state">Start a match to see the feed.</div>}
+              {fixture ? <EventFeed fixture={fixture} onCorrect={inPlay ? (id) => void handleCorrection(id) : undefined} correctingId={correctingId} /> : <div className="empty-state">Start a match to see the feed.</div>}
             </Panel>
           </div>
 
           <div className="desk-col">
-            <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={setPeriod} halvesUnavailable={halvesUnavailable} score={score} />
+            <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={setPeriod} halvesUnavailable={halvesUnavailable} score={score} paused={state === "paused"} />
             <Panel eyebrow="Game rhythm" title="Attacking-threat momentum" aside={<label className="momentum-sponsor-toggle"><input type="checkbox" checked={showSponsor} onChange={(event) => setShowSponsor(event.target.checked)} /> Sponsor label</label>}>
               {fixture ? <MomentumChart series={momentum} homeName={homeName} awayName={awayName} explanation={momentumWhy ?? undefined} /> : <div className="empty-state">Start a match to see the attacking-threat chart.</div>}
               {showSponsor && <p className="momentum-sponsor">Momentum segment presented by <strong>{SPONSOR_NAME}</strong> (fictional brand)</p>}
@@ -435,7 +470,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onO
         </div>
       ) : fixture ? (
         <div className="recap-grid">
-          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={recapFootage} onOpenVideoLab={() => setTab("video")} />
+          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={progressiveForMatch ? analyzedSecond : inPlay ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={recapFootage} onOpenVideoLab={() => setTab("video")} />
           <div className="desk-col">
             <RecapPanel
               narrative={narrative}

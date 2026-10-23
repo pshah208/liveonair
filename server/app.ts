@@ -7,6 +7,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 
+import { isMatchInProgress } from "../shared/platform.js";
 import type {
   AnalysisRequest,
   AppHealth,
@@ -317,7 +318,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       const body = (typeof request.body === "object" && request.body !== null ? request.body : {}) as Record<string, unknown>;
       const status = platform.live.status();
-      const atSecond = status.state === "running"
+      const atSecond = isMatchInProgress(status.state)
         ? Math.min(view.fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
         : view.fixture.durationSeconds;
       const parsed = parseNarrativeRequest({
@@ -369,7 +370,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const favoriteClubId = body.favoriteClubId ?? body.favouriteClubId;
       const favoritePlayerId = body.favoritePlayerId ?? body.favouritePlayerId;
       const status = platform.live.status();
-      if (status.state !== "running" && status.state !== "finished") {
+      if (!isMatchInProgress(status.state) && status.state !== "finished") {
         throw new HttpError(409, "Post-match storylines are available once a match is running or finished");
       }
       const view = platform.live.current();
@@ -379,7 +380,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const fixture = deepClone(view.fixture);
       assertKnownFavoritePlayer(fixture, favoritePlayerId);
       const phase = status.state === "finished" ? "postmatch" : "so_far";
-      const atSecond = status.state === "running"
+      const atSecond = isMatchInProgress(status.state)
         ? Math.min(fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
         : fixture.durationSeconds;
       const snapshot = analyzeFixture(fixture, {
@@ -436,7 +437,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const body = parseStrict(z.object({ language: z.enum(["en", "es", "fr", "pt"]).default("en"), period: z.enum(["full", "first", "second"]).default("full") }).strict(), request.body ?? {});
       const fixture = deepClone(view.fixture);
       const status = platform.live.status();
-      const clock = status.state === "running" ? Math.max(0, Math.round(status.clockSecond)) : fixture.durationSeconds;
+      const clock = isMatchInProgress(status.state) ? Math.max(0, Math.round(status.clockSecond)) : fixture.durationSeconds;
       response.json(await playerAnalyst.write(fixture, playerId, body.language, clock, body.period));
     } catch (error) {
       next(error);

@@ -210,7 +210,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
   // opens (or when the favourite or alert settings change) are primed silently, so nothing floods in.
   const alertPrefs = alertPrefsOf(prefs);
   const alertPrefsKey = Object.entries(alertPrefs).map(([key, on]) => `${key}:${on ? 1 : 0}`).join(",");
-  const alertClock = context.analyzedThrough ?? (status?.state === "running" ? status.clockSecond : fixture?.durationSeconds ?? 0);
+  const alertClock = context.analyzedThrough ?? (status?.state === "running" || status?.state === "paused" ? status.clockSecond : fixture?.durationSeconds ?? 0);
   useEffect(() => {
     if (!fixture || !matchId) return;
     const primeKey = `${matchId}|${streamPlayerId ?? "-"}|${alertPrefsKey}`;
@@ -252,7 +252,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
   const scopedSnapshot = snapshot && fixture && snapshot.fixtureId === fixture.id && (snapshot.scope?.period ?? "full") === period ? snapshot : null;
   const score = (snapshot && fixture && snapshot.fixtureId === fixture.id ? snapshot.score : null) ?? computeScoreFromEvents(fixture);
   const clockSecond = context.analyzedThrough ?? status?.clockSecond ?? 0;
-  const uptoSecond = context.analyzedThrough ?? (status?.state === "running" ? status.clockSecond : fixture?.durationSeconds ?? 0);
+  const uptoSecond = context.analyzedThrough ?? (status?.state === "running" || status?.state === "paused" ? status.clockSecond : fixture?.durationSeconds ?? 0);
   const moments = useMemo(() => (fixture ? fanMoments(storylines, fixture.events, prefs.language, uptoSecond, facts) : []), [fixture, storylines, prefs.language, uptoSecond, facts]);
   const creditSignature = moments.map((moment) => `${moment.id}@${moment.version}:${moment.status}`).join("|");
   const credits = useMomentCredits(matchId, creditSignature);
@@ -293,8 +293,8 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
           <span className={`broadcast-bar__team${focus.teamId === "away" ? " is-favorite" : ""}`}>{fixture.away.name}</span>
         </div>
         <div className="broadcast-bar__meta">
-          <span className={`live-pill live-pill--${status.state}`}>{status.state === "running" ? "Live" : status.state === "finished" ? finishedLabel : "Idle"}</span>
-          <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}</span>
+          <span className={`live-pill live-pill--${status.state}`}>{status.state === "running" ? "Live" : status.state === "paused" ? "Paused" : status.state === "finished" ? finishedLabel : "Idle"}</span>
+          <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}{status.state === "paused" ? " · Paused" : ""}</span>
           <span className="tag fan-scorebar__optional">{liveTransportLabel(status)}</span>
           <TransportSourceBadge status={status} />
           <span className={`tag${stream.phase === "open" ? " tag--success" : stream.phase === "reconnecting" || stream.phase === "error" ? " tag--danger" : ""}`} role="status">{phaseLabel(stream)}</span>
@@ -345,7 +345,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
         <div className="fan-top__col fan-top__col--left">
           <div className="fan-top__board">
             <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={(next) => updatePrefs({ period: next })}
-              halvesUnavailable={halvesUnavailable} score={score} title="Live board" />
+              halvesUnavailable={halvesUnavailable} score={score} title="Live board" paused={status.state === "paused"} />
           </div>
         </div>
         <div className="fan-top__col fan-top__col--right">

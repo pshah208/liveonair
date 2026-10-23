@@ -18,7 +18,7 @@ export interface TimedOverlay {
     matchId: string;
     fixtureId: string;
     title: string;
-    state: "idle" | "running" | "finished";
+    state: "idle" | "running" | "paused" | "finished";
     clockSecond: number;
     minute: number;
     second: number;
@@ -160,6 +160,8 @@ export function createOverlayRouter(deps: { live: LiveService; desk: StorylineDe
       onEvent() { send(); },
       onMatchStart() { send(); },
       onMatchEnd() { send(); },
+      onPause() { send(); },
+      onResume() { send(); },
     });
     const unsubscribeTick = tickSource(deps.live)?.subscribeTicks(() => send()) ?? (() => undefined);
     const close = () => {

@@ -110,7 +110,7 @@ type BroadcastBarProps = {
   fixture: MatchFixture | null;
   score: { home: number; away: number };
   clockSecond: number;
-  state: "idle" | "running" | "finished";
+  state: "idle" | "running" | "paused" | "finished";
   transport: string;
   /** Raw /api/live/status payload, used for the transport/source badge. */
   status?: unknown;
@@ -126,8 +126,8 @@ export function BroadcastBar({ fixture, score, clockSecond, state, transport, st
         <span className="broadcast-bar__team">{fixture?.away.name ?? "Away"}</span>
       </div>
       <div className="broadcast-bar__meta">
-        <span className={`live-pill live-pill--${state}`}>{state === "running" ? "Live" : state === "finished" ? "Full time" : "Idle"}</span>
-        <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}</span>
+        <span className={`live-pill live-pill--${state}`}>{state === "running" ? "Live" : state === "paused" ? "Paused" : state === "finished" ? "Full time" : "Idle"}</span>
+        <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}{state === "paused" ? " · Paused" : ""}</span>
         <span className="tag">{transport}</span>
         <TransportSourceBadge status={status} />
         {lagMs !== undefined && <span className="tag">{lagMs} ms lag</span>}

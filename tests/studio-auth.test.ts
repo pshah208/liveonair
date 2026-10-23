@@ -36,6 +36,8 @@ function probeApp(token?: string): express.Express {
   app.get("/api/studio/storylines", (_request, response) => response.json([]));
   app.post("/api/live/start", (_request, response) => response.json({ ok: true }));
   app.post("/api/live/stop", (_request, response) => response.json({ ok: true }));
+  app.post("/api/live/pause", (_request, response) => response.json({ ok: true }));
+  app.post("/api/live/resume", (_request, response) => response.json({ ok: true }));
   app.post("/api/live/correction", (_request, response) => response.json({ ok: true }));
   app.post("/api/studio/storylines/s1/review", (_request, response) => response.json({ ok: true }));
   app.post("/api/video/jobs", (_request, response) => response.json({ ok: true }));
@@ -81,6 +83,10 @@ test("studio token guards producer writes and studio reads, and leaves fan reads
   assert.equal(requiresStudioAuth("GET", "/API/STUDIO/AUTH-REQUIRED/"), false);
   assert.equal(requiresStudioAuth("POST", "/API/LIVE/STOP"), true);
   assert.equal(requiresStudioAuth("POST", "/api/live/stop/"), true);
+  assert.equal(requiresStudioAuth("POST", "/api/live/pause"), true);
+  assert.equal(requiresStudioAuth("POST", "/API/LIVE/PAUSE/"), true);
+  assert.equal(requiresStudioAuth("POST", "/api/live/resume"), true);
+  assert.equal(requiresStudioAuth("POST", "/Api/Live/Resume/"), true);
   assert.equal(requiresStudioAuth("POST", "/API/MATCHLAB/GENERATE"), true);
   assert.equal(requiresStudioAuth("GET", "/api/fan/moments"), false);
   assert.equal(requiresStudioAuth("GET", "/api/live/status"), false);
@@ -109,11 +115,17 @@ test("studio token guards producer writes and studio reads, and leaves fan reads
 
     assert.equal((await call(server.baseUrl, "POST", "/api/live/start", TOKEN)).status, 200);
     assert.equal((await call(server.baseUrl, "POST", "/api/live/stop", TOKEN)).status, 200);
+    assert.equal((await call(server.baseUrl, "POST", "/api/live/pause", TOKEN)).status, 200);
+    assert.equal((await call(server.baseUrl, "POST", "/api/live/resume", TOKEN)).status, 200);
     assert.equal((await call(server.baseUrl, "POST", "/api/live/correction", TOKEN)).status, 200);
     assert.equal((await call(server.baseUrl, "POST", "/api/video/jobs", TOKEN)).status, 200);
 
     assert.equal((await call(server.baseUrl, "POST", "/API/LIVE/STOP")).status, 401);
     assert.equal((await call(server.baseUrl, "POST", "/Api/Live/Stop/", TOKEN)).status, 200);
+    assert.equal((await call(server.baseUrl, "POST", "/API/LIVE/PAUSE/")).status, 401);
+    assert.equal((await call(server.baseUrl, "POST", "/Api/Live/Pause/", TOKEN)).status, 200);
+    assert.equal((await call(server.baseUrl, "POST", "/API/LIVE/RESUME")).status, 401);
+    assert.equal((await call(server.baseUrl, "POST", "/api/live/resume/", TOKEN)).status, 200);
     assert.equal((await call(server.baseUrl, "GET", "/API/STUDIO/STORYLINES")).status, 401);
     assert.equal((await call(server.baseUrl, "GET", "/api/studio/storylines", TOKEN)).status, 200);
     assert.equal((await call(server.baseUrl, "POST", "/api/matchlab/generate")).status, 401);

@@ -54,8 +54,9 @@ export function startTrackingStream({
   let baseClock = 0;
   let baseAt = now();
   let lastRawClock = Number.NaN;
+  let holdingPause = false;
 
-  const sendStatus = (status: "idle" | "no_data" | "ended", message: string) => {
+  const sendStatus = (status: "idle" | "no_data" | "ended" | "paused", message: string) => {
     const key = `${status}:${message}`;
     if (key === lastStatus || closed || blocked) return;
     lastStatus = key;
@@ -76,7 +77,17 @@ export function startTrackingStream({
     }
 
     const rawClock = view.clockSecond;
-    if (!Number.isFinite(lastRawClock) || Math.abs(rawClock - lastRawClock) > 1e-6) {
+    if (status.state === "paused") {
+      // The 5 Hz projector otherwise keeps adding wall time * speed after the service clock has frozen.
+      holdingPause = true;
+      lastRawClock = rawClock;
+      baseClock = rawClock;
+      baseAt = now();
+      sendStatus("paused", "Match paused.");
+      return;
+    }
+    if (holdingPause || !Number.isFinite(lastRawClock) || Math.abs(rawClock - lastRawClock) > 1e-6) {
+      holdingPause = false;
       lastRawClock = rawClock;
       baseClock = rawClock;
       baseAt = now();

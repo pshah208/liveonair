@@ -248,6 +248,30 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     }
   });
 
+  router.post("/api/live/pause", guard, async (_request, response, next) => {
+    try {
+      if (!options.live.pause) {
+        sendJsonError(response, 501, "Pause is not available");
+        return;
+      }
+      response.json(await options.live.pause());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/live/resume", guard, async (_request, response, next) => {
+    try {
+      if (!options.live.resume) {
+        sendJsonError(response, 501, "Resume is not available");
+        return;
+      }
+      response.json(await options.live.resume());
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/api/live/correction", guard, async (request, response, next) => {
     try {
       const parsed = parseStrict(correctionSchema, request.body);
@@ -383,6 +407,18 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
           queueSnapshot();
         },
         onMatchEnd() {
+          if (!closed) {
+            blocked = !writeMessage(response, { type: "status", status: options.live.status() }) || blocked;
+            queueSnapshot();
+          }
+        },
+        onPause() {
+          if (!closed) {
+            blocked = !writeMessage(response, { type: "status", status: options.live.status() }) || blocked;
+            queueSnapshot();
+          }
+        },
+        onResume() {
           if (!closed) {
             blocked = !writeMessage(response, { type: "status", status: options.live.status() }) || blocked;
             queueSnapshot();

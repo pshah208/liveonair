@@ -55,6 +55,9 @@ export interface LiveListener {
   onEvent(view: LiveMatchView, event: MatchEvent): void;
   onMatchStart?(view: LiveMatchView): void;
   onMatchEnd?(view: LiveMatchView): void;
+  /** Pause and resume keep the SSE connection. `view` is absent only before match_start has been applied. */
+  onPause?(view: LiveMatchView | undefined): void;
+  onResume?(view: LiveMatchView | undefined): void;
 }
 
 export interface LiveService {
@@ -66,6 +69,10 @@ export interface LiveService {
   appendProgressive?(fixture: MatchFixture, analyzedThrough: number): Promise<LiveStatus>;
   completeProgressive?(fixtureId: string): Promise<LiveStatus>;
   stop(): Promise<LiveStatus>;
+  /** Freezes the clock and holds unpublished events. Idle or finished is 409. A second pause is a no-op. */
+  pause?(): Promise<LiveStatus>;
+  /** Continues the same match from the paused second. 409 unless the match is paused. */
+  resume?(): Promise<LiveStatus>;
   /** Publishes a revision of an existing goal marking it rescinded. */
   publishCorrection(eventId: string): Promise<void>;
   addListener(listener: LiveListener): () => void;

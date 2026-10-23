@@ -24,7 +24,7 @@ export function requiresStudioAuth(method: string, path: string): boolean {
   if (pathname === "/api/studio/auth-required") return false;
   if (pathname === "/api/studio" || pathname.startsWith("/api/studio/")) return true;
   if (!MUTATING.has(verb)) return false;
-  if (pathname === "/api/live/start" || pathname === "/api/live/stop" || pathname === "/api/live/correction") return true;
+  if (pathname === "/api/live/start" || pathname === "/api/live/stop" || pathname === "/api/live/pause" || pathname === "/api/live/resume" || pathname === "/api/live/correction") return true;
   if (pathname.startsWith("/api/video")) return true;
   if (pathname.startsWith("/api/player-cam")) return true;
   if (pathname === "/api/matchlab/generate") return true;

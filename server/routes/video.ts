@@ -8,6 +8,7 @@ import express from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 
+import { isMatchInProgress } from "../../shared/platform.js";
 import type { LiveService } from "../contracts.js";
 import { DETECTABLE_EVENT_TYPES, MAX_UPLOAD_BYTES, MAX_VIDEO_FRAMES, MAX_VIDEO_SECONDS, type VideoJob } from "../../shared/video.js";
 import { runCommand, type RunCommand } from "../video/ffmpeg.js";
@@ -110,7 +111,7 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
     const job = options.worker.get(id);
     if (!job) throw new HttpError(404, "Video job not found");
     const status = options.live.status();
-    if (status.state === "running" && status.fixtureId === job.fixtureId) throw new HttpError(409, `Stop the live stream before ${action}`);
+    if (isMatchInProgress(status.state) && status.fixtureId === job.fixtureId) throw new HttpError(409, `Stop the live stream before ${action}`);
     if (job.stage !== "ready") throw new HttpError(409, "The video has not finished processing");
     return job;
   }
@@ -161,7 +162,7 @@ export function createVideoRouter(options: CreateVideoRouterOptions): express.Ro
       const job = options.worker.get(id);
       if (!job) throw new HttpError(404, "Video job not found");
       const status = options.live.status();
-      if (status.state === "running" && job.fixtureId && status.fixtureId === job.fixtureId) throw new HttpError(409, "Stop the live stream before deleting this clip");
+      if (isMatchInProgress(status.state) && job.fixtureId && status.fixtureId === job.fixtureId) throw new HttpError(409, "Stop the live stream before deleting this clip");
       await options.worker.remove(id);
       response.status(204).end();
     } catch (error) {

@@ -4,6 +4,7 @@ import type {
   LiveFeedSource,
   LiveStatus,
   StartLiveRequest,
+  StressFeedItem,
 } from "../../shared/platform.js";
 import type {
   BuildFeedPlan,
@@ -136,6 +137,16 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   let ending = false;
   let endReceived = false;
   let generation = 0;
+  /** Closed pauses, in service-clock milliseconds. Subtracted from the wall clock so a pause does not jump the match. */
+  let pausedAccumulatedMs = 0;
+  /** Service-clock instant the current pause began. Undefined unless state is paused. */
+  let pauseStartedAt: number | undefined;
+  /** Frozen match second. Undefined unless state is paused. */
+  let pausedAtSecond: number | undefined;
+  /** Latest progressive analysis held while paused. Flushed on resume so events are not skipped or republished. */
+  let deferredProgressive: { fixture: MatchFixture; watermark: number } | undefined;
+  type FeedEntry = StressFeedItem & { published: boolean };
+  let feedPlan: FeedEntry[] = [];
   let operationQueue: Promise<unknown> = Promise.resolve();
   const pendingEnvelopes: Array<{ envelope: LiveEnvelope; receivedAt: number }> = [];
   const publishedEvents = new Map<string, MatchEvent>();
@@ -173,11 +184,28 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     return result;
   }
 
+  function matchInProgress(): boolean {
+    return state === "running" || state === "paused";
+  }
+
   function requireProgressive(fixtureId: string, matchId: string | undefined): void {
-    if (!progressive || state !== "running" || ending || !matchId
+    if (!progressive || !matchInProgress() || ending || !matchId
       || currentMatchId !== matchId || activeFixture?.id !== fixtureId) {
       throw new HttpError(409, "No matching progressive live match is running");
     }
+  }
+
+  function pausedOffsetMs(): number {
+    const open = pauseStartedAt === undefined ? 0 : Math.max(0, now() - pauseStartedAt);
+    return pausedAccumulatedMs + open;
+  }
+
+  function clearPauseBookkeeping(): void {
+    pausedAccumulatedMs = 0;
+    pauseStartedAt = undefined;
+    pausedAtSecond = undefined;
+    deferredProgressive = undefined;
+    feedPlan = [];
   }
 
   function clearPublishTimers(): void {
@@ -196,13 +224,18 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
 
   function computeClock(minimumSecond = 0): number {
     const duration = activeFixture?.durationSeconds ?? currentView?.fixture.durationSeconds ?? 0;
+    if (state === "paused" && pausedAtSecond !== undefined) {
+      return Math.min(duration, pausedAtSecond);
+    }
     if (progressive) {
       return Math.min(duration, analyzedThrough);
     }
     if (matchStartReceivedAt === undefined) {
       return Math.min(duration, minimumSecond);
     }
-    const elapsed = Math.floor(((now() - matchStartReceivedAt) / 1000) * Math.max(currentSpeed, 0));
+    // Pause wall time is not match time. Subtract it or resume jumps by pauseDuration * speed.
+    const activeMs = Math.max(0, now() - matchStartReceivedAt - pausedOffsetMs());
+    const elapsed = Math.floor((activeMs / 1000) * Math.max(currentSpeed, 0));
     return Math.min(duration, Math.max(minimumSecond, elapsed));
   }
 
@@ -252,7 +285,10 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       fallbackReason: readFallbackReason(),
       source: activeSource(),
       ...currentFixtureStatus(),
-      clockSecond: currentView?.clockSecond ?? computeClock(0),
+      clockSecond: state === "paused" && pausedAtSecond !== undefined
+        ? pausedAtSecond
+        : currentView?.clockSecond ?? computeClock(0),
+      ...(state === "paused" && pausedAtSecond !== undefined ? { pausedAtSecond } : {}),
       speed: currentSpeed,
       eventsReceived,
       duplicatesIgnored,
@@ -275,7 +311,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     watchdogHandle = scheduler.setTimeout(() => {
       watchdogHandle = undefined;
       void serialize(async () => {
-        if (state === "running") return;
+        if (matchInProgress()) return;
         try {
           console.info(JSON.stringify({
             level: "info",
@@ -363,6 +399,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     clearPublishTimers();
     stopTicker();
     const previousWatermark = analyzedThrough;
+    const previousState = state;
+    const previousPauseStartedAt = pauseStartedAt;
+    const previousPausedAtSecond = pausedAtSecond;
     ending = true;
     if (progressive && complete) {
       progressiveCompleted = true;
@@ -373,6 +412,10 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         await publishEnvelope("match_end");
       }
       state = "finished";
+      pauseStartedAt = undefined;
+      pausedAtSecond = undefined;
+      deferredProgressive = undefined;
+      feedPlan = [];
       if (progressive && !complete) {
         pendingEnvelopes.length = 0;
       }
@@ -385,10 +428,12 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       progressiveCompleted = false;
       analyzedThrough = previousWatermark;
       endReceived = false;
-      state = "running";
+      state = previousState === "paused" ? "paused" : "running";
+      pauseStartedAt = previousPauseStartedAt;
+      pausedAtSecond = previousPausedAtSecond;
       if (progressive && currentView) {
         currentView.clockSecond = computeClock();
-      } else if (!progressive && currentMatchId) {
+      } else if (!progressive && state === "running" && currentMatchId) {
         beginTicker(currentMatchId);
       }
       throw error;
@@ -422,11 +467,12 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         fixture: registered,
         clockSecond: progressive ? computeClock() : 0,
       };
-      matchStartReceivedAt = receivedAt;
-      if (!progressiveCompleted) {
+      // Follow the service clock, not the transport's Date.now(). An injected clock and the pause offset then share one timeline.
+      matchStartReceivedAt = now();
+      if (!progressiveCompleted && state !== "paused") {
         state = "running";
       }
-      if (!progressive) {
+      if (!progressive && state === "running") {
         beginTicker(envelope.matchId);
       }
       const snapshot = cloneView(currentView);
@@ -443,7 +489,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
 
     // Fabric may deliver different partitions out of order. Receipt still gates visibility.
     if (progressive && !currentView) {
-      if (state === "running" || progressiveCompleted) {
+      if (matchInProgress() || progressiveCompleted) {
         pendingEnvelopes.push({ envelope, receivedAt });
       }
       return;
@@ -481,7 +527,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       return;
     }
 
-    if (progressive && (endReceived || (!ending && state === "running"))) {
+    if (progressive && (endReceived || (!ending && matchInProgress()))) {
       return;
     }
     endReceived = true;
@@ -516,6 +562,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     lastEventAt = undefined;
     lagMs = undefined;
     matchStartReceivedAt = undefined;
+    clearPauseBookkeeping();
     acceptedRevisions.clear();
     publishedEvents.clear();
     manualRescissions.clear();
@@ -549,6 +596,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   async function startBody(request: StartLiveRequest): Promise<LiveStatus> {
     await ensureSubscribed();
 
+    if (state === "paused") {
+      throw new HttpError(409, "Live match is paused");
+    }
     if (state === "running") {
       throw new HttpError(409, "Live match already running");
     }
@@ -581,19 +631,36 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     clearWatchdog();
     await startFixture(fixture, speed, Boolean(request.stress), false);
 
-    const matchId = currentMatchId;
-    for (const item of buildFeedPlan(fixture, Boolean(request.stress))) {
+    feedPlan = buildFeedPlan(fixture, Boolean(request.stress)).map((item) => ({ ...item, event: { ...item.event }, published: false }));
+    scheduleRemaining(currentMatchId);
+
+    return makeStatus();
+  }
+
+  function scheduleRemaining(matchId: string | undefined): void {
+    clearPublishTimers();
+    if (state !== "running" || !activeFixture || !matchId || currentSpeed < 1) return;
+    const originSecond = Math.floor(currentView?.clockSecond ?? computeClock(0));
+    for (const entry of feedPlan) {
+      if (entry.published) continue;
+      const delayMs = Math.max(0, Math.floor(((entry.publishAtSecond - originSecond) * 1_000) / currentSpeed));
       const timeoutHandle = scheduler.setTimeout(() => {
         scheduledPublishes.delete(timeoutHandle);
         void serialize(async () => {
-          if (state === "running" && currentMatchId === matchId) {
-            await publishFeedEvent(item.event);
+          if (state !== "running" || currentMatchId !== matchId || entry.published) return;
+          entry.published = true;
+          try {
+            await publishFeedEvent(entry.event);
+          } catch (error) {
+            entry.published = false;
+            throw error;
           }
         });
-      }, Math.max(0, Math.floor((item.publishAtSecond * 1_000) / speed)));
+      }, delayMs);
       scheduledPublishes.add(timeoutHandle);
     }
 
+    const endDelayMs = Math.max(0, Math.floor(((activeFixture.durationSeconds - originSecond) * 1_000) / currentSpeed));
     const endHandle = scheduler.setTimeout(() => {
       scheduledPublishes.delete(endHandle);
       void serialize(async () => {
@@ -601,9 +668,112 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
           await finishActiveMatch();
         }
       });
-    }, Math.max(0, Math.floor((fixture.durationSeconds * 1_000) / speed)));
+    }, endDelayMs);
     scheduledPublishes.add(endHandle);
+  }
 
+  function notifyControl(kind: "pause" | "resume"): void {
+    const snapshot = currentView ? cloneView(currentView) : undefined;
+    for (const listener of listeners) {
+      if (kind === "pause") listener.onPause?.(snapshot);
+      else listener.onResume?.(snapshot);
+    }
+    notifyTick();
+  }
+
+  function assertProgressiveWatermark(supplied: MatchFixture, watermark: number): void {
+    const floor = Math.max(analyzedThrough, deferredProgressive?.watermark ?? 0);
+    if (!Number.isFinite(watermark) || watermark < floor || watermark < 0
+      || !Number.isFinite(supplied.durationSeconds) || supplied.durationSeconds <= 0
+      || watermark > supplied.durationSeconds) {
+      throw new HttpError(400, "Analysis watermark must be finite, monotonic, and within the fixture duration");
+    }
+  }
+
+  async function applyProgressiveUpdate(supplied: MatchFixture, watermark: number, matchId: string): Promise<void> {
+    supplied.events = supplied.events.filter((event) => !manualRescissions.has(event.id));
+    supplied.events.push(...[...manualRescissions.values()].map((event) => ({ ...event })));
+    registry.registerFixture(supplied);
+    activeFixture = cloneFixture(supplied);
+    analyzedThrough = watermark;
+    if (currentView) {
+      currentView.fixture = { ...cloneFixture(supplied), events: currentView.fixture.events };
+      currentView.clockSecond = computeClock();
+    }
+
+    for (const event of supplied.events) {
+      requireProgressive(supplied.id, matchId);
+      const key = `${event.id}@${event.revision}`;
+      if (publishedEvents.has(key) || acceptedRevisions.has(key)) {
+        continue;
+      }
+      await publishEnvelope("match_event", { event });
+      publishedEvents.set(key, { ...event });
+    }
+    notifyTick();
+  }
+
+  function freezeClock(): number {
+    if (currentView && !progressive) {
+      currentView.clockSecond = computeClock(Math.floor(currentView.clockSecond));
+    }
+    const frozen = Math.floor(currentView?.clockSecond ?? computeClock(0));
+    if (currentView) currentView.clockSecond = frozen;
+    return frozen;
+  }
+
+  async function pauseBody(): Promise<LiveStatus> {
+    if (state === "paused") return makeStatus();
+    if (state !== "running" || !currentMatchId) {
+      throw new HttpError(409, "Live match is not running");
+    }
+    pausedAtSecond = freezeClock();
+    pauseStartedAt = now();
+    state = "paused";
+    clearPublishTimers();
+    stopTicker();
+    console.info(JSON.stringify({
+      level: "info",
+      event: "live.pause",
+      matchId: currentMatchId,
+      pausedAtSecond,
+      transport: transport.name,
+    }));
+    notifyControl("pause");
+    return makeStatus();
+  }
+
+  async function resumeBody(): Promise<LiveStatus> {
+    if (state !== "paused" || !currentMatchId) {
+      throw new HttpError(409, "Live match is not paused");
+    }
+    if (pauseStartedAt !== undefined) {
+      pausedAccumulatedMs += Math.max(0, now() - pauseStartedAt);
+      pauseStartedAt = undefined;
+    }
+    const frozen = pausedAtSecond ?? Math.floor(currentView?.clockSecond ?? 0);
+    pausedAtSecond = undefined;
+    state = "running";
+    if (currentView) {
+      currentView.clockSecond = progressive ? computeClock() : computeClock(frozen);
+    }
+    const matchId = currentMatchId;
+    const deferred = deferredProgressive;
+    deferredProgressive = undefined;
+    if (!progressive) {
+      scheduleRemaining(matchId);
+      beginTicker(matchId);
+    } else if (deferred) {
+      await applyProgressiveUpdate(deferred.fixture, deferred.watermark, matchId);
+    }
+    console.info(JSON.stringify({
+      level: "info",
+      event: "live.resume",
+      matchId,
+      clockSecond: currentView?.clockSecond ?? frozen,
+      transport: transport.name,
+    }));
+    notifyControl("resume");
     return makeStatus();
   }
 
@@ -623,6 +793,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       const supplied = cloneFixture(fixture);
       return serialize(async () => {
         await ensureSubscribed();
+        if (state === "paused") {
+          throw new HttpError(409, "Live match is paused");
+        }
         if (state === "running") {
           throw new HttpError(409, "Live match already running");
         }
@@ -639,32 +812,12 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       const supplied = cloneFixture(fixture);
       return serialize(async () => {
         requireProgressive(supplied.id, matchId);
-        if (!Number.isFinite(watermark) || watermark < analyzedThrough || watermark < 0
-          || !Number.isFinite(supplied.durationSeconds) || supplied.durationSeconds <= 0
-          || watermark > supplied.durationSeconds) {
-          throw new HttpError(400, "Analysis watermark must be finite, monotonic, and within the fixture duration");
+        assertProgressiveWatermark(supplied, watermark);
+        if (state === "paused") {
+          deferredProgressive = { fixture: supplied, watermark };
+          return makeStatus();
         }
-
-        supplied.events = supplied.events.filter((event) => !manualRescissions.has(event.id));
-        supplied.events.push(...[...manualRescissions.values()].map((event) => ({ ...event })));
-        registry.registerFixture(supplied);
-        activeFixture = cloneFixture(supplied);
-        analyzedThrough = watermark;
-        if (currentView) {
-          currentView.fixture = { ...cloneFixture(supplied), events: currentView.fixture.events };
-          currentView.clockSecond = computeClock();
-        }
-
-        for (const event of supplied.events) {
-          requireProgressive(supplied.id, matchId);
-          const key = `${event.id}@${event.revision}`;
-          if (publishedEvents.has(key) || acceptedRevisions.has(key)) {
-            continue;
-          }
-          await publishEnvelope("match_event", { event });
-          publishedEvents.set(key, { ...event });
-        }
-        notifyTick();
+        await applyProgressiveUpdate(supplied, watermark, matchId!);
         return makeStatus();
       });
     },
@@ -679,12 +832,18 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     stop() {
       const matchId = currentMatchId;
       return serialize(async () => {
-        if (state !== "running" || currentMatchId !== matchId) {
+        if (!matchInProgress() || currentMatchId !== matchId) {
           return makeStatus();
         }
         await finishActiveMatch();
         return makeStatus();
       });
+    },
+    pause() {
+      return serialize(() => pauseBody());
+    },
+    resume() {
+      return serialize(() => resumeBody());
     },
     publishCorrection(eventId) {
       const matchId = currentMatchId;
