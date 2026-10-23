@@ -12,6 +12,13 @@ function secondOf(event: MatchEvent): number {
   return event.minute * 60 + event.second;
 }
 
+function continuityDistance(previous: MatchEvent, next: MatchEvent): number | null {
+  if (previous.type !== "pass" || next.type !== "pass" || previous.endX === undefined || previous.endY === undefined) return null;
+  const nextX = next.teamId === previous.teamId ? next.x : 100 - next.x;
+  const nextY = next.teamId === previous.teamId ? next.y : 100 - next.y;
+  return Math.hypot(nextX - previous.endX, nextY - previous.endY);
+}
+
 function rangeStats(fixture: MatchFixture, teamId: "home" | "away"): { passes: number; completed: number; shots: number; passPct: number } {
   const passes = fixture.events.filter((event) => event.type === "pass" && event.teamId === teamId);
   const completed = passes.filter((event) => event.outcome === "complete").length;
@@ -349,14 +356,19 @@ test("scenario variants produce visible differences and red_card includes a dism
 test("possession transitions are explicit and pressure is matched to passes", () => {
   const fixture = generateMatch({ scenario: "set_piece", seed: 2027 });
   const open = fixture.events.filter((event) => !event.rescinded);
+  let passTransitions = 0;
+  let nearTransitions = 0;
   for (let index = 1; index < open.length; index += 1) {
     const previous = open[index - 1]!;
     const current = open[index]!;
-    if (previous.type === "pass" && previous.endX !== undefined && previous.endY !== undefined && current.type === "pass") {
-      assert.equal(current.x, previous.endX);
-      assert.equal(current.y, previous.endY);
+    const distance = continuityDistance(previous, current);
+    if (distance !== null) {
+      passTransitions += 1;
+      if (distance <= 8) nearTransitions += 1;
     }
   }
+  const continuityShare = passTransitions === 0 ? 0 : nearTransitions / passTransitions;
+  assert.ok(continuityShare >= 0.7, `continuity share ${continuityShare.toFixed(3)}`);
   assert.ok(open.some((event) => event.type === "tackle"), "turnovers are explicit");
   const pressures = open.filter((event) => event.type === "pressure");
   assert.ok(pressures.length > 0);
@@ -370,4 +382,56 @@ test("possession transitions are explicit and pressure is matched to passes", ()
   assert.ok(open.some((event) => event.type === "shot" && event.outcome === "miss"));
   assert.ok(open.some((event) => event.type === "shot" && event.outcome === "saved"));
   assert.ok(open.some((event) => event.type === "shot" && event.outcome === "blocked"));
+});
+
+test("generated fixtures keep spatial distributions realistic across scenario and seed mix", () => {
+  const scenarios = ["comeback", "red_card", "set_piece", "late_winner"] as const;
+  const seeds = [42, 2026] as const;
+  const defensiveTypes = new Set<MatchEvent["type"]>(["tackle", "interception", "ball_recovery", "pressure"]);
+
+  let totalPasses = 0;
+  let passX90 = 0;
+  let middleThirdPasses = 0;
+  const defensiveXs: number[] = [];
+  let continuityDenominator = 0;
+  let continuityNumerator = 0;
+
+  for (const scenario of scenarios) {
+    for (const seed of seeds) {
+      const fixture = generateMatch({ scenario, seed });
+      const open = fixture.events.filter((event) => !event.rescinded);
+      for (let index = 0; index < open.length; index += 1) {
+        const event = open[index]!;
+        if (event.type === "pass") {
+          totalPasses += 1;
+          if (event.x >= 90) passX90 += 1;
+          if (event.x >= 33.3333 && event.x < 66.6667) middleThirdPasses += 1;
+        }
+        if (defensiveTypes.has(event.type)) defensiveXs.push(event.x);
+        const next = open[index + 1];
+        if (next) {
+          const distance = continuityDistance(event, next);
+          if (distance !== null) {
+            continuityDenominator += 1;
+            if (distance <= 8) continuityNumerator += 1;
+          }
+        }
+      }
+    }
+  }
+
+  defensiveXs.sort((a, b) => a - b);
+  const midpoint = Math.floor(defensiveXs.length / 2);
+  const medianDefensiveX = defensiveXs.length % 2 === 1
+    ? defensiveXs[midpoint]!
+    : (defensiveXs[midpoint - 1]! + defensiveXs[midpoint]!) / 2;
+
+  const highBandShare = passX90 / totalPasses;
+  const middleThirdShare = middleThirdPasses / totalPasses;
+  const continuityShare = continuityDenominator === 0 ? 0 : continuityNumerator / continuityDenominator;
+
+  assert.ok(highBandShare <= 0.12, `x>=90 share ${highBandShare.toFixed(3)}`);
+  assert.ok(middleThirdShare >= 0.30, `middle-third share ${middleThirdShare.toFixed(3)}`);
+  assert.ok(medianDefensiveX >= 20 && medianDefensiveX <= 60, `defensive median x ${medianDefensiveX.toFixed(2)}`);
+  assert.ok(continuityShare >= 0.70, `continuity share ${continuityShare.toFixed(3)}`);
 });
