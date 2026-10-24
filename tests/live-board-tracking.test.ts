@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import type { TrackingFrame } from "../shared/tracking.js";
+import { PITCH_VIEWBOX } from "../src/pitchGeometry.js";
 import {
   TRACKING_LERP_MS,
   TRACKING_SNAP_DISTANCE_M,
@@ -33,8 +34,9 @@ test("live board hides arrows, path and the event-board ball while tracking is o
   assert.match(src, /\{trackingActive \? \(\s*<g className="pitch-tracking-latest">[\s\S]*?\) : mode === "ball" \? \(/);
   assert.match(src, /const ball = trackingActive \? null : motion\.position;/);
   assert.match(src, /className="pitch-event-ring"/);
-  // Event caption moves to a corner chip, not an SVG label over the dots.
-  assert.match(src, /className="pitch-event-chip"/);
+  // Event caption moves to the ticker pill above the pitch, not an SVG label over the dots.
+  assert.match(src, /: "pitch-event-chip"\}/);
+  assert.match(src, /className="pitch-event-ticker"/);
   const trackingBranch = src.slice(src.indexOf('<g className="pitch-tracking-latest">'), src.indexOf(') : mode === "ball" ? ('));
   assert.doesNotMatch(trackingBranch, /<text|markerEnd|strokeDasharray/);
 });
@@ -103,15 +105,59 @@ test("stream error clears the stale frame so the board falls back to arrows", ()
   const onError = src.slice(src.indexOf("source.onerror"), src.indexOf("return () =>", src.indexOf("source.onerror")));
   assert.match(onError, /reset\(\);/);
   assert.match(onError, /setConnected\(false\)/);
-  // reset() must clear the source frame and the drawn view.
+  // reset() must clear the source frame and the drawn frame/trail.
   const reset = src.slice(src.indexOf("const reset = () =>"), src.indexOf("reset();", src.indexOf("const reset = () =>")));
   assert.match(reset, /setSourceFrame\(null\)/);
-  assert.match(reset, /setView\(null\)/);
+  assert.match(reset, /drawnRef\.current = null/);
+  assert.match(reset, /trailRef\.current = \[\]/);
 });
 
-test("ball-trail freshness is clamped to [0, 1]", () => {
-  const src = read("src/TrackingLayer.tsx");
-  assert.match(src, /const fresh = Math\.min\(1, Math\.max\(0, 1 - \(latestAt - point\.at\) \/ TRACKING_BALL_TRAIL_MS\)\);/);
+// Regression: the board lagged because every animation frame called React setState
+// (tracking dots and the ball-movement marker), re-rendering the whole board at 60 fps.
+test("animation frames move SVG nodes directly instead of re-rendering React", () => {
+  const layer = read("src/TrackingLayer.tsx");
+  const step = layer.slice(layer.indexOf("const step = (time: number) =>"), layer.indexOf("rafRef.current = requestAnimationFrame(step);"));
+  assert.ok(step.length > 0 && layer.indexOf("const step = (time: number) =>") > 0);
+  assert.doesNotMatch(step, /\bset[A-Z]\w*\(/, "no React state updates inside the tracking rAF step");
+  const draw = layer.slice(layer.indexOf("const draw = (frame: TrackingFrame"), layer.indexOf("if (rafRef.current !== null) cancelAnimationFrame", layer.indexOf("const draw = (frame: TrackingFrame")));
+  assert.doesNotMatch(draw, /\bset[A-Z]\w*\(/);
+  assert.match(layer, /setAttribute\("transform", svgTranslate\(player\.x, flipY\(player\.y\)\)\)/);
+  assert.doesNotMatch(layer, /useState<TrackingView/);
+
+  const pitch = read("src/LivePitch.tsx");
+  const ballStep = pitch.slice(pitch.indexOf("const step = (now: number) =>"), pitch.indexOf("if (progress < 1) frame.current = requestAnimationFrame(step);"));
+  assert.ok(ballStep.length > 0 && pitch.indexOf("const step = (now: number) =>") > 0);
+  assert.doesNotMatch(ballStep, /\bset[A-Z]\w*\(/, "ball motion writes the transform, not React state, each frame");
+  assert.match(pitch, /nodeRef\.current\?\.setAttribute\("transform", ballTransform\(point\)\)/);
+});
+
+test("tracking horizon re-renders the board at most once a second", () => {
+  const pitch = read("src/LivePitch.tsx");
+  assert.match(pitch, /setTrackingHorizon\(horizon === null \? null : Math\.floor\(horizon \+ 1e-6\)\)/);
+  assert.match(pitch, /onHorizonChange=\{onHorizonChange\}/);
+});
+
+test("static pitch surface is memoised and no infinite SVG animation repaints the board", () => {
+  const pitch = read("src/LivePitch.tsx");
+  assert.match(pitch, /const PitchSurface = memo\(/);
+  const css = read("src/styles.css");
+  assert.doesNotMatch(css, /\.pitch-pulse \{[^}]*infinite/);
+  assert.doesNotMatch(css, /\.pitch-ball \{[^}]*filter/);
+});
+
+test("all board layers share one viewBox and one tilt", () => {
+  for (const file of ["src/LivePitch.tsx", "src/TrackingLayer.tsx"]) {
+    const src = read(file);
+    assert.doesNotMatch(src, /viewBox="0 0 105 68"/, file);
+    assert.match(src, /viewBox=\{PITCH_VIEWBOX\}/, file);
+  }
+  assert.equal(read("src/LivePitch.tsx").match(/className="[^"]*pitch-plane/g)?.length, 2);
+  assert.match(read("src/TrackingLayer.tsx"), /className="pitch-plane tracking-overlay__svg"/);
+  const css = read("src/board.css");
+  assert.match(css, /\.pitch-plane \{[^}]*transform: perspective\(150cqw\) rotateX\(36deg\);/);
+  assert.match(css, /aspect-ratio: 117 \/ 80;/);
+  // board.css hard-codes the hoarding position from this viewBox; change both together.
+  assert.equal(PITCH_VIEWBOX, "-6 -6 117 80");
 });
 
 test("crowd-cap comment matches the 2 / 3 (counter-press) quota", () => {

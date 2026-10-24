@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { TRACKING_DELAY_SECONDS, TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage, trackingMarkerHorizon } from "../shared/tracking.js";
 import type { MatchFixture } from "../shared/types.js";
-import { TRACKING_BALL_TRAIL_MS, TRACKING_LERP_MS, type TrailPoint, crowdedPlayerIds, interpolateFrame, pushTrail, shouldSnap } from "./trackingRender.js";
+import { PITCH_VIEWBOX, svgTranslate } from "./pitchGeometry.js";
+import { TRACKING_LERP_MS, type TrailPoint, crowdedPlayerIds, interpolateFrame, pushTrail, shouldSnap } from "./trackingRender.js";
 
 type TrackingLayerProps = {
   fixture: MatchFixture;
@@ -10,10 +11,8 @@ type TrackingLayerProps = {
   onHorizonChange?: (horizonSecond: number | null) => void;
 };
 
-type TrackingView = { frame: TrackingFrame; trail: TrailPoint[] };
-
-const DOT_RADIUS_M = 0.95;
-const BALL_RADIUS_M = 0.8;
+const DOT_RADIUS_M = 1.05;
+const BALL_RADIUS_M = 0.75;
 /** With reduced motion, positions update at most about once a second and never glide. */
 const REDUCED_MOTION_GATE_MS = 950;
 
@@ -27,13 +26,17 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
   const [statusText, setStatusText] = useState("Connecting…");
   const [connected, setConnected] = useState(false);
   const [sourceFrame, setSourceFrame] = useState<TrackingFrame | null>(null);
-  const [view, setView] = useState<TrackingView | null>(null);
   const [manualEnabled, setManualEnabled] = useState<boolean | null>(null);
   const reduced = useMemo(reducedMotionNow, []);
   const rafRef = useRef<number | null>(null);
   const drawnRef = useRef<TrackingFrame | null>(null);
   const trailRef = useRef<TrailPoint[]>([]);
   const reducedGateRef = useRef(0);
+  // Animation frames move existing SVG nodes directly. React only re-renders when a
+  // 5 Hz source frame arrives, never at 60 fps (that was the cause of the board lag).
+  const playerNodes = useRef(new Map<string, SVGGElement>());
+  const ballNode = useRef<SVGGElement | null>(null);
+  const trailNode = useRef<SVGPolylineElement | null>(null);
 
   const enabled = manualEnabled ?? connected;
   const horizonSecond = enabled && sourceFrame ? trackingMarkerHorizon(sourceFrame.second) : null;
@@ -47,6 +50,12 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
 
   useEffect(() => () => onHorizonChange?.(null), [onHorizonChange]);
 
+  const paint = (frame: TrackingFrame, trail: TrailPoint[]) => {
+    for (const player of frame.players) playerNodes.current.get(player.id)?.setAttribute("transform", svgTranslate(player.x, flipY(player.y)));
+    ballNode.current?.setAttribute("transform", svgTranslate(frame.ball.x, flipY(frame.ball.y)));
+    trailNode.current?.setAttribute("points", trail.map((point) => `${point.x.toFixed(2)},${flipY(point.y).toFixed(2)}`).join(" "));
+  };
+
   useEffect(() => {
     let cancelled = false;
     const reset = () => {
@@ -55,7 +64,6 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
       drawnRef.current = null;
       trailRef.current = [];
       setSourceFrame(null);
-      setView(null);
     };
     reset();
     const source = new EventSource("/api/live/tracking/stream");
@@ -105,12 +113,13 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
 
   // Interpolate dot positions with requestAnimationFrame: lerp from what is drawn now
   // to the latest 5 Hz frame over TRACKING_LERP_MS; snap on big jumps and under reduced motion.
-  useEffect(() => {
+  // Layout effect: newly mounted dots get a position before the browser paints them.
+  useLayoutEffect(() => {
     if (!sourceFrame) return;
     const draw = (frame: TrackingFrame, at: number, restartTrail: boolean) => {
       drawnRef.current = frame;
       trailRef.current = reduced ? [] : restartTrail ? [{ ...frame.ball, at }] : pushTrail(trailRef.current, { ...frame.ball, at });
-      setView({ frame, trail: trailRef.current });
+      paint(frame, trailRef.current);
     };
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
@@ -120,13 +129,14 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
       if (!from || now - reducedGateRef.current >= REDUCED_MOTION_GATE_MS) {
         reducedGateRef.current = now;
         draw(sourceFrame, now, true);
-      }
+      } else paint(from, trailRef.current);
       return;
     }
     if (shouldSnap(from, sourceFrame, reduced)) {
       draw(sourceFrame, now, true);
       return;
     }
+    draw(interpolateFrame(from!, sourceFrame, 0), now, false);
     const start = now;
     const step = (time: number) => {
       const t = Math.min(1, Math.max(0, (time - start) / TRACKING_LERP_MS));
@@ -134,12 +144,20 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
       rafRef.current = t < 1 ? requestAnimationFrame(step) : null;
     };
     rafRef.current = requestAnimationFrame(step);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFrame, reduced]);
 
-  const frame = enabled ? view?.frame ?? null : null;
+  // Turning the overlay back on mounts fresh nodes: place them where play currently is.
+  useLayoutEffect(() => {
+    if (enabled && drawnRef.current) paint(drawnRef.current, trailRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
+
+  const frame = enabled ? sourceFrame : null;
   const crowdedRef = useRef<Set<string>>(new Set());
   const crowded = useMemo(() => {
     // Hysteresis via the previous result: hide below 2 m, show again only above 2.5 m.
+    // Computed per 5 Hz source frame; dots move < 1.5 m between frames.
     crowdedRef.current = frame ? crowdedPlayerIds(frame.players, undefined, crowdedRef.current) : new Set<string>();
     return crowdedRef.current;
   }, [frame]);
@@ -160,30 +178,22 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
 
   if (!frame) return controls;
 
-  const trail = view?.trail ?? [];
-  const latestAt = trail[trail.length - 1]?.at ?? 0;
-
   return (
     <>
       {controls}
-      <svg className="tracking-overlay__svg" viewBox="0 0 105 68" role="img" aria-label={`Synthetic tracking, about ${TRACKING_DELAY_SECONDS} seconds behind live: ${frame.players.length} player dots and the ball`}>
-        <g>
-          {frame.players.map((player) => {
-            const goalkeeper = goalkeeperIds.has(player.id) || player.id.endsWith("-GK");
-            return (
-              <g key={player.id} transform={`translate(${player.x} ${flipY(player.y)})`}>
-                <circle r={DOT_RADIUS_M} className={`tracking-dot tracking-dot--${player.teamId}${goalkeeper ? " tracking-dot--gk" : ""}`} />
-                {!crowded.has(player.id) && <text y="0.5" textAnchor="middle" className="tracking-overlay__number">{player.number}</text>}
-              </g>
-            );
-          })}
-          {trail.slice(0, -1).map((point) => {
-            const fresh = Math.min(1, Math.max(0, 1 - (latestAt - point.at) / TRACKING_BALL_TRAIL_MS));
-            return <circle key={point.at} cx={point.x} cy={flipY(point.y)} r={BALL_RADIUS_M * (0.35 + 0.45 * fresh)} className="tracking-ball-trail" opacity={0.45 * fresh} />;
-          })}
-          <g transform={`translate(${frame.ball.x} ${flipY(frame.ball.y)})`}>
-            <circle r={BALL_RADIUS_M} className="tracking-ball" />
-          </g>
+      <svg className="pitch-plane tracking-overlay__svg" viewBox={PITCH_VIEWBOX} role="img" aria-label={`Synthetic tracking, about ${TRACKING_DELAY_SECONDS} seconds behind live: ${frame.players.length} player dots and the ball`}>
+        <polyline ref={trailNode} className="tracking-ball-trail" fill="none" />
+        {frame.players.map((player) => {
+          const goalkeeper = goalkeeperIds.has(player.id) || player.id.endsWith("-GK");
+          return (
+            <g key={player.id} ref={(node) => { if (node) playerNodes.current.set(player.id, node); else playerNodes.current.delete(player.id); }}>
+              <circle r={DOT_RADIUS_M} className={`tracking-dot tracking-dot--${player.teamId}${goalkeeper ? " tracking-dot--gk" : ""}`} />
+              {!crowded.has(player.id) && <text y="0.5" textAnchor="middle" className="tracking-overlay__number">{player.number}</text>}
+            </g>
+          );
+        })}
+        <g ref={ballNode}>
+          <circle r={BALL_RADIUS_M} className="tracking-ball" />
         </g>
       </svg>
     </>

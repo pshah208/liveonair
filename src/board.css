@@ -1,5 +1,70 @@
+/* Broadcast-style board: three stacked SVG layers (static surface, event marks, live
+   tracking) share one viewBox and one GPU tilt, so only the layer that changes repaints.
+   Geometry for the hoarding: viewBox 117 x 80, perspective 150cqw, rotateX 36deg
+   => far edge of the plane sits 24.75cqw below the top, 78.9 % wide. */
 .pitch-stack {
+  --pitch-far-edge: 24.75cqw;
+  --pitch-far-inset: 10.55%;
   position: relative;
+  container-type: inline-size;
+  padding-bottom: 40px;
+  border-radius: var(--radius-card, 12px);
+  background: radial-gradient(120% 70% at 50% 100%, #1f2a1f 0%, #121214 70%);
+  overflow: hidden;
+}
+
+.pitch-plane {
+  transform-origin: 50% 100%;
+  transform: perspective(150cqw) rotateX(36deg);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.pitch-marks,
+.tracking-overlay__svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 117 / 80;
+  display: block;
+  overflow: visible;
+}
+
+.pitch-lines {
+  fill: none;
+  stroke: #ffffff;
+  stroke-opacity: 0.9;
+  stroke-width: 0.32px;
+}
+
+.pitch-spots circle { fill: #ffffff; fill-opacity: 0.9; }
+.pitch-goal { stroke: #ffffff; stroke-width: 0.3px; }
+.pitch-flag { fill: #ef4444; }
+
+.pitch-hoarding {
+  position: absolute;
+  top: calc(var(--pitch-far-edge) - 3.6cqw);
+  left: var(--pitch-far-inset);
+  right: var(--pitch-far-inset);
+  height: 3.6cqw;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  background: linear-gradient(180deg, #1e4fa8, #123577);
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.pitch-hoarding span {
+  color: #ffffff;
+  font-size: 2.2cqw;
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  line-height: 1;
 }
 
 .tracking-overlay {
@@ -8,15 +73,9 @@
   pointer-events: none;
 }
 
-.tracking-overlay__svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
 .tracking-overlay__controls {
   position: absolute;
-  top: 8px;
+  bottom: 6px;
   right: 8px;
   z-index: 2;
   pointer-events: auto;
@@ -26,30 +85,33 @@
   padding: 3px 10px;
   border-radius: 999px;
   font-size: 12px;
-  background: color-mix(in srgb, var(--cp-bg) 85%, transparent);
-  border: 1px solid var(--cp-border);
+  color: #d4d4d8;
+  background: rgba(24, 24, 27, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
+
+.tracking-overlay__controls .subtle-text,
+.tracking-overlay__controls .switch { color: #d4d4d8; white-space: nowrap; }
 
 .tracking-overlay__title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--cp-text);
+  color: #fafafa;
   white-space: nowrap;
 }
 
 .tracking-overlay__sep {
-  color: var(--cp-text-soft);
+  color: #a1a1aa;
 }
 
 .tracking-overlay__status {
   white-space: nowrap;
 }
 
-/* Team colours are >= 3:1 against the pitch in both themes; the GK shade mixes toward
-   the text colour, which only raises contrast against the background. */
+/* Team colours on grass: a white rim keeps every dot readable in both themes. */
 .tracking-dot {
-  stroke: var(--cp-bg);
-  stroke-width: 0.2px;
+  stroke: #ffffff;
+  stroke-width: 0.28px;
 }
 
 .tracking-dot--home { fill: var(--team-home); }
@@ -71,7 +133,11 @@
 }
 
 .tracking-ball-trail {
-  fill: #ffffff;
+  stroke: #ffffff;
+  stroke-opacity: 0.7;
+  stroke-width: 0.35px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* Latest event while tracking is on: a subtle ring that fades out over ~2 s. */
@@ -90,31 +156,86 @@
   to { opacity: 0; }
 }
 
-/* Event caption sits in a pitch corner, never over the player dots. */
-.pitch-event-chip {
+/* Event ticker above the far touchline: the latest event as a pill, the previous one
+   scrolled up and faded behind it. Never over the player dots. */
+.pitch-event-ticker {
   position: absolute;
-  left: 8px;
-  bottom: 8px;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 2;
+  display: grid;
+  justify-items: center;
   pointer-events: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--cp-border);
-  background: color-mix(in srgb, var(--cp-bg) 85%, transparent);
-  color: var(--cp-text);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
+  width: max-content;
+  max-width: calc(100% - 16px);
 }
 
-.pitch-event-chip__dot {
-  width: 8px;
-  height: 8px;
+.pitch-event-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 220px;
+  max-width: 100%;
+  padding: 4px 24px 4px 4px;
+  border-radius: 999px;
+  background: rgba(58, 58, 62, 0.94);
+  color: #f4f4f5;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.pitch-event-chip--previous {
+  transform: scale(0.82);
+  margin-bottom: -18px;
+  opacity: 0.4;
+  clip-path: inset(0 0 45% 0 round 999px);
+}
+
+.pitch-event-chip__badge {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
-  display: inline-block;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.25);
+}
+
+.pitch-event-chip__text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.pitch-event-chip__text strong {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+.pitch-event-chip__text span {
+  font-size: 14px;
+  color: #d4d4d8;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pitch-event-chip:not(.pitch-event-chip--previous) {
+    animation: pitch-chip-in 260ms ease-out;
+  }
+}
+
+@keyframes pitch-chip-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
 }
 
 .pitch-events-legend {
@@ -140,4 +261,14 @@
   .pitch-label {
     font-size: 3.7px;
   }
+
+  /* Every layer must keep the surface's width, or the stacked SVGs drift apart. */
+  .pitch-stack { min-width: 320px; }
+  .pitch-event-chip { min-width: 0; gap: 8px; padding-right: 14px; }
+  .pitch-event-chip--previous { display: none; }
+  .pitch-event-chip__badge { width: 32px; height: 32px; font-size: 10px; }
+  .pitch-event-chip__text strong { font-size: 14px; }
+  .pitch-event-chip__text span { font-size: 12px; }
+  .tracking-overlay__controls { gap: 4px; padding: 2px 8px; font-size: 11px; }
+  .tracking-overlay__controls .switch { font-size: 12px; gap: 4px; }
 }
