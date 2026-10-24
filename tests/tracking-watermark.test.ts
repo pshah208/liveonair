@@ -19,6 +19,9 @@ import type { MatchFixture } from "../shared/types.js";
  * one-shot timers (feed publishes) stay queued, exactly as when the ticker
  * wins the race against overdue publish timers.
  */
+/** Enough microtask turns for a scheduled publish (serialize + receipt-timeout race) to settle. */
+const MICROTASK_FLUSHES = 8;
+
 class StallScheduler implements LiveScheduler {
   now = 0;
   holdTimeouts = false;
@@ -57,10 +60,10 @@ class StallScheduler implements LiveScheduler {
       if (task.interval === undefined) this.tasks.delete(id);
       else this.tasks.set(id, { ...task, due: task.due + task.interval });
       task.callback();
-      for (let index = 0; index < 4; index += 1) await Promise.resolve();
+      for (let index = 0; index < MICROTASK_FLUSHES; index += 1) await Promise.resolve();
     }
     this.now = target;
-    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    for (let index = 0; index < MICROTASK_FLUSHES; index += 1) await Promise.resolve();
   }
 }
 

@@ -52,6 +52,8 @@ const DEMO_SEED = 20261027;
  * freeze the received watermark for the rest of the match.
  */
 const RECEIPT_TIMEOUT_MS = 10_000;
+/** Longest synchronous slice of the full-time backlog drain before yielding to the event loop. */
+const DRAIN_SLICE_MS = 25;
 /** Keeps the watermark strictly below the first outstanding due second. */
 const WATERMARK_EPSILON_SECONDS = 0.001;
 
@@ -157,6 +159,8 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     published: boolean;
     /** Revision key of the envelope this entry produced; null when it produced none. */
     deliveredKey?: string | null;
+    /** Service-clock time at which the publish call started. A send that never settles times out from here. */
+    publishStartedAt?: number;
     /** Service-clock time at which the publish call settled (resolved or failed). */
     publishSettledAt?: number;
   };
@@ -232,7 +236,10 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
   function entryReceived(entry: FeedEntry): boolean {
     // A duplicate, or an envelope that arrived before its own timer fired.
     if (acceptedRevisions.has(revisionKey(entry.event))) return true;
-    if (entry.publishSettledAt === undefined) return false;
+    if (entry.publishSettledAt === undefined) {
+      // A send that never resolves or rejects must not freeze the watermark.
+      return entry.publishStartedAt !== undefined && now() - entry.publishStartedAt >= RECEIPT_TIMEOUT_MS;
+    }
     if (entry.deliveredKey === null) return true;
     if (entry.deliveredKey !== undefined && acceptedRevisions.has(entry.deliveredKey)) return true;
     return now() - entry.publishSettledAt >= RECEIPT_TIMEOUT_MS;
@@ -247,8 +254,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
    * it, and only a publish that has not been received within
    * RECEIPT_TIMEOUT_MS is skipped as lost. Stress items that are deliberately
    * late are tracked at their late due second, so they correct the future
-   * rather than hold the whole overlay back. Without a feed plan (progressive
-   * video, or after the match ends) the service clock is the watermark.
+   * rather than hold the whole overlay back. The plan is kept after the match
+   * ends so the final events are received before tracking drains to "ended".
+   * Without a feed plan (progressive video) the service clock is the watermark.
    */
   function publishedThroughSecond(): number {
     const duration = activeFixture?.durationSeconds ?? currentView?.fixture.durationSeconds ?? 0;
@@ -448,7 +456,48 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
     return revisionKey(adapted.event);
   }
 
-  async function finishActiveMatch(complete = false): Promise<void> {
+  /**
+   * Publishes one feed-plan entry. The send is raced against RECEIPT_TIMEOUT_MS
+   * from when it started, so a publish that never settles is skipped as lost
+   * and neither the serialized queue nor the watermark freezes behind it.
+   */
+  async function publishPlanEntry(entry: FeedEntry): Promise<void> {
+    entry.published = true;
+    entry.publishStartedAt = now();
+    let timer: SchedulerHandle | undefined;
+    const send = publishFeedEvent(entry.event);
+    try {
+      const outcome = await new Promise<{ timedOut: true } | { timedOut: false; key: string | null }>((resolve, reject) => {
+        timer = scheduler.setTimeout(() => resolve({ timedOut: true }), RECEIPT_TIMEOUT_MS, { unref: true });
+        send.then((key) => resolve({ timedOut: false, key }), reject);
+      });
+      if (outcome.timedOut) {
+        // Counted from the start of the send; a late resolution or rejection changes nothing.
+        entry.deliveredKey = revisionKey(entry.event);
+        entry.publishSettledAt = entry.publishStartedAt;
+        console.warn(JSON.stringify({
+          level: "warn",
+          transport: transport.name,
+          reason: "Live publish did not settle; skipped after receipt timeout",
+          eventId: entry.event.id,
+          timeoutMs: RECEIPT_TIMEOUT_MS,
+        }));
+        return;
+      }
+      entry.deliveredKey = outcome.key;
+      entry.publishSettledAt = now();
+    } catch (error) {
+      entry.published = false;
+      // Not received; the receipt timeout releases the watermark if no retry delivers it.
+      entry.deliveredKey = revisionKey(entry.event);
+      entry.publishSettledAt = now();
+      throw error;
+    } finally {
+      if (timer !== undefined) scheduler.clearTimeout(timer);
+    }
+  }
+
+  async function finishActiveMatch(complete = false, drainFeed = false): Promise<void> {
     clearPublishTimers();
     stopTicker();
     const previousWatermark = analyzedThrough;
@@ -461,6 +510,29 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       analyzedThrough = activeFixture!.durationSeconds;
     }
     try {
+      if (drainFeed && !progressive && currentMatchId) {
+        // Full time: publish what is still due (full_time, late goals, late stress items) before match_end.
+        // A backlog is drained in time-boxed slices so health probes are served between them.
+        let sliceStartedAt = performance.now();
+        for (const entry of feedPlan) {
+          if (entry.published) continue;
+          if (performance.now() - sliceStartedAt >= DRAIN_SLICE_MS) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            sliceStartedAt = performance.now();
+          }
+          try {
+            await publishPlanEntry(entry);
+          } catch (error) {
+            console.error(JSON.stringify({
+              level: "error",
+              transport: transport.name,
+              reason: "Final live event publish failed",
+              eventId: entry.event.id,
+              message: error instanceof Error ? error.message : "Unknown error",
+            }));
+          }
+        }
+      }
       if (currentMatchId) {
         await publishEnvelope("match_end");
       }
@@ -468,7 +540,9 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       pauseStartedAt = undefined;
       pausedAtSecond = undefined;
       deferredProgressive = undefined;
-      feedPlan = [];
+      // Keep sent entries so the watermark (and the tracking drain) waits for their receipt.
+      // Entries that will never be sent (manual stop) must not hold it back.
+      feedPlan = feedPlan.filter((entry) => entry.publishStartedAt !== undefined);
       receivedCursor = 0;
       if (progressive && !complete) {
         pendingEnvelopes.length = 0;
@@ -705,17 +779,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
         scheduledPublishes.delete(timeoutHandle);
         void serialize(async () => {
           if (state !== "running" || currentMatchId !== matchId || entry.published) return;
-          entry.published = true;
-          try {
-            entry.deliveredKey = await publishFeedEvent(entry.event);
-            entry.publishSettledAt = now();
-          } catch (error) {
-            entry.published = false;
-            // Not received; the receipt timeout releases the watermark if no retry delivers it.
-            entry.deliveredKey = revisionKey(entry.event);
-            entry.publishSettledAt = now();
-            throw error;
-          }
+          await publishPlanEntry(entry);
         });
       }, delayMs);
       scheduledPublishes.add(timeoutHandle);
@@ -726,7 +790,7 @@ export function createLiveService(options: CreateLiveServiceOptions): LiveServic
       scheduledPublishes.delete(endHandle);
       void serialize(async () => {
         if (state === "running" && currentMatchId === matchId) {
-          await finishActiveMatch();
+          await finishActiveMatch(false, true);
         }
       });
     }, endDelayMs);
