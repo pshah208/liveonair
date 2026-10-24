@@ -199,3 +199,60 @@ test("live tracking frames never look past the received-event watermark and equa
     await live.close();
   }
 });
+
+test("a catch-up warmer that outlives a stop and restart of the same fixture never builds past the new match's watermark", async () => {
+  const base = truncatedFixture();
+  const fixture: MatchFixture = { ...base, id: "watermark-restart-fixture" };
+  const scheduler = new StallScheduler();
+  const live = createLiveService({
+    transport: createLocalTransport(),
+    registry: registryFor(fixture),
+    generateMatch,
+    buildFeedPlan,
+    now: () => scheduler.now,
+    scheduler,
+  });
+  const flushImmediates = async (count: number) => {
+    for (let index = 0; index < count; index += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
+  try {
+    // First match runs far ahead with no stream attached, so a late join needs a multi-chunk catch-up.
+    await live.start({ fixtureId: fixture.id, speed: 60 });
+    await scheduler.advance(10_000);
+    const lateJoin = startTrackingStream({ live, response: fakeResponse(() => {}), scheduler, now: () => scheduler.now });
+    await scheduler.advance(200); // first tick: one chunk now, the rest queued on setImmediate
+    lateJoin();
+
+    // Stop and restart the same fixture before the queued chunks run.
+    await live.stop();
+    await live.start({ fixtureId: fixture.id, speed: 60 });
+    await flushImmediates(20);
+
+    const emitted: TrackingFrame[] = [];
+    const response = fakeResponse((message) => {
+      if (message.type === "frame") emitted.push(message.frame);
+    });
+    const stop = startTrackingStream({ live, response, scheduler, now: () => scheduler.now });
+    for (let index = 0; index < 40 && !response.ended; index += 1) {
+      await scheduler.advance(1_000);
+      await flushImmediates(4);
+    }
+    stop();
+    assert.equal(response.ended, true, "restarted match drains to the end");
+
+    const finalFixture = live.current()!.fixture;
+    const replayFixture: MatchFixture = { ...structuredClone(finalFixture), id: `${finalFixture.id}-replay` };
+    let maxDiff = 0;
+    for (const frame of emitted) {
+      const replay = new Map(buildTrackingFrame(replayFixture, frame.second).players.map((player) => [player.id, player]));
+      for (const player of frame.players) {
+        const other = replay.get(player.id)!;
+        maxDiff = Math.max(maxDiff, Math.hypot(player.x - other.x, player.y - other.y));
+      }
+    }
+    assert.ok(maxDiff < 1e-3, `restarted live match diverged from replay by ${maxDiff.toFixed(3)} m`);
+  } finally {
+    await live.close();
+  }
+});

@@ -80,7 +80,14 @@ function readyToBuild(live: LiveService, fixture: MatchFixture, second: number):
           if (warmers.get(key) === created) warmers.delete(key);
           return;
         }
-        const next = Math.min(created.target, from + CATCH_UP_CHUNK_SECONDS, view.fixture.durationSeconds);
+        // Re-read the watermark every chunk: a warmer that outlives a stop and a
+        // restart of the same fixture must not build past what the new match has received.
+        const watermarkCap = finishedCap(live.publishedThroughSecond?.() ?? Number.POSITIVE_INFINITY, view.fixture.durationSeconds);
+        const next = Math.min(created.target, from + CATCH_UP_CHUNK_SECONDS, view.fixture.durationSeconds, watermarkCap);
+        if (next <= from + 1e-6) {
+          if (warmers.get(key) === created) warmers.delete(key);
+          return;
+        }
         buildTrackingFrame(view.fixture, next);
         noteWarm(key, next);
         if (next >= created.target - 1e-6) {
