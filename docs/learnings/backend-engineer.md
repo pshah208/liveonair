@@ -8,3 +8,5 @@
 - [mistake] 2026-10-23: An event-loop probe run alongside the test suite gave contaminated numbers. Run event-loop probes on their own.
 - [work] 2026-10-23: Full-time stalls came from the per-event chance and metrics recompute (shared/chanceSequence.ts, shared/metrics.ts), not the tracking build. Profile before guessing.
 - [mistake] 2026-10-23: The async catch-up warmer in server/live/tracking.ts had no watermark cap, so restarting the same fixture let a stale warmer build past received events (live drifted 59 m from replay). Re-read the watermark in every async chunk. (QA found it; Richard fixed it in 72fdbc5.)
+- [mistake] 2026-10-24: A memo keyed on a long interpolated string (id, revision, coordinates) cost more than the pass formula it cached (15 s of self time in the profile). Key hot memos on the short id and compare the input fields directly.
+- [work] 2026-10-24: The live SSE fan-out ran analyzeFixture and a full view clone per client. Share one clone per status within a turn and cache serialised snapshots per view fingerprint and query (server/routes/live.ts). The 24-client 60x probe went from a 4.6 s worst gap to 0.15 s.

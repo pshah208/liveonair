@@ -126,6 +126,11 @@ function inBox(x: number, y: number): boolean {
  * `recentEvents` supplies opponent pressure context; only events up to the pass's own second count.
  */
 export function passDifficulty(event: MatchEvent, recentEvents: MatchEvent[] = [], options: MetricOptions = {}): PassDifficulty | null {
+  if (passDistanceM(event, options) === null) return null;
+  return difficultyFor(event, recentEvents.some((other) => isMatchedPressureEvent(event, other)), options);
+}
+
+function difficultyFor(event: MatchEvent, pressured: boolean, options: MetricOptions): PassDifficulty | null {
   const distance = passDistanceM(event, options);
   if (distance === null) return null;
   const start = deliveryStart(event);
@@ -140,7 +145,6 @@ export function passDifficulty(event: MatchEvent, recentEvents: MatchEvent[] = [
   if (event.type !== "corner") add("forward", `${Math.round(Math.max(0, forwardM))} m towards goal`, Math.min(20, Math.max(0, forwardM) * 0.6));
   if (inBox(endX, endY)) add("box", "Ends in the box", 15);
   else if (endX >= 66.7) add("final_third", "Ends in the final third", 10);
-  const pressured = recentEvents.some((other) => isMatchedPressureEvent(event, other));
   if (pressured) add("pressure", `Under pressure (≤ ${PRESSURE_WINDOW_SECONDS} s)`, 15);
   if (Math.abs(endY - start.y) >= SWITCH_OF_PLAY_UNITS) add("switch", "Switch of play", 10);
   if (event.type === "corner") add("set_piece", "Set-piece delivery", 10);
@@ -170,12 +174,96 @@ export function passQualities(events: MatchEvent[], options: MetricOptions = {})
   const out: PassQuality[] = [];
   for (const event of events) {
     if (event.type !== "pass" || event.rescinded) continue;
+    const metrics = passMetricsFor(event, pressured(event, pressures), options);
+    if (!metrics) continue;
+    const { distanceM, difficulty } = metrics;
+    out.push({ event, distanceM, band: passBand(distanceM), difficulty, expected: expectedCompletion(difficulty.score), completed: event.outcome === "complete" });
+  }
+  return out;
+}
+
+/**
+ * Reference implementation of passQualities: every pass scanned against every pressure, no memo.
+ * Kept for the equivalence test; production code uses passQualities.
+ */
+export function passQualitiesFull(events: MatchEvent[], options: MetricOptions = {}): PassQuality[] {
+  if (options.camera) return [];
+  const pressures = events.filter((event) => event.type === "pressure" && !event.rescinded);
+  const out: PassQuality[] = [];
+  for (const event of events) {
+    if (event.type !== "pass" || event.rescinded) continue;
     const difficulty = passDifficulty(event, pressures, options);
     const distanceM = passDistanceM(event, options);
     if (!difficulty || distanceM === null) continue;
     out.push({ event, distanceM, band: passBand(distanceM), difficulty, expected: expectedCompletion(difficulty.score), completed: event.outcome === "complete" });
   }
   return out;
+}
+
+/** Pressures sorted by match second, cached per input array so one passQualities call indexes them once. */
+const pressureIndexCache = new WeakMap<MatchEvent[], { at: number[]; events: MatchEvent[] }>();
+
+function pressureIndex(pressures: MatchEvent[]): { at: number[]; events: MatchEvent[] } {
+  let index = pressureIndexCache.get(pressures);
+  if (!index) {
+    const sorted = [...pressures].sort((a, b) => secondOf(a) - secondOf(b));
+    index = { at: sorted.map(secondOf), events: sorted };
+    pressureIndexCache.set(pressures, index);
+  }
+  return index;
+}
+
+/** Same answer as pressures.some(isMatchedPressureEvent), scanning only the pressure window before the pass. */
+function pressured(pass: MatchEvent, pressures: MatchEvent[]): boolean {
+  const { at, events } = pressureIndex(pressures);
+  const passAt = secondOf(pass);
+  const from = passAt - PRESSURE_WINDOW_SECONDS;
+  let lo = 0;
+  let hi = at.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (at[mid] < from) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < at.length && at[i] <= passAt; i++) {
+    if (isMatchedPressureEvent(pass, events[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * Per-pass distance and difficulty, memoised by event id and verified on every input the formula reads:
+ * revision, type, start and end point, the pressure flag and the camera option. A correction (new revision
+ * or changed field) or a new pressure nearby misses the memo and recomputes only that pass. Field checks
+ * also keep ids that repeat across fixtures from sharing a stale value. Bounded; cleared when full.
+ */
+type PassMemoEntry = {
+  revision: number;
+  type: MatchEvent["type"];
+  x: number;
+  y: number;
+  endX: number | undefined;
+  endY: number | undefined;
+  pressured: boolean;
+  camera: boolean;
+  value: { distanceM: number; difficulty: PassDifficulty } | null;
+};
+const PASS_MEMO_LIMIT = 50_000;
+const passMemo = new Map<string, PassMemoEntry>();
+
+function passMetricsFor(event: MatchEvent, isPressured: boolean, options: MetricOptions): { distanceM: number; difficulty: PassDifficulty } | null {
+  const camera = Boolean(options.camera);
+  const hit = passMemo.get(event.id);
+  if (hit && hit.revision === event.revision && hit.type === event.type && hit.x === event.x && hit.y === event.y
+    && hit.endX === event.endX && hit.endY === event.endY && hit.pressured === isPressured && hit.camera === camera) {
+    return hit.value;
+  }
+  const distanceM = passDistanceM(event, options);
+  const difficulty = difficultyFor(event, isPressured, options);
+  const value = distanceM === null || !difficulty ? null : { distanceM, difficulty };
+  if (!hit && passMemo.size >= PASS_MEMO_LIMIT) passMemo.clear();
+  passMemo.set(event.id, { revision: event.revision, type: event.type, x: event.x, y: event.y, endX: event.endX, endY: event.endY, pressured: isPressured, camera, value });
+  return value;
 }
 
 export interface CompletionOverExpected {
