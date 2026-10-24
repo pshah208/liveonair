@@ -1,6 +1,6 @@
 {
   "name": "matchlens",
-  "version": "0.16.2",
+  "version": "0.16.3",
   "private": true,
   "type": "module",
   "description": "Evidence-first live match intelligence from original synthetic football events.",
