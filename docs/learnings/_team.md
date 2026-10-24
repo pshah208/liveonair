@@ -18,3 +18,5 @@
 - [mistake] Position clamps applied after the velocity/accel limiter reintroduce teleports. Limit targets instead, and measure speed/accel from emitted frames across >=4 scenarios.
 - [work] The generator previously chained passes to x>=95; check the event-coordinate spread before tuning anything spatial. Replay-equality tests need a fresh cache key.
 - [work] QA rounds of 25-60 min, repeated, cost ~8h on this feature. Time-box QA (10-15 min, in-process probes) and run full-match server runs only once, before deploy.
+
+- [work] 2026-10-23: The HQ deployment desk can mistake the deploy request it is rerouting for a deployment already running. If the backup deployer reports an overlap, check list_agents and re-brief with 'no other deployment is running'.
