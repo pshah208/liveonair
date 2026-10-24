@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppHealth, FixtureSummary, Language, MatchFixture, MatchPeriod, MatchSnapshot, NarrativeResponse } from "../shared/types.js";
-import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type { ArchiveSummary, LiveStatus, RecapStoryboard, ReviewStorylineRequest, ScenarioKind, Storyline } from "../shared/platform.js";
-import { PERIOD_LABEL, periodBoundary } from "../shared/periods.js";
-import { api } from "./api.js";
+import { periodBoundary } from "../shared/periods.js";
+import { api, ApiError, getStudioToken } from "./api.js";
+import { StudioMobileNotice, StudioTokenEntry } from "./StudioNotices.js";
 import { BroadcastBar, EventFeed, OverlayPreview, Panel, RecapPanel, Storyboard, StorylineQueue } from "./components.js";
 import { HighlightReelPanel } from "./HighlightReel.js";
 import { PostMatchStorylines } from "./PostMatchStorylines.js";
@@ -14,21 +14,24 @@ import { VideoLab, type VideoFootage } from "./VideoLab.js";
 import type { ActiveMatchContext } from "./liveContext.js";
 import { LabHighlightReel, type LabHighlights } from "./LabHighlightReel.js";
 import { PlayerAnalysisPage } from "./PlayerAnalysis.js";
-import { computePlayerTags, PlayerIdTags } from "./PlayerIdTags.js";
-import { ChanceInsightCard } from "./ChanceInsightCard.js";
 import { PlayerCam } from "./PlayerCam.js";
 import { LiveVideoPanel } from "./LiveVideoPanel.js";
+import { MomentumChart } from "./MomentumChart.js";
+import { ControlChaosCard } from "./ControlChaosCard.js";
+import { SecondScreenEngagement } from "./SecondScreenPanel.js";
+import { whyItMattersText } from "./WhyItMatters.js";
+import { EMPTY_MOMENTUM, latestControlWindow, momentumUpTo, SPONSOR_NAME } from "./momentumView.js";
 import type { ProgressiveVideoSession } from "../shared/progressiveVideo.js";
 import {
   clamp,
   computeScoreFromEvents,
   downloadJson,
   getErrorMessage,
-  labelize,
   LANGUAGE_LABEL,
   LANGUAGES,
   liveTransportLabel,
   mergeById,
+  scenarioLabel,
   SCENARIOS,
   sortStudioStorylines,
   type Theme
@@ -37,9 +40,9 @@ import {
 type Tab = "live" | "players" | "recap" | "video" | "player";
 type StartMode = "fixture" | "matchlab";
 
-type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void; onLiveContext?: (context: ActiveMatchContext) => void };
+type StudioPageProps = { theme: Theme; infraOpen: boolean; onToggleInfra: () => void; onLiveContext?: (context: ActiveMatchContext) => void; onOpenFan?: () => void };
 
-export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: StudioPageProps) {
+export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext, onOpenFan }: StudioPageProps) {
   const [tab, setTab] = useState<Tab>("live");
   const [health, setHealth] = useState<AppHealth | null>(null);
   const [desk, setDesk] = useState<DeskHealth | null>(null);
@@ -49,7 +52,9 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
   const [fixture, setFixture] = useState<MatchFixture | null>(null);
   const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null);
   const [storylines, setStorylines] = useState<Storyline[]>([]);
-  const [chanceInsights, setChanceInsights] = useState<ChanceInsight[]>([]);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authRejected, setAuthRejected] = useState(false);
+  const [tokenEpoch, setTokenEpoch] = useState(0);
   const [storyboard, setStoryboard] = useState<RecapStoryboard | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
 
@@ -66,6 +71,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
   const [progressiveSession, setProgressiveSession] = useState<ProgressiveVideoSession | null>(null);
 
   const [deskLanguage, setDeskLanguage] = useState<Language>("en");
+  const [showSponsor, setShowSponsor] = useState(false);
   // One stats scope shared by the Live Desk and Player Analysis; playback, score and producer controls stay whole-match.
   const [period, setPeriod] = useState<MatchPeriod>("full");
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(null);
@@ -95,18 +101,24 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       api.getLiveStatus(signal).then((data) => { if (data) { matchIdRef.current = data.matchId; setStatus(data); } }),
       api.getLiveFixture(signal).then(setFixture),
       api.getStudioStorylines(signal).then((list) => setStorylines(sortStudioStorylines(list ?? []))),
-      api.getChanceInsights(signal).then((list) => setChanceInsights(list ?? [])),
+      api.getStudioAuthRequired(signal).then(setAuthRequired),
       api.getStudioStoryboard(signal).then(setStoryboard)
     ]).then((results) => {
       const failed = results.find((result) => result.status === "rejected");
-      if (failed && failed.status === "rejected" && !signal.aborted) setPageError(getErrorMessage(failed.reason));
+      if (failed && failed.status === "rejected" && !signal.aborted) {
+        if (failed.reason instanceof ApiError && failed.reason.status === 401) {
+          setAuthRequired(true);
+          setAuthRejected(Boolean(getStudioToken()));
+          if (!getStudioToken()) return;
+        }
+        setPageError(getErrorMessage(failed.reason));
+      }
     });
     return () => controller.abort();
-  }, []);
+  }, [tokenEpoch]);
 
   function resetMatchState() {
     setStorylines([]);
-    setChanceInsights([]);
     setStoryboard(null);
     setSnapshot(null);
     setNarrative(null);
@@ -156,14 +168,6 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       if (message.type === "storyline") {
         if (matchIdRef.current && message.storyline.matchId !== matchIdRef.current) return;
         setStorylines((current) => sortStudioStorylines(mergeById(current, message.storyline)));
-        return;
-      }
-      if (message.type === "insight") {
-        if (matchIdRef.current && message.insight.matchId !== matchIdRef.current) return;
-        setChanceInsights((current) => {
-          const next = current.filter((item) => item.insightId !== message.insight.insightId);
-          return [...next, message.insight].sort((left, right) => right.effectiveSecond - left.effectiveSecond || left.insightId.localeCompare(right.insightId));
-        });
       }
     }
   });
@@ -177,6 +181,15 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
   }, [tab]);
 
   // ---------------------------------------------------------------- actions
+
+  /** Error text for a failed Studio action; a 401 also reveals the producer token entry. */
+  function actionError(error: unknown): string {
+    if (error instanceof ApiError && error.status === 401) {
+      setAuthRequired(true);
+      setAuthRejected(true);
+    }
+    return getErrorMessage(error);
+  }
 
   async function handleStart() {
     setSubmitting(true);
@@ -192,7 +205,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       setFixture(await api.getLiveFixture());
       setTab("live");
     } catch (error: unknown) {
-      setPageError(getErrorMessage(error));
+      setPageError(actionError(error));
     } finally {
       setSubmitting(false);
     }
@@ -205,7 +218,34 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
     try { setFixture(await api.getLiveFixture()); } catch { /* the stream refreshes it */ }
   }
 
+  async function handlePause() {
+    setSubmitting(true);
+    setPageError(null);
+    try {
+      const next = await api.pauseLive();
+      if (next) adoptStatus(next);
+    } catch (error: unknown) {
+      setPageError(actionError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleResume() {
+    setSubmitting(true);
+    setPageError(null);
+    try {
+      const next = await api.resumeLive();
+      if (next) adoptStatus(next);
+    } catch (error: unknown) {
+      setPageError(actionError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleStop() {
+    if (typeof window !== "undefined" && !window.confirm("End this match? You cannot resume it.")) return;
     setSubmitting(true);
     try {
       const ownProgressive = progressiveSession && status?.fixtureId === progressiveSession.fixtureId;
@@ -216,7 +256,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       setFixture(await api.getLiveFixture());
       void refreshStoryboard();
     } catch (error: unknown) {
-      setPageError(getErrorMessage(error));
+      setPageError(actionError(error));
     } finally {
       setSubmitting(false);
     }
@@ -229,7 +269,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
       if (next) setStatus(next);
       setFixture(await api.getLiveFixture());
     } catch (error: unknown) {
-      setPageError(getErrorMessage(error));
+      setPageError(actionError(error));
     } finally {
       setCorrectingId(null);
     }
@@ -245,7 +285,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
         if (updated.status === "approved") setSelectedStorylineId(updated.id);
       }
     } catch (error: unknown) {
-      setReviewErrorById((current) => ({ ...current, [id]: getErrorMessage(error) }));
+      setReviewErrorById((current) => ({ ...current, [id]: actionError(error) }));
     } finally {
       setPendingById((current) => ({ ...current, [id]: false }));
     }
@@ -257,7 +297,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
     try {
       setNarrative(await api.narrateLive({ persona: "analyst", language: recapLanguage }));
     } catch (error: unknown) {
-      setNarrativeError(getErrorMessage(error));
+      setNarrativeError(actionError(error));
     } finally {
       setNarrativeLoading(false);
     }
@@ -267,6 +307,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
 
   const progressiveForMatch = progressiveSession?.fixtureId === status?.fixtureId ? progressiveSession : null;
   const state = progressiveForMatch && progressiveForMatch.stage !== "complete" && status?.state === "finished" ? "idle" : status?.state ?? "idle";
+  const inPlay = state === "running" || state === "paused";
   const analyzedSecond = progressiveForMatch?.analyzedThrough ?? status?.clockSecond ?? 0;
   const recapFootage = progressiveFootage?.fixtureId === fixture?.id ? progressiveFootage : null;
   const score = snapshot?.score ?? computeScoreFromEvents(fixture);
@@ -282,6 +323,15 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
   const halvesUnavailable = fixture ? !periodBoundary(fixture).available : false;
   const analysisStoppedEarly = progressiveForMatch?.stage === "stopped" || progressiveForMatch?.stage === "failed";
   const aiConfigured = Boolean(health?.ai.configured);
+  // Game rhythm cards follow the live (or analysed) minute; at full time they cover the whole match.
+  const rhythmMinute = progressiveForMatch ? Math.floor(analyzedSecond / 60) : inPlay ? Math.floor((status?.clockSecond ?? 0) / 60) : null;
+  const homeName = fixture?.home.name ?? "Home";
+  const awayName = fixture?.away.name ?? "Away";
+  const momentum = useMemo(() => (fixture ? momentumUpTo(fixture.events, rhythmMinute) : EMPTY_MOMENTUM), [fixture, rhythmMinute]);
+  const control = useMemo(() => (fixture ? latestControlWindow(fixture.events, rhythmMinute) : { current: null, previous: null }), [fixture, rhythmMinute]);
+  const momentumWhy = useMemo(() => (fixture ? whyItMattersText({ kind: "momentum", series: momentum, events: fixture.events, homeName, awayName }) : null), [fixture, momentum, homeName, awayName]);
+  const controlWhy = useMemo(() => whyItMattersText({ kind: "control", window: control.current }), [control]);
+  const rhythmLastMinute = momentum.points[momentum.points.length - 1]?.minute ?? 0;
 
   // Share the active match read-only with Fan View; Studio keeps owning the stream, producer controls and video.
   useEffect(() => {
@@ -297,9 +347,11 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
 
   return (
     <main className="page">
+      <StudioMobileNotice onOpenFan={onOpenFan} />
+      {authRequired && <StudioTokenEntry rejected={authRejected} onSaved={() => { setAuthRejected(false); setPageError(null); setTokenEpoch((value) => value + 1); }} />}
       <InfrastructurePanel open={infraOpen} onToggle={onToggleInfra} health={health} desk={desk} live={status} />
 
-      {tab !== "video" && <BroadcastBar fixture={fixture} score={score} clockSecond={analyzedSecond} state={state} transport={transport} lagMs={status?.lagMs} eventsReceived={status?.eventsReceived ?? 0} />}
+      {tab !== "video" && <BroadcastBar fixture={fixture} score={score} clockSecond={analyzedSecond} state={state} transport={transport} status={status} lagMs={status?.lagMs} eventsReceived={status?.eventsReceived ?? 0} />}
       {tab !== "video" && progressiveForMatch && <p className="banner banner--warning">Video analysis watermark · Clock, score and Live Desk stats reflect analyzed footage, not local playback. AI-detected / provisional, verify goals; replay filtering is not guaranteed.{progressiveForMatch.stage === "stopped" || progressiveForMatch.stage === "failed" ? " Analysis stopped early — not full time." : ""}</p>}
 
       <nav className="tabs" aria-label="Studio views">
@@ -342,31 +394,38 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
         <PlayerCam />
       </div>
 
-      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} period={period} onPeriodChange={setPeriod} />}
+      {tab === "players" && <PlayerAnalysisPage fixture={fixture} clockSecond={progressiveForMatch ? analyzedSecond : inPlay ? status?.clockSecond ?? 0 : fixture?.durationSeconds ?? 0} aiReady={desk?.mode === "foundry-agents"} onOpenLiveDesk={() => setTab("live")} period={period} onPeriodChange={setPeriod} />}
       {tab === "recap" && labHighlights && <LabHighlightReel lab={labHighlights} theme={theme} onEdit={() => setTab("video")} onClose={() => setLabHighlights(null)} />}
 
       {tab === "video" || tab === "player" || tab === "players" ? null : tab === "live" ? (
         <div className="desk-grid">
           <div className="desk-col">
-            <Panel eyebrow="Match feed" title={state === "running" ? "Match in progress" : "Start a match"}>
-              {state === "running" ? (
+            <Panel eyebrow="Match feed" title={state === "paused" ? "Match paused" : state === "running" ? "Match in progress" : "Start a match"}>
+              {inPlay ? (
                 <div className="running-summary">
-                  <p className="subtle-text">{fixture?.title} · {progressiveForMatch ? "Progressive video: analysis runs independently of local playback." : `${status?.speed}× speed.`} Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
-                  <button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop match</button>
+                  <p className="subtle-text">{fixture?.title} · {state === "paused" ? "Paused. The clock is frozen and events are held." : progressiveForMatch ? "Progressive video: analysis runs independently of local playback." : `${status?.speed}× speed.`} Events flow through {transport}; the agents pick up goals and big moments automatically.</p>
+                  <div className="match-controls">
+                    {state === "paused" ? (
+                      <button type="button" className="button button--primary" onClick={() => void handleResume()} disabled={submitting}>Resume</button>
+                    ) : (
+                      <button type="button" className="button button--primary" onClick={() => void handlePause()} disabled={submitting}>Pause</button>
+                    )}
+                    <button type="button" className="button" onClick={() => void handleStop()} disabled={submitting}>Stop match</button>
+                  </div>
                 </div>
               ) : (
                 <div className="setup">
                   <div className="segmented" role="tablist" aria-label="Match source">
-                    <button type="button" role="tab" aria-selected={startMode === "fixture"} className={`segmented__item${startMode === "fixture" ? " is-active" : ""}`} onClick={() => setStartMode("fixture")}>Scripted fixture</button>
+                    <button type="button" role="tab" aria-selected={startMode === "fixture"} className={`segmented__item${startMode === "fixture" ? " is-active" : ""}`} onClick={() => setStartMode("fixture")}>Staged fixture</button>
                     <button type="button" role="tab" aria-selected={startMode === "matchlab"} className={`segmented__item${startMode === "matchlab" ? " is-active" : ""}`} onClick={() => setStartMode("matchlab")}>Generate with MatchLab</button>
                   </div>
                   {startMode === "fixture" ? (
-                    <label className="field"><span>Fixture</span>
+                    <label className="field"><span>Staged fixture</span>
                       <select value={fixtureId} onChange={(event) => setFixtureId(event.target.value)}>{fixtures.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
                     </label>
                   ) : (
                     <div className="field-grid">
-                      <label className="field"><span>Scenario</span><select value={scenario} onChange={(event) => setScenario(event.target.value as ScenarioKind)}>{SCENARIOS.map((item) => <option key={item} value={item}>{labelize(item)}</option>)}</select></label>
+                      <label className="field"><span>Scenario</span><select value={scenario} onChange={(event) => setScenario(event.target.value as ScenarioKind)}>{SCENARIOS.map((item) => <option key={item} value={item}>{scenarioLabel(item)}</option>)}</select></label>
                       <label className="field"><span>Seed</span><input type="number" value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label>
                       <label className="field"><span>Home club</span><select value={homeClubId} onChange={(event) => setHomeClubId(event.target.value)}><option value="">Auto</option>{(archive?.clubs ?? []).map((club) => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label>
                       <label className="field"><span>Away club</span><select value={awayClubId} onChange={(event) => setAwayClubId(event.target.value)}><option value="">Auto</option>{(archive?.clubs ?? []).map((club) => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label>
@@ -379,39 +438,29 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
               )}
             </Panel>
             <Panel eyebrow="Correction desk" title="Match events">
-              {fixture ? <EventFeed fixture={fixture} onCorrect={state === "running" ? (id) => void handleCorrection(id) : undefined} correctingId={correctingId} /> : <div className="empty-state">Start a match to see the feed.</div>}
+              {fixture ? <EventFeed fixture={fixture} onCorrect={inPlay ? (id) => void handleCorrection(id) : undefined} correctingId={correctingId} /> : <div className="empty-state">Start a match to see the feed.</div>}
             </Panel>
           </div>
 
           <div className="desk-col">
-            <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={setPeriod} halvesUnavailable={halvesUnavailable} score={score} />
-            <Panel eyebrow="Chance build-up" title="Chance insights" aside={<span className="tag">{chanceInsights.length}</span>}>
-              {chanceInsights.length === 0 ? <div className="empty-state">Shot and goal build-ups appear here as events arrive. Sequence boundaries are inferred, not provider possessions.</div> : (
-                <div className="chance-list chance-list--scroll" role="region" aria-label="Chance insights list" tabIndex={0}>
-                  {chanceInsights.slice(0, 6).map((insight) => (
-                    <ChanceInsightCard
-                      key={insight.insightId}
-                      insight={insight}
-                      players={Object.fromEntries((fixture ? [...fixture.home.players, ...fixture.away.players] : []).map((player) => [player.id, player.name]))}
-                      teams={fixture ? { home: fixture.home.name, away: fixture.away.name } : undefined}
-                      language={deskLanguage}
-                      variant="studio"
-                    />
-                  ))}
-                </div>
-              )}
+            <LiveBoardPanel fixture={fixture} snapshot={scopedSnapshot} period={period} onPeriodChange={setPeriod} halvesUnavailable={halvesUnavailable} score={score} paused={state === "paused"} />
+            <Panel eyebrow="Game rhythm" title="Attacking-threat momentum" aside={<label className="momentum-sponsor-toggle"><input type="checkbox" checked={showSponsor} onChange={(event) => setShowSponsor(event.target.checked)} /> Sponsor label</label>}>
+              {fixture ? <MomentumChart series={momentum} homeName={homeName} awayName={awayName} explanation={momentumWhy ?? undefined} /> : <div className="empty-state">Start a match to see the attacking-threat chart.</div>}
+              {showSponsor && <p className="momentum-sponsor">Momentum segment presented by <strong>{SPONSOR_NAME}</strong> (fictional brand)</p>}
             </Panel>
+            <Panel eyebrow="Game rhythm" title="Control vs chaos">
+              <ControlChaosCard window={control.current} explanation={controlWhy ?? undefined} />
+            </Panel>
+            {fixture && (
+              <Panel eyebrow="Second screen" title="Second-screen engagement (simulated)">
+                <SecondScreenEngagement matchKey={status?.matchId ?? fixture.id} minute={rhythmLastMinute} goals={momentum.goals} homeName={homeName} awayName={awayName} />
+              </Panel>
+            )}
           </div>
 
           <div className="desk-col">
             <Panel eyebrow="On air" title="Lower-third" aside={<label className="inline-select"><span className="sr-only">Desk language</span><select value={deskLanguage} onChange={(event) => setDeskLanguage(event.target.value as Language)}>{LANGUAGES.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}</select></label>}>
-              <OverlayPreview storyline={onAir} language={deskLanguage} onExport={() => onAir && downloadJson(`${onAir.matchId}-${onAir.id}-overlay.json`, { storylineId: onAir.id, matchId: onAir.matchId, minute: onAir.triggerMinute, headline: onAir.headline, overlay: onAir.overlay, onAirLine: onAir.onAirLine, claimSources: onAir.claims.flatMap((claim) => claim.sources), version: onAir.version, playerTags: fixture ? computePlayerTags(fixture, analyzedSecond) : [] })} />
-              {fixture && (
-                <div className="player-id-panel">
-                  <span className="eyebrow">Player ID · {PERIOD_LABEL[period]}</span>
-                  <PlayerIdTags fixture={fixture} clockSecond={analyzedSecond} period={period} />
-                </div>
-              )}
+              <OverlayPreview storyline={onAir} language={deskLanguage} onExport={() => onAir && downloadJson(`${onAir.matchId}-${onAir.id}-overlay.json`, { storylineId: onAir.id, matchId: onAir.matchId, minute: onAir.triggerMinute, headline: onAir.headline, overlay: onAir.overlay, onAirLine: onAir.onAirLine, claimSources: onAir.claims.flatMap((claim) => claim.sources), version: onAir.version })} />
             </Panel>
             <Panel eyebrow="Foundry agents" title="Storyline queue" aside={<>{counts.review > 0 && <span className="tag tag--accent">{counts.review} to review</span>}<span className="tag">{counts.onAir} on air</span></>}>
               {desk?.mode === "unconfigured" && <div className="banner banner--warning">Storyline agents aren't configured on this server.</div>}
@@ -421,7 +470,7 @@ export function StudioPage({ theme, infraOpen, onToggleInfra, onLiveContext }: S
         </div>
       ) : fixture ? (
         <div className="recap-grid">
-          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={progressiveForMatch ? analyzedSecond : state === "running" ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={recapFootage} onOpenVideoLab={() => setTab("video")} />
+          <HighlightReelPanel fixture={fixture} storylines={storylines} uptoSecond={progressiveForMatch ? analyzedSecond : inPlay ? status?.clockSecond ?? 0 : fixture.durationSeconds} theme={theme} footage={recapFootage} onOpenVideoLab={() => setTab("video")} />
           <div className="desk-col">
             <RecapPanel
               narrative={narrative}

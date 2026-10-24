@@ -46,7 +46,7 @@ function normaliseOutcome(detection: VisionDetection): MatchEvent["outcome"] {
   if (type === "pass") return outcome === "incomplete" ? "incomplete" : "complete";
   if (type === "goal") return "success";
   if (type === "shot") return ["miss", "blocked", "saved", "success"].includes(outcome) ? outcome : "miss";
-  if (type === "tackle") return outcome === "incomplete" || outcome === "miss" ? "incomplete" : "success";
+  if (type === "tackle") return outcome === "incomplete" || outcome === "miss" ? "fail" : "success";
   return "none";
 }
 

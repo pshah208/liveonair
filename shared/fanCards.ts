@@ -13,8 +13,6 @@ export const MIN_PASSES_TO_RANK = 10;
 export const MAX_PLAYER_CARD_ROWS = 8;
 export const MIN_PLAYER_CARD_ROWS = 5;
 export const RANK_ANNOUNCE_INTERVAL_MS = 10_000;
-export const VOTE_OPENS_SECOND = 60 * 60;
-export const FAN_VOTE_KEY = "liveonair.fan.vote.v1";
 export const QUIET_CARD_MESSAGE = "A quiet one on the stats sheet. Not much logged yet.";
 export const SYNTHETIC_FOOTER = "Synthetic demo data · Live on Air";
 
@@ -347,6 +345,15 @@ export function truncateHeadline(text: string, max = 120): string {
   return `${base.replace(/[\s,.;:–—-]+$/u, "")}…`;
 }
 
+/** Mini-map point (metres on the shared 105x68 frame) for an event; null for camera fixtures with no metric location. */
+export function momentMapPoint(fixture: MatchFixture, event: MatchEvent): MiniMapPoint | null {
+  if (isCameraFixture(fixture)) return null;
+  const start = toMetres(fixture, event);
+  if (!start) return null;
+  const end = event.endX !== undefined && event.endY !== undefined ? toMetres(fixture, event, event.endX, event.endY) : null;
+  return { x: start.x, y: start.y, ...(end ? { endX: end.x, endY: end.y } : {}) };
+}
+
 const KIND_RANK = { goal: 0, red_card: 1, latest: 2 } as const;
 
 /**
@@ -481,53 +488,4 @@ export function buildChanceCard(
 export function playerCardFileName(playerId: string, matchId: string, minute: number): string {
   const safe = (value: string) => value.replace(/[^A-Za-z0-9_-]+/gu, "-").slice(0, 60) || "x";
   return `playercard_${safe(playerId)}_${safe(matchId)}_${Math.max(0, Math.floor(minute))}.png`;
-}
-
-// ---------------------------------------------------------------- player of the match vote (local only)
-
-export type VotePhase = "not_open" | "open" | "locked";
-
-export function votePhase(clockSecond: number, finished: boolean): VotePhase {
-  if (finished) return "locked";
-  return clockSecond >= VOTE_OPENS_SECOND ? "open" : "not_open";
-}
-
-export interface VoteCandidate { playerId: string; name: string; number: number; teamId: TeamId; rating: number }
-
-/** Top three per team by impact rating. */
-export function voteCandidates(fixture: MatchFixture, uptoSecond = Number.POSITIVE_INFINITY): Record<TeamId, VoteCandidate[]> {
-  const pick = (teamId: TeamId) => topByImpact(fixture, uptoSecond, 3, teamId).map((entry) => ({
-    playerId: entry.player.id, name: entry.player.name, number: entry.player.number, teamId, rating: entry.impact.rating,
-  }));
-  return { home: pick("home"), away: pick("away") };
-}
-
-export type VoteStore = Record<string, string>;
-
-/** Parses stored votes ({matchId: playerId}); malformed input yields an empty store. Keeps at most 20 matches. */
-export function parseVotes(raw: unknown): VoteStore {
-  let value = raw;
-  if (typeof raw === "string") {
-    try { value = JSON.parse(raw) as unknown; } catch { return {}; }
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-  const record = value as Record<string, unknown>;
-  if (record.version !== 1 || typeof record.votes !== "object" || record.votes === null) return {};
-  const out: VoteStore = {};
-  for (const [matchId, playerId] of Object.entries(record.votes as Record<string, unknown>)) {
-    if (/^[A-Za-z0-9:_-]{1,120}$/u.test(matchId) && typeof playerId === "string" && /^[A-Za-z0-9:_-]{1,120}$/u.test(playerId)) out[matchId] = playerId;
-  }
-  return Object.fromEntries(Object.entries(out).slice(-20));
-}
-
-export function serializeVotes(votes: VoteStore): string {
-  return JSON.stringify({ version: 1, votes: Object.fromEntries(Object.entries(votes).slice(-20)) });
-}
-
-/** Applies a vote; refused unless the vote is open and the player is a current candidate. */
-export function castVote(votes: VoteStore, matchId: string, playerId: string, phase: VotePhase, candidates: Record<TeamId, VoteCandidate[]>): VoteStore {
-  if (phase !== "open") return votes;
-  if (![...candidates.home, ...candidates.away].some((candidate) => candidate.playerId === playerId)) return votes;
-  const { [matchId]: _previous, ...rest } = votes;
-  return { ...rest, [matchId]: playerId };
 }

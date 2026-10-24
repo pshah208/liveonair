@@ -6,7 +6,7 @@ Metric version: `chance-sequence/1`. Implemented in `shared/chanceSequence.ts`. 
 
 A chance is the latest non-rescinded revision of a `shot` or `goal`.
 
-Walk backward through latest-revision, non-rescinded events at or before the chance. Same-second events keep feed order: the first array index of that event id, not an id sort. A later revision does not move the event. Include same-team on-ball actions: pass (any outcome), shot, goal, save, corner, and a tackle only when `outcome` is `success`. Skip pressure and unsuccessful tackles. They do not break the chain.
+Walk backward through latest-revision, non-rescinded events at or before the chance. Same-second events keep feed order: the first array index of that event id, not an id sort. A later revision does not move the event. Include same-team on-ball actions: pass (any outcome), shot, goal, save, corner, interception, ball recovery, and a tackle only when `outcome` is `success`. Skip pressure and unsuccessful tackles. They do not break the chain.
 
 Stop without including the boundary event when the walk hits:
 
@@ -55,3 +55,125 @@ Storylines for a shot or goal store `insightId`. Withdrawal retracts linked stor
 - Camera-frame fixtures have no metric progression.
 - Evidence lists are capped at 40 events.
 - This is not xG, pressure, field tilt, or possession.
+
+---
+
+## Additional synthetic / illustrative metrics
+
+These are synthetic/illustrative figures for hackathon demo data. They are not calibrated to licensed provider models.
+
+### Illustrative xG (location-only)
+
+- Module: `shared/xg.ts`
+- Function: `illustrativeXg(x, y)`
+- Frame: 0–100 attacking coordinates (`x=100` is the attacked goal, `y=50` is centre).
+- Pitch mapping: `x_m=(x/100)*105`, `y_m=(y/100)*68`.
+- Formula:
+  - `p = clamp(sigmoid(-1.15 - 0.08*d + 1.2*theta), 0.01, 0.60)`
+  - `d`: distance (metres) to goal centre
+  - `theta`: goal-mouth angle (radians) from shot point to both posts
+- Usage: generated shots set `xg` from this function. Outcome does not change the estimate.
+- Big/high chance threshold: `HIGH_XG_SHOT_THRESHOLD = 0.30` (`shared/xg.ts`).
+
+### xG assisted (inferred creator)
+
+- Surface label: **xG assisted (inferred creator)**.
+- Definition: sum of shot xG for shots attributed to a creator pass/corner link:
+  - explicit `relatedEventId` pass/corner to shot; else
+  - latest completed same-team pass by another player within 15 seconds, without crossing halftime.
+- Synthetic inference, not provider xA.
+
+### Progressive passes
+
+- Rule used: **common 25%-closer-to-goal heuristic** (illustrative implementation).
+- Unit: completed passes (count). A completed pass with both end coordinates is progressive when its endpoint is at most 75% of its start distance to the attacked goal centre (`x=100, y=50`).
+- Distances use metres on a 105 × 68 m pitch, not an absolute grid-unit gain; this works identically in each team's attacking frame.
+- Function: `isProgressivePass` in `shared/metrics.ts`.
+- **Reference:** illustrative 25%-closer-to-goal rule implemented in `shared/metrics.ts` and tested in `tests/metrics.test.ts`; UI copy comes from `PROGRESSIVE_PASS_LABEL` and `PROGRESSIVE_PASS_HINT` in that module.
+
+### Illustrative activity score (player)
+
+- Unit: score on a 3–10 scale, rounded to 0.1; **not** a calibrated player performance rating.
+- Module: `shared/playerStats.ts` (`analysePlayers`, `IMPACT_WEIGHTS`, `IMPACT_RATING_FORMULA`, `impactRating`).
+- Each component is the sum of its event counts multiplied by the published weights, rounded to 0.01: scoring (goals, shots, xG); chance creation (assists, shot-creating passes/corners, xG assisted); passing (completed/failed/progressive passes); defending (won/lost tackles, interceptions, ball recoveries, pressures); goalkeeping (saves, related shot xG); discipline (fouls/cards). `impact.total` is the sum of these displayed rounded components. All input counts are for the selected period and latest non-rescinded event revision.
+- Formula: `round(clamp(6.2 + 3.8 × tanh(impact.total / 4.5), 3, 10), 1)`; the numeric constants and description share one source in `shared/playerStats.ts`. A score of 6.2 represents zero logged contribution. Negative discipline, failed-pass and lost-tackle contributions can lower the score. The curve compresses exceptional totals.
+- Weights (contribution units per action unless stated per xG): goal +0.9, assist +0.4, chance created +0.08, xG assisted +0.3 per xG, shot on target +0.12, shot off target +0.04, illustrative xG +0.3 per xG, completed pass +0.002, failed pass −0.02, progressive pass +0.025, won tackle +0.018, lost tackle −0.02, interception +0.01, ball recovery +0.008, pressure +0.002, save +0.22, saved xG +0.5 per xG, foul −0.08, yellow −0.25, red −1.0. The rendered UI list is generated from the weights export.
+- Full-match synthetic colour tiers (units: score): excellent ≥7.7, good ≥7.0, neutral ≥6.2, poor <6.2. Based on all 550 players (including goalkeepers) from five generator scenarios × five seeds: excellent 71/550 (12.9%), good 154/550 (28.0%), neutral 320/550 (58.2%), poor 5/550 (0.9%). These are presentation bands, not percentile rankings or external benchmarks; one-match, partial-period and sparse-feed shares may differ.
+- No minutes-played normalisation: reliable line-up/substitution minutes are not present in every fixture. Sparse staged fixtures retain event-derived differentiation; players without events receive the baseline, not an inferred performance judgment. Synthetic event density and inferred shot creation can affect comparisons across providers.
+- **Reference:** implementation and 25-match, five-seed/five-scenario distribution tests in `shared/playerStats.ts` and `tests/player-stats.test.ts`; heuristic weights, not an externally validated rating model. Pooled median 6.7, measured p90 7.6 (nearest-rank floor indexing), no 10s; scenario-match medians 6.4–7.0, p90s 7.1–8.3. Goalkeepers are included in the sample. The top-band floor in tests is 9% (`share("excellent") >= 0.09`).
+
+### Speed displayed in match and player cards
+
+- **Fastest shot** (km/h): maximum `shotSpeedKmh` in scope (`shared/metrics.ts`). For each shot, use its positive recorded `speedKmh`, otherwise distance from shot position to goal centre (105 × 68 m pitch) divided by that shot's own positive `flightMs`, multiplied by 3.6. Missing both yields null; camera fixtures and rescinded shots are excluded. No speed is inferred from the gap between events. Generated fixtures supply synthetic shot speeds; external event feeds may provide measured speeds.
+- **Maximum speed in synthetic minute samples** (km/h): maximum `speedKmh` of the player's available tracking samples, rounded to 0.1 (`physicalMetrics` in `shared/metrics.ts`). Synthetic fixtures provide one seeded sample per outfield player per minute, carrying a synthetic peak-speed value for that interval; this is not continuous tracking or a measured in-match top speed. Null without tracking or an in-scope sample. **Reference:** `shared/metrics.ts`, `server/fixtures.ts` (`syntheticTracking`) and `tests/metrics.test.ts`.
+
+### Pass difficulty (illustrative, uncalibrated)
+
+- Formula in `shared/metrics.ts` (`PASS_DIFFICULTY_FORMULA`) is illustrative/uncalibrated.
+- Pressure bonus (+15) is applied only for **matched pressure**:
+  - opponent pressure event
+  - within 0–2 seconds before the pass
+  - within 5 metres of the pass start
+  - not rescinded
+  - if `relatedEventId` is present, it must match the pass id.
+
+### Attacking-threat momentum chart (illustrative)
+
+- Module: `shared/momentum.ts`
+- Function: `computeMomentum(events, opts?)`
+- Per-minute home vs away threat from:
+  - completed pass/carry location-threat proxy (xG surface delta) on an illustrative 12×8 grid derived from `illustrativeXg` by cell centre
+  - shots contribute their `illustrativeXg`
+- Output:
+  - smoothed per-minute net (`home - away`, ~3-minute smoothing default)
+  - goal/substitution markers by minute
+  - period split (first/second half)
+  - `insufficientCoverage` when fewer than 1.2 on-ball events per **observed** minute
+    (through the last open event) are available; the chart's 90-minute padding does not
+    count as elapsed play. An empty feed is insufficient. The live UI independently
+    measures coverage through its current clock minute.
+
+### Control vs chaos windows (illustrative)
+
+- Module: `shared/momentum.ts`
+- Function: `controlVsChaos(events, windowMinutes=5)`
+- Inputs are latest non-rescinded events in non-overlapping match-clock windows (five minutes
+  by default). On-ball events are passes, shots, goals, saves, corners and tackles; pressure
+  events are excluded from possession switches. Consecutive on-ball actions by different
+  teams count as one **inferred team switch** (`possessionChanges`, count). This is not
+  provider possession data, and runs may be truncated at window edges.
+- `turnoverRate` (unitless share) = inferred team switches / (`onBall` count - 1);
+  null with fewer than two actions. `avgSequenceLength` (recorded actions per inferred
+  same-team run) = on-ball count / (switches + 1); null with no actions. Neither quantity
+  estimates actual ball-in-play time or a true possession sequence.
+- Completed-pass share (unitless) = completed passes / recorded passes; null with no passes.
+  Shots are recorded `shot` actions (count), not goals or saves.
+- **Full-detail rule** (at least 20 on-ball actions): `chaotic` if turnover rate is at
+  least 0.28, or at least three shots **and** turnover rate at least 0.26.
+  Otherwise `controlled` if completed-pass share is at least 0.80, at least four passes
+  were logged, and turnover rate is at most 0.235. Otherwise `mixed`.
+- **Low-detail rule** (`lowDetail=true`, 6–19 on-ball actions): `chaotic` only if at
+  least three shots **and** turnover rate at least 0.40. Otherwise `controlled`
+  only if at least four passes, completed-pass share at least 0.80 and turnover
+  rate at most 0.25. Otherwise `mixed`. This conservative fallback cannot infer
+  sustained possession from sparse, potentially selected events.
+- Fewer than six on-ball actions sets `insufficientCoverage=true`: the computed label
+  is provisional and the UI hides it. The six-action floor is an illustrative product
+  rule, not a statistically validated minimum; low-detail readings should be interpreted
+  cautiously. Windows beyond observed live play remain insufficient.
+- Includes matched pressure-event count and its difference from the preceding window
+  (unit: events); it does not change the label.
+- **Reference:** illustrative implementation and coverage tests in
+  `shared/momentum.ts` and `tests/momentum.test.ts`. These thresholds are heuristic,
+  not calibrated to a licensed tracking or event provider and not a validated
+  top-flight benchmark.
+
+### UI notes: momentum, control vs chaos, why it matters
+
+- View helpers live in `src/momentumView.ts` (pure, tested in `tests/momentum-ui.test.ts`).
+  - `momentumUpTo(events, uptoMinute)` trims the series to the live minute, re-smooths without the empty future (the data layer pads to 90 minutes), and judges coverage over the elapsed minutes only: fewer than 3 minutes played, or fewer than 1.2 on-ball events per elapsed minute, shows "Not enough match events yet". Sparse uploaded-video feeds land here.
+  - `latestControlWindow(events, uptoMinute)` picks the latest **completed** five-minute window.
+- `src/MomentumChart.tsx` draws home above / away below the zero line, labelled "Illustrative attacking threat (synthetic)", with goal (G) and substitution (V) markers and a half-time divider. Away is always hatched as well as coloured. Team colours that are too close, or a red/green pair, fall back to Okabe–Ito blue `#0072B2` / orange `#E69F00`. Screen readers get an `aria-label` summary and a visually hidden table of clear spells. Transitions are off under `prefers-reduced-motion`.
+- `src/ControlChaosCard.tsx` shows the latest window as Controlled / Chaotic / Mixed passage with completed-pass share, possession changes, shots and the change in pressing actions.
+- `src/WhyItMatters.tsx` builds the one-line "why it matters" chip deterministically (no LLM). Momentum: a side is "on top" when it holds a share lead of at least 0.35 of the last five minutes' raw threat (and the combined threat is at least 0.1); otherwise "evenly balanced". Control vs chaos: the window label plus the evidence. Every number in the line carries its unit or is a minute mark. Authors: "Match analyst" (momentum), "Tactics analyst" (control vs chaos).
+- Studio Desk also shows "Second-screen engagement (simulated)": opt-ins, average minutes engaged and drop-off at goals, half-time and full time, generated from a hash of the match ID. Labelled "Simulated — no real users"; there are no real users and no tracking. An optional "Momentum segment presented by Northwind Sports" label uses a fictional brand.

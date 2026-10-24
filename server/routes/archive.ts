@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import type { FixtureRegistry, GenerateMatch } from "../contracts.js";
 import { getArchive, getClub, getPlayerProfile } from "../archive/index.js";
+import { requireStudioToken } from "./studioAuth.js";
 import { HttpError } from "../validation.js";
 
 const archiveIdSchema = z.string().trim().regex(/^per-[a-z0-9-]+$/u, "archiveId must be a valid synthetic person id");
@@ -34,7 +35,7 @@ function withErrorBoundary(handler: (request: Request, response: Response) => vo
   };
 }
 
-export function createArchiveRouter(deps: { registry: FixtureRegistry; generateMatch: GenerateMatch }): express.Router {
+export function createArchiveRouter(deps: { registry: FixtureRegistry; generateMatch: GenerateMatch; studioToken?: string }): express.Router {
   const router = express.Router();
   const generateLimiter = rateLimit({
     windowMs: 60_000,
@@ -72,7 +73,7 @@ export function createArchiveRouter(deps: { registry: FixtureRegistry; generateM
     response.json(getArchive());
   }));
 
-  router.post("/api/matchlab/generate", generateLimiter, withErrorBoundary((request, response) => {
+  router.post("/api/matchlab/generate", requireStudioToken(deps.studioToken), generateLimiter, withErrorBoundary((request, response) => {
     const parsed = parseStrict(generateSchema, request.body);
     if (parsed.homeClubId) {
       try {

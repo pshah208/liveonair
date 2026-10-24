@@ -421,7 +421,7 @@ test("quota and concurrency are enforced on cache misses", async () => {
 
   await assert.rejects(
     () => hourlyNarrator.narrate(request({ format: "recap", storyId: undefined }), createSnapshot("v3"), { requestId: "r4" }),
-    (error) => error instanceof HttpError && error.status === 429 && error.message === "AI hourly request quota reached",
+    (error) => error instanceof HttpError && error.status === 429 && error.message === "AI request limit reached: 1 per hour. Try again later.",
   );
 });
 

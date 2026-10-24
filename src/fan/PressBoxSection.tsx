@@ -42,7 +42,8 @@ export function PressBoxSection({ fixture, uptoSecond, clockSecond, focusTeamId 
       <header className="press-box__head">
         <div className="press-box__title">
           <p className="eyebrow">Social</p>
-          <h2 className="press-box__heading">Social Media Posts <span className="press-box__synthetic" title={PRESS_BOX_LABEL}>Synthetic</span></h2>
+          <h2 className="press-box__heading">Social Media Posts <span className="press-box__synthetic">Synthetic</span></h2>
+          <p className="press-box__label">{PRESS_BOX_LABEL}</p>
         </div>
         <div className="press-box__controls">
           <div className="press-box__filter" role="group" aria-label="Order posts">

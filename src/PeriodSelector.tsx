@@ -31,7 +31,7 @@ export function PeriodSelector({ value, onChange, halvesUnavailable = false, lab
         const disabled = period !== "full" && halvesUnavailable;
         return (
           <button key={period} type="button" role="radio" data-period={period} aria-checked={value === period} tabIndex={value === period ? 0 : -1}
-            disabled={disabled} title={disabled ? "Halves are unavailable for clip-derived footage" : undefined}
+            disabled={disabled} aria-label={disabled ? `${PERIOD_LABEL[period]} (unavailable for clip-derived footage)` : undefined}
             className={`segmented__item${value === period ? " is-active" : ""}`} onClick={() => onChange(period)}>
             {PERIOD_LABEL[period]}
           </button>

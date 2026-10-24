@@ -1,5 +1,5 @@
 import type { FixtureSummary, MatchEvent, MatchFixture, Player, SyntheticTracking, Team, TeamId, TrackingSample } from "../shared/types.js";
-import { getArchive } from "./archive/index.js";
+import { getArchive, isArchivePlayer } from "./archive/index.js";
 
 interface EventInput {
   id: string;
@@ -30,7 +30,7 @@ const archive = getArchive();
 const archiveCurrentPlayersByClub = new Map<string, Map<string, string>>();
 for (const club of archive.clubs) {
   const players = archive.people
-    .filter((person) => person.currentClubId === club.id && !person.retired)
+    .filter((person) => person.currentClubId === club.id && !person.retired && isArchivePlayer(person))
     .sort((a, b) => a.id.localeCompare(b.id));
   archiveCurrentPlayersByClub.set(club.id, new Map(players.map((player) => [player.name, player.id])));
 }

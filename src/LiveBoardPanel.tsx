@@ -14,15 +14,18 @@ export type LiveBoardPanelProps = {
   /** Panel heading. Defaults to the fixture title. */
   title?: string;
   className?: string;
+  /** Frozen match. The pitch keeps the last frame; the label says Paused. */
+  paused?: boolean;
 };
 
 /** The pitch, period selector and live stats shared by the Studio Desk and Fan View. */
-export function LiveBoardPanel({ fixture, snapshot, period, onPeriodChange, halvesUnavailable, score, title, className }: LiveBoardPanelProps) {
+export function LiveBoardPanel({ fixture, snapshot, period, onPeriodChange, halvesUnavailable, score, title, className, paused = false }: LiveBoardPanelProps) {
   const scopeMessage = periodScopeMessage(snapshot?.scope);
   return (
-    <Panel eyebrow={scopedTitle("Live board", period)} title={title ?? fixture?.title ?? "No match running"} className={className}>
+    <Panel eyebrow={scopedTitle("Live board", period)} title={title ?? fixture?.title ?? "No match running"} className={className} aside={paused ? <span className="tag" role="status">Paused</span> : undefined}>
       {fixture ? (
         <>
+          {paused && <p className="banner banner--warning" role="status">Paused. The clock and the board are frozen until the match resumes.</p>}
           <PeriodSelector value={period} onChange={onPeriodChange} halvesUnavailable={halvesUnavailable} className="period-toggle" />
           {halvesUnavailable && <p className="subtle-text">Halves are unavailable for this match: clip-derived footage has no reliable half-time marker.</p>}
           {scopeMessage ? (

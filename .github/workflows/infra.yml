@@ -1,0 +1,31 @@
+name: Infra (Bicep)
+on:
+  push:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+permissions:
+  contents: read
+jobs:
+  bicep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bicep CLI
+        run: |
+          az bicep install
+          az bicep version
+      - name: Lint and build
+        # No Azure login needed: lint and build are offline. Linter rules are set in infra/bicepconfig.json.
+        run: |
+          set -euo pipefail
+          for file in infra/*.bicep; do
+            echo "::group::$file"
+            az bicep lint --file "$file"
+            az bicep build --file "$file" --stdout > /dev/null
+            echo "::endgroup::"
+          done

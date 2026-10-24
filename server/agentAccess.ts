@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import type { Request } from "express";
 
-import type { Storyline } from "../shared/platform.js";
+import { isMatchInProgress, type Storyline } from "../shared/platform.js";
 import type { LiveMatchView, LiveService } from "./contracts.js";
 
 /** Constant-time check of `Authorization: Bearer <token>`. */
@@ -20,10 +20,10 @@ export function bearerMatches(request: Request, token: string | undefined): bool
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-/** Clock the public live endpoints use: the running clock, or the whole match once it has stopped. */
+/** Clock the public live endpoints use: the live second while running or paused, or the whole match once it has stopped. */
 export function liveClock(live: LiveService, view: LiveMatchView): number {
   const status = live.status();
-  return status.state === "running"
+  return isMatchInProgress(status.state)
     ? Math.min(view.fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
     : view.fixture.durationSeconds;
 }

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { analysePlayers, heatGrid, TRACKING_METRICS } from "../shared/playerStats.js";
+import { analysePlayers, heatGrid, impactRating, impactRatingTone, IMPACT_RATING_BASELINE, IMPACT_RATING_FORMULA, IMPACT_RATING_TIERS, IMPACT_WEIGHTS, IMPACT_WEIGHT_DESCRIPTIONS, TRACKING_METRICS } from "../shared/playerStats.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
-import { createPlayerAnalyst, rulesNote } from "../server/players/analyst.js";
+import { generateMatch } from "../server/matchlab/generator.js";
+import { getFixture } from "../server/fixtures.js";
+import { analystInput, createPlayerAnalyst, rulesNote } from "../server/players/analyst.js";
 
 function event(overrides: Partial<MatchEvent> & Pick<MatchEvent, "id" | "type">): MatchEvent {
   return { revision: 1, minute: 10, second: 0, teamId: "home", playerId: "h9", outcome: "complete", x: 50, y: 50, ...overrides };
@@ -53,7 +55,7 @@ test("player analysis derives scoring, creating, passing, defending and discipli
   assert.equal(creator.xa, 0.4);
   assert.equal(creator.passes, 3);
   assert.equal(creator.passAccuracy, 67);
-  assert.equal(creator.progressivePasses, 2);
+  assert.equal(creator.progressivePasses, 2, "uses the 25%-closer-to-goal progressive-pass rule");
   assert.equal(creator.possessionLost, 1);
 
   const keeper = players.get("a1")!;
@@ -71,6 +73,77 @@ test("player analysis derives scoring, creating, passing, defending and discipli
 
   assert.ok(striker.impact.rating > 6 && striker.impact.rating <= 10);
   assert.ok(striker.impact.rating > defender.impact.rating);
+});
+
+test("illustrative activity score and colour tiers remain spread over five seeds and five generator scenarios", () => {
+  const pool: ReturnType<typeof analysePlayers> = [];
+  for (const scenario of ["goal_fest", "comeback", "red_card", "set_piece", "late_winner"] as const) {
+    for (const seed of [11, 42, 77, 2026, 9090]) {
+      const fixture = generateMatch({ scenario, seed });
+      const players = analysePlayers(fixture);
+      pool.push(...players);
+      const ratings = players.map((entry) => entry.impact.rating).sort((a, b) => a - b);
+      const quantile = (fraction: number) => ratings[Math.floor((ratings.length - 1) * fraction)]!;
+      assert.equal(players.length, 22, `${scenario}/${seed}: both starting XIs included`);
+      assert.ok(quantile(0.5) >= 6.4 && quantile(0.5) <= 7.2, `${scenario}/${seed}: median ${quantile(0.5)}`);
+      assert.ok(quantile(0.9) <= 8.3, `${scenario}/${seed}: p90 ${quantile(0.9)}`);
+      assert.equal(ratings.filter((rating) => rating === 10).length, 0, `${scenario}/${seed}: no routine 10s`);
+      const keepers = players.filter((entry) => entry.player.position === "GK");
+      assert.equal(keepers.length, 2);
+      assert.ok(keepers.every((entry) => entry.impact.rating >= IMPACT_RATING_BASELINE && entry.impact.rating <= 8.1), `${scenario}/${seed}: keepers earn score from actual saves`);
+      assert.ok(players.filter((entry) => entry.involvements === 0).every((entry) => entry.impact.rating === IMPACT_RATING_BASELINE), "unused players retain baseline");
+      if (scenario === "red_card") {
+        assert.equal(fixture.events.filter((event) => event.type === "red_card").length, 1, "red-card scenario includes a dismissal");
+      }
+      for (const entry of players) {
+        assert.equal(entry.impact.rating, impactRating(entry.impact.total));
+        assert.equal(entry.impact.total, Math.round(entry.impact.components.reduce((sum, part) => sum + part.value, 0) * 100) / 100);
+      }
+    }
+  }
+  const sorted = pool.map((entry) => entry.impact.rating).sort((a, b) => a - b);
+  assert.ok(sorted[Math.floor((sorted.length - 1) * 0.5)]! >= 6.5);
+  assert.ok(sorted[Math.floor((sorted.length - 1) * 0.9)]! <= 8.3);
+  assert.ok(IMPACT_RATING_TIERS.excellent > IMPACT_RATING_TIERS.good && IMPACT_RATING_TIERS.good > IMPACT_RATING_TIERS.neutral);
+  const share = (tone: ReturnType<typeof impactRatingTone>) => pool.filter((entry) => impactRatingTone(entry.impact.rating) === tone).length / pool.length;
+  assert.ok(share("excellent") >= 0.09 && share("excellent") <= 0.20, `top-tier share ${share("excellent")}`);
+  assert.ok(share("poor") <= 0.20, `bottom-tier share ${share("poor")}`);
+  assert.equal(impactRatingTone(IMPACT_RATING_BASELINE), "neutral", "inactive players are not coloured poor");
+  assert.ok(IMPACT_WEIGHTS.tackleLost <= 0);
+  assert.equal(IMPACT_WEIGHT_DESCRIPTIONS.length, Object.keys(IMPACT_WEIGHTS).length);
+  assert.ok(IMPACT_WEIGHT_DESCRIPTIONS.some((label) => label.startsWith("tackle lost -")));
+  assert.ok(IMPACT_WEIGHT_DESCRIPTIONS.some((label) => label.startsWith("shot off target +")));
+  assert.equal(impactRating(0), IMPACT_RATING_BASELINE);
+});
+
+test("staged comeback activity scores remain differentiated despite sparse events", () => {
+  const players = analysePlayers(getFixture("rivergate-comeback")).filter((entry) => entry.involvements >= 10);
+  const ratings = players.map((entry) => entry.impact.rating);
+  assert.ok(players.length >= 3);
+  assert.ok(new Set(ratings).size >= 2);
+  assert.ok(ratings.every((rating) => rating >= 5.5 && rating < 9));
+  assert.ok(players.some((entry) => entry.goals > 0 && entry.impact.rating > 7));
+});
+
+test("a lost tackle cannot increase a player's score", () => {
+  const alone = fixture([]);
+  const lost = fixture([event({ id: "lost-tackle", type: "tackle", outcome: "fail" })]);
+  const before = analysePlayers(alone).find((entry) => entry.player.id === "h9")!;
+  const after = analysePlayers(lost).find((entry) => entry.player.id === "h9")!;
+  assert.ok(after.impact.total < before.impact.total);
+  assert.ok(after.impact.rating <= before.impact.rating);
+});
+
+test("inactive substitutes stay at baseline and a short appearance is not penalised by minutes", () => {
+  const staged = analysePlayers(getFixture("discipline-swing"));
+  assert.ok(staged.some((entry) => entry.involvements === 0 && entry.impact.rating === IMPACT_RATING_BASELINE));
+  const withSub = fixture([
+    event({ id: "starter-pass", type: "pass", playerId: "h9", minute: 10, endX: 70, endY: 50 }),
+    event({ id: "sub-on", type: "substitution", playerId: "h8", minute: 85, outcome: "none" }),
+    event({ id: "sub-pass", type: "pass", playerId: "h8", minute: 89, endX: 70, endY: 50 }),
+  ]);
+  const players = analysePlayers(withSub);
+  assert.equal(players.find((entry) => entry.player.id === "h8")!.impact.rating, players.find((entry) => entry.player.id === "h9")!.impact.rating);
 });
 
 test("uptoSecond limits analysis to events already played", () => {
@@ -104,6 +177,11 @@ test("player analyst keeps grounded agent notes and falls back when a note inven
   assert.equal(rules.source, "rules");
   assert.ok(rules.strengths.some((item) => /chance/u.test(item)));
   assert.equal(rulesNote(analysePlayers(match).find((entry) => entry.player.id === "a4")!).concerns[0], "On a booking");
+  assert.equal(analystInput(match, "h9", "en", 5400).payload.impactModel, `${IMPACT_RATING_FORMULA} Illustrative, from logged events only.`);
+  assert.match(rulesNote(analysePlayers(fixture([event({ id: "missed", type: "pass", outcome: "incomplete" })])).find((entry) => entry.player.id === "h9")!).summary, /6\.2 baseline/);
+
+  const formulaNote = createPlayerAnalyst({ invoke: async () => ({ headline: "Ana Ruiz", summary: "Baseline 6.2, span 3.8, scale 4.5; range 3 to 10.", strengths: [], concerns: [] }) });
+  assert.equal((await formulaNote.write(match, "h9", "en", 5400)).source, "foundry", "model constants are permitted by grounding guard");
 
   await assert.rejects(() => offline.write(match, "nobody", "en", 5400), /Player not found/u);
 });

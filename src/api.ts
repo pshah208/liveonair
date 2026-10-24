@@ -10,7 +10,6 @@ import type {
   NarrativeResponse,
   PostMatchStorylinesResponse
 } from "../shared/types.js";
-import type { ChanceInsight } from "../shared/chanceSequence.js";
 import type {
   ArchivePlayerProfile,
   ArchiveSummary,
@@ -62,16 +61,82 @@ async function readError(response: Response): Promise<string> {
   return fallback || `Request failed with ${response.status}`;
 }
 
+/** localStorage key for the optional producer token used by Studio Desk reads, writes and the studio live stream. */
+export const STUDIO_TOKEN_KEY = "liveonair.studioToken";
+export const STUDIO_TOKEN_EVENT = "liveonair-studio-token";
+export const PRODUCER_TOKEN_REQUIRED = "Producer token required";
+
+function storage(): Storage | null {
+  try {
+    return typeof globalThis.localStorage === "undefined" ? null : globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function getStudioToken(): string {
+  try { return storage()?.getItem(STUDIO_TOKEN_KEY)?.trim() ?? ""; } catch { return ""; }
+}
+
+export function setStudioToken(token: string): void {
+  try {
+    const value = token.trim();
+    if (value) storage()?.setItem(STUDIO_TOKEN_KEY, value);
+    else storage()?.removeItem(STUDIO_TOKEN_KEY);
+    notifyStudioTokenChange();
+  } catch { /* storage unavailable */ }
+}
+
+function notifyStudioTokenChange(): void {
+  const target = globalThis.window;
+  if (!target || typeof target.dispatchEvent !== "function") return;
+  target.dispatchEvent(new Event(STUDIO_TOKEN_EVENT));
+}
+
+export function requestPath(input: RequestInfo | URL | undefined): string {
+  if (!input) return "";
+  if (typeof input === "string") {
+    const path = (input.split("#")[0] ?? "").split("?")[0] ?? "";
+    if (path.startsWith("/")) return path;
+    try { return new URL(input, "http://localhost").pathname; } catch { return path; }
+  }
+  if (input instanceof URL) return input.pathname;
+  try { return new URL(input.url).pathname; } catch { return ""; }
+}
+
+/** Studio reads that return drafts or traces. The auth probe stays public so the desk can discover the requirement. */
+export function isStudioReadPath(path: string): boolean {
+  const pathname = (path.split("?")[0] ?? "").replace(/\/+$/u, "").toLowerCase() || "/";
+  if (pathname === "/api/studio/auth-required") return false;
+  return pathname === "/api/studio" || pathname.startsWith("/api/studio/");
+}
+
+/** Adds the stored producer token to mutations and to studio reads. Public GETs stay anonymous. */
+export function applyStudioAuth(headers: Headers, method: string | undefined, input?: RequestInfo | URL): void {
+  const verb = (method ?? "GET").toUpperCase();
+  if (headers.has("Authorization")) return;
+  if ((verb === "GET" || verb === "HEAD") && !isStudioReadPath(requestPath(input))) return;
+  const token = getStudioToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+}
+
+export type StudioStreamTicket = {
+  ticket: string | null;
+  expiresInSeconds: number;
+};
+
 export async function requestJson<T>(input: RequestInfo | URL, init?: RequestOptions): Promise<T | null> {
   const headers = new Headers(init?.headers);
   const hasBody = init && Object.prototype.hasOwnProperty.call(init, "body");
   if (hasBody) headers.set("Content-Type", "application/json");
+  applyStudioAuth(headers, init?.method, input);
   const response = await fetch(input, {
     ...init,
     headers,
     body: hasBody ? JSON.stringify(init?.body) : undefined
   });
   if (init?.allowNotFound && response.status === 404) return null;
+  if (response.status === 401) throw new ApiError(PRODUCER_TOKEN_REQUIRED, 401);
   if (!response.ok) throw new ApiError(await readError(response), response.status);
   if (response.status === 204) return null;
   return (await response.json()) as T;
@@ -93,10 +158,24 @@ export const api = {
   getArchivePlayerProfile(archiveId: string, signal?: AbortSignal) { return requestJson<ArchivePlayerProfile>(`/api/archive/players/${archiveId}`, { signal }); },
   generateMatch(body: GenerateMatchRequest, signal?: AbortSignal) { return requestJson<FixtureSummary>("/api/matchlab/generate", { method: "POST", body, signal }); },
   getLiveStatus(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/status", { signal }); },
-  getChanceInsights(signal?: AbortSignal) { return requestJson<ChanceInsight[]>("/api/live/insights?role=studio", { signal }); },
+  /** One-time ticket for the studio EventSource. The bearer stays on this POST and never goes in a URL. */
+  createStudioStreamTicket(signal?: AbortSignal) {
+    return requestJson<StudioStreamTicket>("/api/studio/stream-ticket", { method: "POST", signal });
+  },
+  /** Whether Studio Desk writes need a producer token. A missing endpoint or any error means "not required". */
+  async getStudioAuthRequired(signal?: AbortSignal): Promise<boolean> {
+    try {
+      const result = await requestJson<{ required?: unknown }>("/api/studio/auth-required", { signal, allowNotFound: true });
+      return result?.required === true;
+    } catch {
+      return false;
+    }
+  },
   getLiveFixture(signal?: AbortSignal) { return requestJson<MatchFixture>("/api/live/fixture", { signal, allowNotFound: true }); },
   startLive(body: StartLiveRequest, signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/start", { method: "POST", body, signal }); },
   stopLive(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/stop", { method: "POST", signal, allowNotFound: true }); },
+  pauseLive(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/pause", { method: "POST", signal }); },
+  resumeLive(signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/resume", { method: "POST", signal }); },
   sendCorrection(eventId: string, signal?: AbortSignal) { return requestJson<LiveStatus>("/api/live/correction", { method: "POST", body: { eventId }, signal }); },
   getStudioStorylines(signal?: AbortSignal) { return requestJson<Storyline[]>("/api/studio/storylines", { signal }); },
   reviewStoryline(id: string, body: ReviewStorylineRequest, signal?: AbortSignal) { return requestJson<Storyline>(`/api/studio/storylines/${id}/review`, { method: "POST", body, signal }); },
@@ -120,6 +199,13 @@ export const api = {
   deletePlayerCamJob(id: string) { return requestJson<null>(`/api/player-cam/jobs/${id}`, { method: "DELETE" }); }
 };
 
+/** EventSource cannot set headers. Exchange the stored bearer for a one-time stream ticket. */
+export async function fetchStudioStreamTicket(signal?: AbortSignal): Promise<string | null> {
+  const issued = await api.createStudioStreamTicket(signal);
+  const ticket = issued?.ticket;
+  return typeof ticket === "string" && ticket.length > 0 ? ticket : null;
+}
+
 export type VideoHealth = { visionConfigured: boolean; ffmpeg: boolean; maxUploadBytes: number; maxVideoSeconds: number; maxFrames: number };
 
 /** Streams a file to a worker endpoint. XHR rather than fetch so the UI can show upload progress. */
@@ -132,12 +218,15 @@ function uploadFile<T>(url: string, file: File, onProgress: (fraction: number) =
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+    const token = getStudioToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
     xhr.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
     xhr.onload = () => {
       let payload: unknown = null;
       try { payload = JSON.parse(xhr.responseText); } catch { /* non-JSON error */ }
       if (xhr.status === 202) resolve(payload as T);
+      else if (xhr.status === 401) reject(new ApiError(PRODUCER_TOKEN_REQUIRED, 401));
       else reject(new Error((payload as { error?: string } | null)?.error ?? `Upload failed with ${xhr.status}`));
     };
     xhr.send(file);

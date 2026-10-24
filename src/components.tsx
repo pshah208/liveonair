@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Language, MatchEvent, MatchFixture, MatchSnapshot, NarrativeResponse, TeamStats } from "../shared/types.js";
 import type { RecapStoryboard, ReviewStorylineRequest, Storyline, StorylineHandoff, StorylineStatus, VerifiedFact } from "../shared/platform.js";
 import { latestRevisions } from "../shared/highlights.js";
+import { placeEvent } from "../shared/ballPath.js";
 import {
   chapterText,
   claimText,
@@ -16,6 +17,8 @@ import {
   statusTone,
   storylineText,
   teamTint,
+  transportBadge,
+  SYNTHETIC_BADGE_TEXT,
   type Theme
 } from "./utils.js";
 
@@ -32,12 +35,33 @@ export function BrandMark() {
   );
 }
 
-type AppHeaderProps = { theme: Theme; onToggleTheme: () => void; infraOpen: boolean; onToggleInfra: () => void; desk: "studio" | "fan" | "var"; onDesk: (desk: "studio" | "fan" | "var") => void };
+type AppHeaderProps = { theme: Theme; onToggleTheme: () => void; infraOpen: boolean; onToggleInfra: () => void; desk: "studio" | "fan"; onDesk: (desk: "studio" | "fan") => void };
 const DESK_TAGLINE: Record<AppHeaderProps["desk"], string> = {
   studio: "Live storylines, recaps and highlights from a verified match feed",
-  fan: "Your match: personal insights from the same verified live feed",
-  var: "Cited, Laws-based support for VAR reviews"
+  fan: "Your match: personal insights from the same verified live feed"
 };
+
+/** Small persistent disclosure: the match, clubs and players are fictional and analytics are illustrative. */
+export function SyntheticBadge({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className={`synthetic-badge${compact ? " synthetic-badge--compact" : ""}`} role="note" aria-label={SYNTHETIC_BADGE_TEXT}>
+      {SYNTHETIC_BADGE_TEXT}
+    </span>
+  );
+}
+
+/** Shows the live `transport` and `source` from /api/live/status. Renders nothing when neither is known. */
+export function TransportSourceBadge({ status }: { status: unknown }) {
+  const badge = transportBadge(status);
+  if (!badge.transport && !badge.source) return null;
+  return (
+    <span className="tag transport-badge" data-transport={badge.transport ?? "unknown"}>
+      {badge.transport ? `Transport: ${badge.transport}` : "Transport: unknown"}
+      {badge.source ? ` · Source: ${badge.source}` : ""}
+    </span>
+  );
+}
+
 export function AppHeader({ theme, onToggleTheme, infraOpen, onToggleInfra, desk, onDesk }: AppHeaderProps) {
   return (
     <header className="app-header">
@@ -46,14 +70,11 @@ export function AppHeader({ theme, onToggleTheme, infraOpen, onToggleInfra, desk
         <div className="desk-switch" role="group" aria-label="Desk">
           <button type="button" className={`desk-switch__item${desk === "studio" ? " is-active" : ""}`} aria-pressed={desk === "studio"} onClick={() => onDesk("studio")}>Studio Desk</button>
           <button type="button" className={`desk-switch__item${desk === "fan" ? " is-active" : ""}`} aria-pressed={desk === "fan"} onClick={() => onDesk("fan")}>Fan View</button>
-          <button type="button" className={`desk-switch__item${desk === "var" ? " is-active" : ""}`} aria-pressed={desk === "var"} onClick={() => onDesk("var")}>
-            VAR Desk <span className="desk-switch__badge">Next</span>
-          </button>
         </div>
         <span className="app-header__tagline">{DESK_TAGLINE[desk]}</span>
       </div>
       <div className="app-header__actions">
-        <span className="tag tag--accent">Synthetic data</span>
+        <SyntheticBadge />
         {desk === "studio" && (
           <button type="button" className="button button--ghost" onClick={onToggleInfra} aria-pressed={infraOpen}>
             {infraOpen ? "Hide architecture" : "How it works"}
@@ -89,12 +110,14 @@ type BroadcastBarProps = {
   fixture: MatchFixture | null;
   score: { home: number; away: number };
   clockSecond: number;
-  state: "idle" | "running" | "finished";
+  state: "idle" | "running" | "paused" | "finished";
   transport: string;
+  /** Raw /api/live/status payload, used for the transport/source badge. */
+  status?: unknown;
   lagMs?: number;
   eventsReceived: number;
 };
-export function BroadcastBar({ fixture, score, clockSecond, state, transport, lagMs, eventsReceived }: BroadcastBarProps) {
+export function BroadcastBar({ fixture, score, clockSecond, state, transport, status, lagMs, eventsReceived }: BroadcastBarProps) {
   return (
     <section className="broadcast-bar" aria-label="Match status">
       <div className="broadcast-bar__score">
@@ -103,11 +126,13 @@ export function BroadcastBar({ fixture, score, clockSecond, state, transport, la
         <span className="broadcast-bar__team">{fixture?.away.name ?? "Away"}</span>
       </div>
       <div className="broadcast-bar__meta">
-        <span className={`live-pill live-pill--${state}`}>{state === "running" ? "Live" : state === "finished" ? "Full time" : "Idle"}</span>
-        <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}</span>
+        <span className={`live-pill live-pill--${state}`}>{state === "running" ? "Live" : state === "paused" ? "Paused" : state === "finished" ? "Full time" : "Idle"}</span>
+        <span className="mono broadcast-bar__clock">{formatClock(clockSecond)}{state === "paused" ? " · Paused" : ""}</span>
         <span className="tag">{transport}</span>
+        <TransportSourceBadge status={status} />
         {lagMs !== undefined && <span className="tag">{lagMs} ms lag</span>}
         <span className="tag">{eventsReceived} events</span>
+        <SyntheticBadge compact />
       </div>
     </section>
   );
@@ -132,14 +157,17 @@ export { Pitch } from "./LivePitch.js";
 
 const STAT_ROWS: { label: string; hint?: string; get: (stats: TeamStats) => number | null | undefined; format?: (value: number) => string; bar?: boolean }[] = [
   { label: "Shots", get: (stats) => stats.shots },
-  { label: "xG (illustrative)", get: (stats) => stats.illustrativeXg, format: (value) => value.toFixed(2) },
+  { label: "illustrative xG", get: (stats) => stats.illustrativeXg, format: (value) => value.toFixed(2) },
   { label: "Pass accuracy", get: (stats) => stats.passAccuracy, format: (value) => `${Math.round(value)}%` },
   { label: "Avg pass length", hint: "Mean pass length on a 105 × 68 m pitch", get: (stats) => stats.avgPassDistanceM, format: (value) => `${value.toFixed(1)} m` },
   { label: "Long-pass accuracy", hint: "Completion of passes longer than 30 m", get: (stats) => stats.longPassAccuracy, format: (value) => `${Math.round(value)}%` },
-  { label: "Avg pass difficulty", hint: "0–100: distance, forward progress, destination, pressure, switch, cross", get: (stats) => stats.avgPassDifficulty, format: (value) => value.toFixed(0) },
-  { label: "Completion vs expected", hint: "Completed minus expected completions, percentage points of attempts", get: (stats) => stats.completionOverExpected, format: (value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} pp`, bar: false },
-  { label: "Fastest shot", hint: "Synthetic ball-flight measurement of the shot itself", get: (stats) => stats.fastestShotKmh, format: (value) => `${Math.round(value)} km/h` },
+  { label: "Avg pass difficulty (illustrative, uncalibrated)", hint: "0–100 heuristic: distance, forward progress, destination, pressure, switch, cross", get: (stats) => stats.avgPassDifficulty, format: (value) => value.toFixed(0) },
+  { label: "Completion vs heuristic (illustrative, uncalibrated)", hint: "Completed passes minus an uncalibrated heuristic baseline, percentage points of attempts", get: (stats) => stats.completionOverExpected, format: (value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} pp`, bar: false },
+  { label: "Fastest shot", hint: "Shot's recorded speed, or goal-distance divided by its own flight time; unavailable without either", get: (stats) => stats.fastestShotKmh, format: (value) => `${Math.round(value)} km/h` },
   { label: "Corners", get: (stats) => stats.corners },
+  { label: "Tackles", get: (stats) => stats.tackles },
+  { label: "Interceptions", get: (stats) => stats.interceptions },
+  { label: "Ball recoveries", get: (stats) => stats.ballRecoveries },
   { label: "Cards", get: (stats) => stats.yellowCards + stats.redCards }
 ];
 
@@ -164,8 +192,9 @@ export function LiveStats({ snapshot, fixture }: { snapshot: MatchSnapshot | nul
           return (
             <tr key={row.label}>
               <td className="mono">{format(homeValue)}</td>
-              <td title={row.hint}>
+              <td>
                 <span className="stat-table__label">{row.label}</span>
+                {row.hint && <small className="stat-table__hint">{row.hint}</small>}
                 <span className={`stat-bar${total <= 0 ? " stat-bar--empty" : ""}`} aria-hidden="true"><span className="stat-bar__home" style={{ width: `${total <= 0 ? 50 : (home / total) * 100}%` }} /></span>
               </td>
               <td className="mono">{format(awayValue)}</td>
@@ -205,7 +234,7 @@ export function EventFeed({ fixture, onCorrect, correctingId }: EventFeedProps) 
               <span className="event-row__team" style={{ background: teamTint(event.teamId) }} aria-hidden="true" />
               <span className="event-row__body">
                 <strong>{labelize(event.type)}</strong>
-                <span>{players.get(event.playerId) ?? "Unknown player"} · {outcomeLabel(event)}{event.xg !== undefined && (event.type === "shot" || event.type === "goal") ? ` · ${event.xg.toFixed(2)} xG` : ""}</span>
+                <span>{players.get(event.playerId) ?? "Unknown player"} · {outcomeLabel(event)}{event.xg !== undefined && (event.type === "shot" || event.type === "goal") ? ` · ${event.xg.toFixed(2)} illustrative xG` : ""}</span>
               </span>
               {event.type === "goal" && !event.rescinded && onCorrect && (
                 <button type="button" className="button button--small" onClick={() => onCorrect(event.id)} disabled={correctingId === event.id}>Rule out</button>
@@ -506,7 +535,7 @@ export function Storyboard({ storyboard, fixture, storylines, language }: Storyb
                 <div className="chips">{chapter.storylineIds.map((id) => <span className="tag" key={id}>{storylineMap.get(id) ? localizeText(storylineMap.get(id)!.headline, language).text : id}</span>)}</div>
               )}
             </div>
-            <MiniPitch events={events} />
+            <MiniPitch fixture={fixture} events={events} />
           </li>
         );
       })}
@@ -514,14 +543,17 @@ export function Storyboard({ storyboard, fixture, storylines, language }: Storyb
   );
 }
 
-function MiniPitch({ events }: { events: MatchEvent[] }) {
+function MiniPitch({ fixture, events }: { fixture: MatchFixture; events: MatchEvent[] }) {
   return (
     <svg viewBox="0 0 100 68" className="mini-pitch" role="img" aria-label="Chapter events on the pitch">
       <rect x="1" y="1" width="98" height="66" rx="3" fill="var(--cp-surface-soft)" stroke="var(--cp-border-strong)" strokeWidth="0.8" />
       <path d="M50 1v66" stroke="var(--cp-border)" strokeWidth="0.6" />
-      {events.slice(0, 14).map((event, index) => (
-        <circle key={`${event.id}-${index}`} cx={event.x} cy={(event.y / 100) * 68} r="2" fill={teamTint(event.teamId)} opacity={event.rescinded ? 0.3 : 0.9} />
-      ))}
+      {events.slice(0, 14).map((event, index) => {
+        const point = placeEvent(fixture, event);
+        return (
+          <circle key={`${event.id}-${index}`} cx={point.x} cy={(point.y / 100) * 68} r="2" fill={teamTint(event.teamId)} opacity={event.rescinded ? 0.3 : 0.9} />
+        );
+      })}
     </svg>
   );
 }

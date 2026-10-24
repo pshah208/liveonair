@@ -284,7 +284,7 @@ function drawTrail(ctx: CanvasRenderingContext2D, model: ReelModel, clip: Highli
 }
 
 function actionLabel(event: MatchEvent): string {
-  const xg = event.xg !== undefined && (event.type === "shot" || event.type === "goal") ? ` · ${event.xg.toFixed(2)} xG` : "";
+  const xg = event.xg !== undefined && (event.type === "shot" || event.type === "goal") ? ` · ${event.xg.toFixed(2)} illustrative xG` : "";
   return `${event.type.replaceAll("_", " ")}${xg}`;
 }
 
@@ -331,8 +331,17 @@ function drawBurst(ctx: CanvasRenderingContext2D, model: ReelModel, clip: Highli
   ctx.globalAlpha = 1;
 }
 
+/** UI wording for a "big chance" clip; the shared highlight builder keeps its own kind and title. */
+export const BIG_CHANCE_LABEL = "High illustrative xG shot";
+
+/** Display title for a clip, replacing the shared English "Big chance" title with the illustrative-xG wording. */
+export function clipTitle(clip: Pick<HighlightClip, "kind" | "title">): string {
+  return clip.kind === "big_chance" && clip.title === "Big chance" ? BIG_CHANCE_LABEL : clip.title;
+}
+
 function kindLabel(clip: HighlightClip, model: ReelModel): string {
-  return (clip.label ?? highlightKindLabel(clip.kind, model.reel.language)).toUpperCase();
+  const base = clip.label ?? (clip.kind === "big_chance" && model.reel.language === "en" ? BIG_CHANCE_LABEL : highlightKindLabel(clip.kind, model.reel.language));
+  return base.toUpperCase();
 }
 
 function text(model: ReelModel) {
@@ -356,7 +365,7 @@ function drawLowerThird(ctx: CanvasRenderingContext2D, model: ReelModel, clip: H
   ctx.stroke();
   ctx.fillStyle = clip.kind === "disallowed_goal" || clip.kind === "red_card" ? palette.danger : palette.accent;
   ctx.fillRect(x, y, 8, height);
-  drawText(ctx, clip.title, x + 28, y + 40, 26, palette.text, 700);
+  drawText(ctx, clipTitle(clip), x + 28, y + 40, 26, palette.text, 700);
   lines.forEach((line, index) => drawText(ctx, line, x + 28, y + 76 + index * 32, 24, palette.textMuted, 500));
   ctx.globalAlpha = 1;
 }
@@ -419,7 +428,7 @@ export function renderReelFrame(ctx: CanvasRenderingContext2D, model: ReelModel,
   drawBall(ctx, model, ballAt(frames, second));
   if (segment.kind === "hold") drawLowerThird(ctx, model, clip, local * 3);
   if (segment.kind === "card") {
-    drawCenterCard(ctx, model, `${text(model).moment(segment.index + 1, reel.clips.length)} · ${kindLabel(clip, model)}`, clip.title, `${formatMinute(clip.startSecond)} – ${formatMinute(clip.endSecond)} ${text(model).matchTime}`, Math.min(1, (1 - local) * 3));
+    drawCenterCard(ctx, model, `${text(model).moment(segment.index + 1, reel.clips.length)} · ${kindLabel(clip, model)}`, clipTitle(clip), `${formatMinute(clip.startSecond)} – ${formatMinute(clip.endSecond)} ${text(model).matchTime}`, Math.min(1, (1 - local) * 3));
   }
   drawProgress(ctx, model, time);
 }

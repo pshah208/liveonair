@@ -34,8 +34,10 @@ export type GetArchive = () => ArchiveSnapshot;
 
 // ---- live (owner: live) ------------------------------------------------------------
 export interface LiveTransportClient {
-  readonly name: "fabric-eventstream" | "local";
+  readonly name: "fabric-eventstream" | "eventstream" | "local";
   readonly configured: boolean;
+  /** Set by the resilient Eventstream wrapper after it switches to the local bus. */
+  readonly fallbackReason?: string | null;
   publish(envelope: LiveEnvelope): Promise<void>;
   /** Starts consuming; returns a stop function. */
   subscribe(onEnvelope: (envelope: LiveEnvelope, receivedAt: number) => void): Promise<() => Promise<void>>;
@@ -53,17 +55,30 @@ export interface LiveListener {
   onEvent(view: LiveMatchView, event: MatchEvent): void;
   onMatchStart?(view: LiveMatchView): void;
   onMatchEnd?(view: LiveMatchView): void;
+  /** Pause and resume keep the SSE connection. `view` is absent only before match_start has been applied. */
+  onPause?(view: LiveMatchView | undefined): void;
+  onResume?(view: LiveMatchView | undefined): void;
 }
 
 export interface LiveService {
   status(): LiveStatus;
   current(): LiveMatchView | undefined;
+  /**
+   * Received-event watermark: every scheduled feed event due at or before this
+   * second has been received. Live tracking must not look past it. Optional so
+   * test doubles stay valid; consumers fall back to the clock.
+   */
+  publishedThroughSecond?(): number;
   start(request: StartLiveRequest): Promise<LiveStatus>;
   /** Incremental video uses an analysis watermark, not a precomputed event schedule. */
   startProgressive?(fixture: MatchFixture): Promise<LiveStatus>;
   appendProgressive?(fixture: MatchFixture, analyzedThrough: number): Promise<LiveStatus>;
   completeProgressive?(fixtureId: string): Promise<LiveStatus>;
   stop(): Promise<LiveStatus>;
+  /** Freezes the clock and holds unpublished events. Idle or finished is 409. A second pause is a no-op. */
+  pause?(): Promise<LiveStatus>;
+  /** Continues the same match from the paused second. 409 unless the match is paused. */
+  resume?(): Promise<LiveStatus>;
   /** Publishes a revision of an existing goal marking it rescinded. */
   publishCorrection(eventId: string): Promise<void>;
   addListener(listener: LiveListener): () => void;

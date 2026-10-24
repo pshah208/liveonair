@@ -1,7 +1,7 @@
 import { AIProjectClient } from "@azure/ai-projects";
 import { z } from "zod";
 
-import { analysePlayers, IMPACT_WEIGHTS, type PlayerAnalysis } from "../../shared/playerStats.js";
+import { analysePlayers, IMPACT_RATING_BASELINE, IMPACT_RATING_FORMULA, IMPACT_RATING_MAX, IMPACT_RATING_MIN, IMPACT_RATING_SCALE, IMPACT_RATING_SPAN, IMPACT_WEIGHTS, type PlayerAnalysis } from "../../shared/playerStats.js";
 import { PERIOD_LABEL, periodScope } from "../../shared/periods.js";
 import type { Language, MatchFixture, MatchPeriod } from "../../shared/types.js";
 import { getAzureCredential } from "../azure/credential.js";
@@ -116,7 +116,7 @@ export function analystInput(fixture: MatchFixture, playerId: string, language: 
       teamRankByImpact: teammates.findIndex((entry) => entry.player.id === playerId) + 1 || undefined,
       teamPlayersWithActions: teammates.length,
       teamTopPerformer: teammates[0] && teammates[0].player.id !== playerId ? { name: teammates[0].player.name, impactRating: teammates[0].impact.rating } : undefined,
-      impactModel: "Impact rating = 6.0 + weighted contributions (goals, chances created, passing, defending, saves, discipline), kept within 3-10. Illustrative, from logged events only.",
+      impactModel: `${IMPACT_RATING_FORMULA} Illustrative, from logged events only.`,
     },
   };
 }
@@ -142,7 +142,7 @@ export function rulesNote(player: PlayerAnalysis): PlayerNote {
     headline: `${player.player.name}: impact ${player.impact.rating.toFixed(1)}`,
     summary: player.involvements === 0
       ? `${player.player.name} has no logged actions yet.`
-      : `${player.player.name} has ${player.involvements} logged actions (${player.involvementShare}% of the team's). ${top && top.value > 0 ? `Most of the impact comes from ${top.label.toLowerCase()}.` : "The impact rating sits near the 6.0 baseline."}`,
+      : `${player.player.name} has ${player.involvements} logged actions (${player.involvementShare}% of the team's). ${top && top.value > 0 ? `Most of the impact comes from ${top.label.toLowerCase()}.` : `The impact rating sits near the ${IMPACT_RATING_BASELINE.toFixed(1)} baseline.`}`,
     strengths: strengths.slice(0, 3),
     concerns: concerns.slice(0, 3),
     source: "rules",
@@ -171,7 +171,8 @@ export function createPlayerAnalyst(options: { endpoint?: string; invoke?: Invok
       try {
         const draft = noteSchema.parse(await invoke(JSON.stringify(payload)));
         const text = [draft.headline, draft.summary, ...draft.strengths, ...draft.concerns].join(" ");
-        const problems = groundingProblems(text, `${JSON.stringify(payload)} ${Object.values(IMPACT_WEIGHTS).join(" ")} 6.0 3 10`, fixture);
+        const modelNumbers = [IMPACT_RATING_BASELINE, IMPACT_RATING_SPAN, IMPACT_RATING_SCALE, IMPACT_RATING_MIN, IMPACT_RATING_MAX];
+        const problems = groundingProblems(text, `${JSON.stringify(payload)} ${Object.values(IMPACT_WEIGHTS).join(" ")} ${modelNumbers.join(" ")}`, fixture);
         note = problems.length > 0
           ? { ...fallback, problem: `Agent note rejected: ${problems.join("; ")}` }
           : { playerId, ...draft, source: "foundry", agent: PLAYER_ANALYST_AGENT_NAME };

@@ -14,11 +14,11 @@ import type { MatchEvent, MatchFixture, TeamId } from "./types.js";
  *   Equal match-clock seconds keep feed order: the first array index of that event id, not `id`
  *   sort. A later revision does not move the event. A pass supplied immediately before a shot in
  *   the same second stays before that shot.
- * - The sequence is same-team on-ball actions: pass (any outcome), shot, goal, save, corner, and a tackle
- *   only when `outcome === "success"` (tackle won). Pressure and unsuccessful tackles are skipped: they are
- *   not on-ball and do not break the chain.
+ * - The sequence is same-team on-ball actions: pass (any outcome), shot, goal, save, corner, interception,
+ *   ball recovery, and a tackle only when `outcome === "success"` (tackle won). Pressure and unsuccessful
+ *   tackles are skipped: they are not on-ball and do not break the chain.
  * - Stop, without including the boundary event, at:
- *   - an opponent on-ball action (pass, shot, goal, corner, save, or tackle won) — boundary `turnover`
+ *   - an opponent on-ball action (pass, shot, goal, corner, save, interception, ball recovery, or tackle won) — boundary `turnover`
  *   - a restart or stoppage (kickoff, halftime, fulltime, foul, yellow card, red card, substitution),
  *     either team — boundary `stoppage`
  *   - a match-clock gap greater than 15 seconds between consecutive included actions — boundary `time_gap`
@@ -208,6 +208,24 @@ export function pitchThird(x: number): PitchThird {
  * Same-second events are not sorted by id. A later revision keeps the id's original place.
  */
 export function latestOpenEvents(events: MatchEvent[], atSecond = Number.POSITIVE_INFINITY): MatchEvent[] {
+  if (openEventsMemo && openEventsMemo.events === events) {
+    let cached = openEventsMemo.bySecond.get(atSecond);
+    if (!cached) {
+      cached = computeLatestOpenEvents(events, atSecond);
+      openEventsMemo.bySecond.set(atSecond, cached);
+    }
+    return cached.slice();
+  }
+  return computeLatestOpenEvents(events, atSecond);
+}
+
+/**
+ * Scoped to one recomputeChanceInsights call (the event log cannot change during it), so each
+ * chance does not rescan and resort the whole log three times on every accepted event.
+ */
+let openEventsMemo: { events: MatchEvent[]; bySecond: Map<number, MatchEvent[]> } | undefined;
+
+function computeLatestOpenEvents(events: MatchEvent[], atSecond: number): MatchEvent[] {
   const sourceIndex = new Map<string, number>();
   const latest = new Map<string, MatchEvent>();
   for (let index = 0; index < events.length; index += 1) {
@@ -236,6 +254,7 @@ function isTackleWon(event: MatchEvent): boolean {
 }
 
 function isOnBall(event: MatchEvent): boolean {
+  if (event.type === "interception" || event.type === "ball_recovery") return true;
   return ON_BALL_TYPES.has(event.type) || isTackleWon(event);
 }
 
@@ -558,6 +577,16 @@ function buildIssued(input: RecomputeInput, shot: MatchEvent, revision: number, 
  * is `withdrawn` and stays in the list so clients can drop it.
  */
 export function recomputeChanceInsights(input: RecomputeInput): { insights: ChanceInsight[]; changed: ChanceInsight[] } {
+  const outer = openEventsMemo;
+  openEventsMemo = { events: input.events, bySecond: new Map() };
+  try {
+    return recomputeChanceInsightsUncached(input);
+  } finally {
+    openEventsMemo = outer;
+  }
+}
+
+function recomputeChanceInsightsUncached(input: RecomputeInput): { insights: ChanceInsight[]; changed: ChanceInsight[] } {
   const previousById = new Map(input.previous.map((insight) => [insight.insightId, insight]));
   const chances = latestOpenEvents(input.events, input.atSecond).filter((event) => event.type === "shot" || event.type === "goal");
   const next: ChanceInsight[] = [];

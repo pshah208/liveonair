@@ -10,7 +10,7 @@ import { getErrorMessage } from "./utils.js";
 export function canStartLiveVideo(
   ready: boolean, busy: boolean, session: ProgressiveVideoSession | null, status: LiveStatus | null
 ): boolean {
-  return ready && !busy && status?.state !== "running"
+  return ready && !busy && status?.state !== "running" && status?.state !== "paused"
     && (!session || session.stage === "failed" || session.stage === "stopped");
 }
 
@@ -23,7 +23,7 @@ type LiveVideoRunIdentity = { id: string; fixtureId?: string; matchId?: string }
 
 export function liveVideoCleanupConfirmed(run: LiveVideoRunIdentity, live: LiveStatus | null): boolean {
   if (!live) return false;
-  if (live.state !== "running") return true;
+  if (live.state !== "running" && live.state !== "paused") return true;
   if (!run.fixtureId || !run.matchId || !live.fixtureId || !live.matchId) return false;
   return live.fixtureId !== run.fixtureId || live.matchId !== run.matchId;
 }

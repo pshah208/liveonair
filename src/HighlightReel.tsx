@@ -3,7 +3,7 @@ import { buildCutList, buildFfmpegScript, buildHighlightReel, type HighlightClip
 import type { MatchPeriod } from "../shared/periods.js";
 import type { Storyline } from "../shared/platform.js";
 import type { Language, MatchFixture } from "../shared/types.js";
-import { createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
+import { clipTitle, createReelModel, readPalette, REEL_HEIGHT, REEL_WIDTH, renderReelFrame, segmentAt, type ReelModel } from "./highlightRenderer.js";
 import { speechSupported, useHighlightCommentary } from "./narration.js";
 import { downloadBlob, downloadJson, formatClock, LANGUAGE_LABEL, LANGUAGES } from "./utils.js";
 import { VideoRecap } from "./VideoRecap.js";
@@ -34,7 +34,7 @@ const KIND_LABEL: Record<HighlightKind, string> = {
   goal: "Goal",
   disallowed_goal: "Goal ruled out",
   red_card: "Red card",
-  big_chance: "Big chance",
+  big_chance: "High illustrative xG shot",
   key_save: "Key save",
   booking: "Booking",
   shot: "Shot",
@@ -303,7 +303,7 @@ export function HighlightReelPanel({ fixture, storylines, uptoSecond, theme, foo
               <li key={clip.id}>
                 <button type="button" className={`clip-row${index === activeClipIndex ? " is-active" : ""}`} onClick={() => pickClip(index)}>
                   <span className={`clip-row__kind clip-row__kind--${clip.kind}`}>{KIND_LABEL[clip.kind]}</span>
-                  <span className="clip-row__title">{clip.title}</span>
+                  <span className="clip-row__title">{clipTitle(clip)}</span>
                   <span className="clip-row__caption">{clip.caption}</span>
                   {sound && commentary.lineText(clip.id) && <span className="clip-row__commentary">“{commentary.lineText(clip.id)}”</span>}
                   <span className="clip-row__meta">

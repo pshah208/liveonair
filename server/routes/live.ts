@@ -8,6 +8,8 @@ import type { AnalysisRequest, MatchFixture, MatchSnapshot } from "../../shared/
 import type { AnalyzeFixture, LiveMatchView, LiveService, StorylineDesk } from "../contracts.js";
 import { isPublicStoryline } from "../agentAccess.js";
 import { type TickSource } from "../live/service.js";
+import { requireStudioToken, studioAccessGranted } from "./studioAuth.js";
+import { createStreamTicketStore, isStreamTicket, type StreamTicketStore } from "./streamTickets.js";
 import { HttpError, assertKnownFavoritePlayer, isHttpError } from "../validation.js";
 
 type ChanceInsightFeed = {
@@ -22,6 +24,10 @@ type CreateLiveRouterOptions = {
   /** Optional so existing test routers keep working. Fan and studio both receive issued, revised and withdrawn insights. */
   insights?: ChanceInsightFeed;
   maxStreams?: number;
+  /** When set, a studio-role stream needs this bearer or a one-time ticket. Otherwise it is projected as fan. */
+  studioToken?: string;
+  /** One-time tickets for browser EventSource clients. Share the instance with the studio router. */
+  streamTickets?: StreamTicketStore;
 };
 
 type StreamState = {
@@ -132,6 +138,45 @@ function writeMessage(response: express.Response, message: LiveMessage): boolean
   return response.write(`data: ${JSON.stringify(message)}\n\n`);
 }
 
+function writeFrame(response: express.Response, frame: string): boolean {
+  return response.write(frame);
+}
+
+/**
+ * Values shared by every stream for the rest of the current synchronous turn. A live event notifies all
+ * listeners in one turn, so the view clone, status and serialised payloads are built once per fan-out
+ * instead of once per client. Cleared on the next microtask, so later mutations are never served stale.
+ */
+function createTurnMemo() {
+  let entries: Map<unknown, Map<string, unknown>> | undefined;
+  return function memo<T>(owner: unknown, kind: string, compute: () => T): T {
+    if (!entries) {
+      entries = new Map();
+      queueMicrotask(() => {
+        entries = undefined;
+      });
+    }
+    let byKind = entries.get(owner);
+    if (!byKind) {
+      byKind = new Map();
+      entries.set(owner, byKind);
+    }
+    if (byKind.has(kind)) return byKind.get(kind) as T;
+    const value = compute();
+    byKind.set(kind, value);
+    return value;
+  };
+}
+
+/** Everything analyzeFixture reads from a live view that can change during a match. */
+function viewFingerprint(view: LiveMatchView): string {
+  const fixture = view.fixture;
+  const events = fixture.events.map((event) => `${event.id}@${event.revision}${event.rescinded ? ":x" : ""}`).join("|");
+  const samples = fixture.tracking?.samples;
+  const tracking = samples ? `${samples.length}:${samples.at(-1)?.second ?? ""}` : "-";
+  return `${view.matchId}#${fixture.id}#${Math.floor(view.clockSecond)}#${fixture.home.players.length}/${fixture.away.players.length}#${JSON.stringify(fixture.periods ?? null)}#${tracking}#${events}`;
+}
+
 function safeCurrent(live: LiveService): LiveMatchView | undefined {
   return live.current();
 }
@@ -149,6 +194,35 @@ function isKnownPlayer(fixture: MatchFixture, playerId: string): boolean {
 
 function withStoryline(storylines: Storyline[], storyline: Storyline): Storyline[] {
   return [...storylines.filter((item) => item.id !== storyline.id), storyline];
+}
+
+/** Legacy query keys that must not authenticate a stream and must not fail strict parsing. */
+const IGNORED_STREAM_QUERY_KEYS = new Set(["token"]);
+
+function streamQueryInput(query: Record<string, unknown>): Record<string, unknown> {
+  const parsedInput: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (key === "ticket" || IGNORED_STREAM_QUERY_KEYS.has(key)) continue;
+    parsedInput[key] = value;
+  }
+  return parsedInput;
+}
+
+function resolveStreamRole(
+  requested: LiveStreamQuery["role"],
+  authorization: string | undefined,
+  ticket: unknown,
+  studioToken: string | undefined,
+  streamTickets: StreamTicketStore,
+): LiveStreamQuery["role"] {
+  if (requested !== "studio") return "fan";
+  const secret = studioToken?.trim() ?? "";
+  if (!secret) return "studio";
+  if (studioAccessGranted(authorization, secret)) return "studio";
+  if (!isStreamTicket(ticket)) return "fan";
+  const granted = streamTickets.consume(ticket);
+  console.info(JSON.stringify({ event: "studio.stream_ticket.consume", granted }));
+  return granted ? "studio" : "fan";
 }
 
 function tickSource(live: LiveService): TickSource | undefined {
@@ -169,6 +243,38 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
   });
   const maxStreams = options.maxStreams ?? 200;
   const streams = new Set<StreamState>();
+  const guard = requireStudioToken(options.studioToken);
+  const streamTickets = options.streamTickets ?? createStreamTicketStore();
+  const turn = createTurnMemo();
+  /** Serialised snapshots for the current view fingerprint, keyed by analysis request. */
+  const snapshotCache = { fingerprint: "", byRequest: new Map<string, string>() };
+
+  /** One view clone per status within a turn; the status changes whenever the service accepts an event. */
+  const sharedCurrent = (statusJson: string): LiveMatchView | undefined =>
+    turn(statusJson, "view", () => safeCurrent(options.live));
+
+  const snapshotJson = (view: LiveMatchView, analysisRequest: AnalysisRequest, favoriteOutsideMatch: string | undefined): string => {
+    const fingerprint = turn(view, "fingerprint", () => viewFingerprint(view));
+    if (snapshotCache.fingerprint !== fingerprint) {
+      snapshotCache.fingerprint = fingerprint;
+      snapshotCache.byRequest.clear();
+    }
+    const key = JSON.stringify([analysisRequest, favoriteOutsideMatch ?? null]);
+    let json = snapshotCache.byRequest.get(key);
+    if (json === undefined) {
+      let snapshot: MatchSnapshot = options.analyzeFixture(view.fixture, analysisRequest);
+      if (favoriteOutsideMatch !== undefined) {
+        snapshot = { ...snapshot, focus: { ...snapshot.focus, favoritePlayerId: favoriteOutsideMatch, favoritePlayerInMatch: false } };
+      }
+      json = JSON.stringify(snapshot);
+      snapshotCache.byRequest.set(key, json);
+    }
+    return json;
+  };
+
+  /** Same bytes as writeMessage, serialised once per payload object and message kind within a turn. */
+  const sharedFrame = (payload: object, kind: string, message: () => LiveMessage): string =>
+    turn(payload, kind, () => `data: ${JSON.stringify(message())}\n\n`);
 
   router.get("/api/live/status", (_request, response) => {
     response.json(options.live.status());
@@ -193,7 +299,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     response.json(current.fixture);
   });
 
-  router.post("/api/live/start", startLimiter, async (request, response, next) => {
+  router.post("/api/live/start", guard, startLimiter, async (request, response, next) => {
     try {
       const parsed = parseStrict(startLiveRequestSchema, request.body);
       const status = await options.live.start(parsed);
@@ -203,7 +309,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     }
   });
 
-  router.post("/api/live/stop", async (_request, response, next) => {
+  router.post("/api/live/stop", guard, async (_request, response, next) => {
     try {
       response.json(await options.live.stop());
     } catch (error) {
@@ -211,7 +317,31 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
     }
   });
 
-  router.post("/api/live/correction", async (request, response, next) => {
+  router.post("/api/live/pause", guard, async (_request, response, next) => {
+    try {
+      if (!options.live.pause) {
+        sendJsonError(response, 501, "Pause is not available");
+        return;
+      }
+      response.json(await options.live.pause());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/live/resume", guard, async (_request, response, next) => {
+    try {
+      if (!options.live.resume) {
+        sendJsonError(response, 501, "Resume is not available");
+        return;
+      }
+      response.json(await options.live.resume());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/live/correction", guard, async (request, response, next) => {
     try {
       const parsed = parseStrict(correctionSchema, request.body);
       await options.live.publishCorrection(parsed.eventId);
@@ -228,7 +358,10 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
         return;
       }
 
-      const query = parseStrict(streamQuerySchema, request.query);
+      const rawQuery = request.query as Record<string, unknown>;
+      const parsed = parseStrict(streamQuerySchema, streamQueryInput(rawQuery));
+      const role = resolveStreamRole(parsed.role, request.header("authorization"), rawQuery.ticket, options.studioToken, streamTickets);
+      const query: LiveStreamQuery = { ...parsed, role };
       const current = safeCurrent(options.live);
       validateFavoritePlayer(query.role, current?.fixture, query.favoritePlayerId);
 
@@ -260,7 +393,9 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
           pendingSnapshot = true;
           return;
         }
-        const view = safeCurrent(options.live);
+        const status = options.live.status();
+        const statusJson = JSON.stringify(status);
+        const view = sharedCurrent(statusJson);
         if (!view) {
           pendingSnapshot = false;
           return;
@@ -290,13 +425,10 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
           ...(query.favoriteClubId ? { favoriteClubId: query.favoriteClubId } : {}),
           ...(query.period ? { period: query.period } : {}),
         };
-        let snapshot: MatchSnapshot = options.analyzeFixture(view.fixture, analysisRequest);
-        if (missingFavorite) {
-          snapshot = { ...snapshot, focus: { ...snapshot.focus, favoritePlayerId: query.favoritePlayerId, favoritePlayerInMatch: false } };
-        }
+        const json = snapshotJson(view, analysisRequest, missingFavorite ? query.favoritePlayerId : undefined);
         pendingSnapshot = false;
         lastSnapshotAt = nowMs;
-        blocked = !writeMessage(response, { type: "snapshot", snapshot, status: options.live.status() });
+        blocked = !writeFrame(response, `data: {"type":"snapshot","snapshot":${json},"status":${statusJson}}\n\n`);
       };
 
       const queueSnapshot = () => {
@@ -348,6 +480,18 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
             queueSnapshot();
           }
         },
+        onPause() {
+          if (!closed) {
+            blocked = !writeMessage(response, { type: "status", status: options.live.status() }) || blocked;
+            queueSnapshot();
+          }
+        },
+        onResume() {
+          if (!closed) {
+            blocked = !writeMessage(response, { type: "status", status: options.live.status() }) || blocked;
+            queueSnapshot();
+          }
+        },
       });
 
       unsubscribeTick = tickSource(options.live)?.subscribeTicks(() => {
@@ -359,7 +503,7 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
         if (closed || !matchId || insight.matchId !== matchId) {
           return;
         }
-        blocked = !writeMessage(response, { type: "insight", insight }) || blocked;
+        blocked = !writeFrame(response, sharedFrame(insight, "insight", () => ({ type: "insight", insight }))) || blocked;
       }) ?? (() => {});
 
       unsubscribeDesk = options.desk.subscribe((update) => {
@@ -369,28 +513,31 @@ export function createLiveRouter(options: CreateLiveRouterOptions): express.Rout
         }
         if (query.role === "studio") {
           if (update.storyline && update.storyline.matchId === matchId) {
-            blocked = !writeMessage(response, { type: "storyline", storyline: update.storyline }) || blocked;
+            const storyline = update.storyline;
+            blocked = !writeFrame(response, sharedFrame(storyline, "storyline:studio", () => ({ type: "storyline", storyline }))) || blocked;
           }
           if (update.fact && update.fact.matchId === matchId) {
-            blocked = !writeMessage(response, { type: "fact", fact: update.fact }) || blocked;
+            const fact = update.fact;
+            blocked = !writeFrame(response, sharedFrame(fact, "fact", () => ({ type: "fact", fact }))) || blocked;
           }
           return;
         }
         if (update.storyline && update.storyline.matchId === matchId && filterStoryline(query.role, update.storyline)) {
           const storyline = update.storyline;
-          blocked = !writeMessage(response, { type: "storyline", storyline: projectFanStoryline(storyline) }) || blocked;
+          blocked = !writeFrame(response, sharedFrame(storyline, "storyline:fan", () => ({ type: "storyline", storyline: projectFanStoryline(storyline) }))) || blocked;
           // Facts drafted before approval were withheld; release them now that the producer approved the storyline.
           const storylines = withStoryline(options.desk.list(matchId), storyline);
           for (const fact of options.desk.facts(matchId)) {
             if (fact.storylineId === storyline.id && fanFactAllowed(fact, storylines)) {
-              blocked = !writeMessage(response, { type: "fact", fact }) || blocked;
+              blocked = !writeFrame(response, sharedFrame(fact, "fact", () => ({ type: "fact", fact }))) || blocked;
             }
           }
         }
         if (update.fact && update.fact.matchId === matchId) {
           const storylines = update.storyline ? withStoryline(options.desk.list(matchId), update.storyline) : options.desk.list(matchId);
           if (fanFactAllowed(update.fact, storylines)) {
-            blocked = !writeMessage(response, { type: "fact", fact: update.fact }) || blocked;
+            const fact = update.fact;
+            blocked = !writeFrame(response, sharedFrame(fact, "fact", () => ({ type: "fact", fact }))) || blocked;
           }
         }
       });

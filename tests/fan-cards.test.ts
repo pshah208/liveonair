@@ -6,26 +6,21 @@ import {
   chanceHeadline,
   territoryPhrase,
   buildPlayerCard,
-  castVote,
   cardPhase,
   cardTitle,
   competitionRanks,
   contrastRatio,
   ordinal,
-  parseVotes,
   phaseChip,
   pickBigMoment,
   playerCardFileName,
   rankAria,
   rankChangeAnnouncement,
   rankText,
-  serializeVotes,
   shirtStyle,
   shouldAnnounce,
   topByImpact,
   truncateHeadline,
-  voteCandidates,
-  votePhase,
   QUIET_CARD_MESSAGE,
   type RankedStat,
 } from "../shared/fanCards.js";
@@ -292,25 +287,6 @@ test("phase chip, rank-change announcements and throttle", () => {
 test("save-as-picture file name is safe and carries player, match and minute", () => {
   assert.equal(playerCardFileName("h1", "match-9", 63.9), "playercard_h1_match-9_63.png");
   assert.equal(playerCardFileName("a/b c", "m:1", -3), "playercard_a-b-c_m-1_0.png");
-});
-
-test("player-of-the-match vote: opens at 60', locks at full time, local picks only", () => {
-  assert.equal(votePhase(59 * 60, false), "not_open");
-  assert.equal(votePhase(60 * 60, false), "open");
-  assert.equal(votePhase(80 * 60, true), "locked");
-  const fx = fixture([...passes("home", "hcm", 6, 0), ev({ type: "goal", teamId: "home", playerId: "hst", minute: 10 }), ...passes("away", "ast", 3, 0)]);
-  const candidates = voteCandidates(fx, 5400);
-  assert.ok(candidates.home.length <= 3 && candidates.away.length <= 3);
-  assert.equal(candidates.home[0]?.playerId, "hst");
-  let votes = castVote({}, "m1", "hst", "open", candidates);
-  assert.deepEqual(votes, { m1: "hst" });
-  assert.equal(castVote(votes, "m1", "hcm", "locked", candidates), votes, "locked: unchanged");
-  assert.equal(castVote(votes, "m1", "aidle", "open", candidates), votes, "non-candidates are refused");
-  votes = castVote(votes, "m1", "hcm", "open", candidates);
-  assert.deepEqual(votes, { m1: "hcm" });
-  assert.deepEqual(parseVotes(serializeVotes(votes)), votes);
-  assert.deepEqual(parseVotes("{bad"), {});
-  assert.deepEqual(parseVotes({ version: 1, votes: { "bad id!": "x", m2: "p" } }), { m2: "p" });
 });
 
 function insight(shotId: string, input: Partial<ChanceInsight> = {}, playerIds = ["hcm", "hst"], originX = 30): ChanceInsight {

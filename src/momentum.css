@@ -1,0 +1,59 @@
+/* Momentum chart, control-vs-chaos card, why-it-matters chip and simulated engagement panel. */
+
+.momentum { margin: 0; display: grid; gap: 8px; min-width: 0; width: 100%; }
+.momentum__head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.momentum__label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--cp-text-soft); }
+.momentum__legend { display: inline-flex; gap: 12px; font-size: 12px; }
+.momentum__key--home { color: var(--cp-text); }
+.momentum__key--home::before, .momentum__key--away::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; vertical-align: -1px; }
+.momentum__key--home::before { background: var(--momentum-home); }
+.momentum__key--away::before { background: repeating-linear-gradient(45deg, var(--momentum-away) 0 3px, rgba(0, 0, 0, 0.35) 3px 4px); }
+.momentum__svg { display: block; width: 100%; height: auto; overflow: visible; }
+.momentum__area--home { fill: var(--momentum-home); fill-opacity: 0.6; }
+.momentum__area--away { fill: var(--momentum-away); fill-opacity: 0.6; }
+.momentum__area--hatch { pointer-events: none; }
+.momentum__hatch { stroke: rgba(0, 0, 0, 0.35); stroke-width: 1.5; }
+.momentum__line { fill: none; stroke: var(--cp-text-muted); stroke-width: 1.25; }
+.momentum__zero { stroke: var(--cp-border-strong); stroke-width: 1; }
+.momentum__halftime line { stroke: var(--cp-text-soft); stroke-dasharray: 3 3; }
+.momentum__halftime text, .momentum__axis { fill: var(--cp-text-soft); font-size: 10px; font-family: "IBM Plex Mono", monospace; }
+.momentum__axis--end { text-anchor: end; }
+.momentum__goal line { stroke: var(--cp-text); stroke-width: 1; stroke-dasharray: 2 2; }
+.momentum__goal circle { fill: var(--cp-surface-solid); stroke: var(--cp-text); stroke-width: 1.5; }
+.momentum__goal text { fill: var(--cp-text); font-size: 8px; font-weight: 700; text-anchor: middle; }
+.momentum__sub { fill: none; stroke: var(--cp-text-muted); stroke-width: 1.5; }
+.momentum__foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 0; font-size: 12px; color: var(--cp-text-muted); }
+.momentum__empty { margin: 0; padding: 12px; border: 1px dashed var(--cp-border-strong); border-radius: 8px; color: var(--cp-text-muted); font-size: 14px; }
+.momentum--compact .momentum__foot { font-size: 11px; }
+.momentum-sponsor { margin: 0; font-size: 12px; color: var(--cp-text-muted); }
+.momentum-sponsor strong { color: var(--cp-text); font-weight: 600; }
+.momentum-sponsor-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--cp-text-muted); min-height: 32px; cursor: pointer; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .momentum__area, .momentum__line { transition: d 400ms ease-out; }
+}
+
+/* Why it matters */
+.why-chip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--cp-accent-soft); color: var(--cp-text); font-size: 13px; line-height: 1.4; }
+.why-chip__label { flex: none; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--cp-accent-text); }
+.why-chip__text { min-width: 0; overflow-wrap: anywhere; }
+
+/* Control vs chaos */
+.control-card { display: grid; gap: 10px; }
+.control-card__intro, .control-card__pressure, .control-card__rule { margin: 0; font-size: 13px; }
+.control-card__rule { font-size: 12px; }
+.control-card__verdict { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.control-card__badge { padding: 4px 10px; border-radius: 999px; font-weight: 600; font-size: 14px; border: 1px solid var(--cp-border-strong); }
+.control-card--controlled .control-card__badge { border-style: solid; background: var(--cp-surface-soft); }
+.control-card--chaotic .control-card__badge { border-style: dashed; border-width: 2px; }
+.control-card--mixed .control-card__badge { border-style: dotted; border-width: 2px; }
+.control-card__window { color: var(--cp-text-muted); font-size: 13px; }
+.control-card__stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin: 0; }
+.control-card__stats div { display: grid; gap: 2px; padding: 8px; border-radius: 8px; background: var(--cp-surface-soft); }
+.control-card__stats dt { font-size: 12px; color: var(--cp-text-muted); }
+.control-card__stats dd { margin: 0; font-size: 18px; font-weight: 600; }
+
+/* Simulated second-screen engagement */
+.engagement { display: grid; gap: 10px; }
+.engagement__notice { margin: 0; }
+.engagement__drops { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }

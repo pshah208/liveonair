@@ -187,7 +187,10 @@ export interface StressFeedItem {
 
 // ---------------------------------------------------------------- Live feed
 
-export type LiveTransport = "fabric-eventstream" | "local";
+export type LiveTransport = "fabric-eventstream" | "eventstream" | "local";
+
+/** Where the events in the current live match were produced. */
+export type LiveFeedSource = "synthetic" | "opta-format-synthetic" | "video-vision";
 
 export interface LiveEnvelope {
   kind: "match_start" | "match_event" | "match_end";
@@ -196,16 +199,23 @@ export interface LiveEnvelope {
   publishedAt: string; // ISO timestamp
   event?: MatchEvent;
   fixture?: FixtureSummary;
+  /** Provenance. Omitted by older publishers. */
+  source?: LiveFeedSource;
 }
 
 export interface LiveStatus {
-  state: "idle" | "running" | "finished";
+  state: "idle" | "running" | "paused" | "finished";
   transport: LiveTransport;
   transportConfigured: boolean;
   matchId?: string;
   fixtureId?: string;
   title?: string;
   clockSecond: number;
+  /**
+   * Match second frozen by pause. Present only while `state` is `paused`.
+   * `clockSecond` is the same value; this field is the explicit pause marker.
+   */
+  pausedAtSecond?: number;
   speed: number;
   eventsReceived: number;
   duplicatesIgnored: number;
@@ -213,6 +223,15 @@ export interface LiveStatus {
   /** Publish-to-receive latency of the most recent envelope, in milliseconds. */
   lagMs?: number;
   stress: boolean;
+  /** Why the process left Eventstream for the local bus. Null when it has not fallen back. */
+  fallbackReason?: string | null;
+  /** Active feed source for the running match, or the configured source while idle. */
+  source?: LiveFeedSource;
+}
+
+/** Running or paused: the match is still this match, and the clock is the live second rather than full time. */
+export function isMatchInProgress(state: LiveStatus["state"] | undefined): boolean {
+  return state === "running" || state === "paused";
 }
 
 export interface StartLiveRequest {

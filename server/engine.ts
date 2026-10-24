@@ -192,6 +192,8 @@ function emptyStats(): TeamStats {
     passAccuracy: 0,
     corners: 0,
     tackles: 0,
+    interceptions: 0,
+    ballRecoveries: 0,
     pressureEvents: 0,
     fouls: 0,
     yellowCards: 0,
@@ -218,6 +220,8 @@ function computeStats(activeEvents: MatchEvent[], metricOpts: MetricOptions = {}
     }
     if (evt.type === "corner") teamStats.corners += 1;
     if (evt.type === "tackle") teamStats.tackles += 1;
+    if (evt.type === "interception") teamStats.interceptions = (teamStats.interceptions ?? 0) + 1;
+    if (evt.type === "ball_recovery") teamStats.ballRecoveries = (teamStats.ballRecoveries ?? 0) + 1;
     if (evt.type === "pressure") teamStats.pressureEvents += 1;
     if (evt.type === "foul") teamStats.fouls += 1;
     if (evt.type === "yellow_card") teamStats.yellowCards += 1;

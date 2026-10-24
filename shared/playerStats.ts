@@ -1,5 +1,5 @@
 import { placeEvent, isCameraFixture } from "./ballPath.js";
-import { aggregatePasses, fastestShot, passQualities, physicalMetrics, scopedTracking } from "./metrics.js";
+import { aggregatePasses, fastestShot, isProgressivePass, passQualities, physicalMetrics, scopedTracking } from "./metrics.js";
 import { filterByPeriod, periodBoundary, sameHalf, type PeriodBoundary } from "./periods.js";
 import type { MatchEvent, MatchFixture, MatchPeriod, Player, TeamId } from "./types.js";
 
@@ -32,7 +32,7 @@ export interface PlayerAnalysis {
   shots: number;
   shotsOnTarget: number;
   xg: number;
-  /** Expected assists: xG of shots created by this player's passes or corners. */
+  /** xG assisted (inferred creator): xG of shots created by this player's passes or corners. */
   xa: number;
   keyPasses: number;
   passes: number;
@@ -43,6 +43,8 @@ export interface PlayerAnalysis {
   touchesInBox: number | null;
   tackles: number;
   tacklesWon: number;
+  interceptions: number;
+  ballRecoveries: number;
   pressures: number;
   saves: number;
   possessionLost: number;
@@ -135,28 +137,65 @@ function inOpponentBox(event: MatchEvent): boolean {
 
 /**
  * Illustrative impact model. Weights are deliberately simple and published in the UI so a pundit can see
- * why a player rates where they do; the rating is 6.0 plus the weighted contribution, kept within 3–10.
+ * why a player rates where they do. Routine actions carry small weights so possession volume
+ * cannot overwhelm goals and chance creation; the total is mapped through a smooth curve.
  */
 export const IMPACT_WEIGHTS = {
-  goal: 1.0,
-  assist: 0.6,
-  keyPass: 0.25,
-  xa: 0.5,
+  goal: 0.9,
+  assist: 0.4,
+  keyPass: 0.08,
+  xa: 0.3,
   shotOnTarget: 0.12,
   shotOffTarget: 0.04,
-  xg: 0.4,
-  passCompleted: 0.015,
+  xg: 0.3,
+  passCompleted: 0.002,
   passFailed: -0.02,
-  progressivePass: 0.05,
-  tackleWon: 0.12,
-  tackleLost: 0.03,
-  pressure: 0.03,
-  save: 0.3,
-  savedXg: 0.8,
+  progressivePass: 0.025,
+  tackleWon: 0.018,
+  tackleLost: -0.02,
+  interception: 0.01,
+  ballRecovery: 0.008,
+  pressure: 0.002,
+  save: 0.22,
+  savedXg: 0.5,
   foul: -0.08,
   yellow: -0.25,
   red: -1.0,
 };
+
+export const IMPACT_RATING_BASELINE = 6.2;
+export const IMPACT_RATING_SPAN = 3.8;
+export const IMPACT_RATING_SCALE = 4.5;
+export const IMPACT_RATING_MIN = 3;
+export const IMPACT_RATING_MAX = 10;
+export const IMPACT_RATING_FORMULA = `Score = clamp(${IMPACT_RATING_BASELINE} + ${IMPACT_RATING_SPAN} × tanh(sum of the displayed contributions ÷ ${IMPACT_RATING_SCALE}), ${IMPACT_RATING_MIN}, ${IMPACT_RATING_MAX}), rounded to 0.1. Routine actions have small weights so logged event volume alone cannot dominate.`;
+
+/** Heuristic colour bands for full-match synthetic fixtures; neutral includes the zero-action baseline. */
+export const IMPACT_RATING_TIERS = { excellent: 7.7, good: 7.0, neutral: IMPACT_RATING_BASELINE } as const;
+
+export function impactRatingTone(rating: number): "excellent" | "good" | "neutral" | "poor" {
+  if (rating >= IMPACT_RATING_TIERS.excellent) return "excellent";
+  if (rating >= IMPACT_RATING_TIERS.good) return "good";
+  if (rating >= IMPACT_RATING_TIERS.neutral) return "neutral";
+  return "poor";
+}
+
+/** Labels cover every IMPACT_WEIGHTS entry, so the UI cannot silently omit a contribution. */
+export const IMPACT_WEIGHT_LABELS: Record<keyof typeof IMPACT_WEIGHTS, string> = {
+  goal: "goal", assist: "assist", keyPass: "chance created", xa: "xG assisted",
+  shotOnTarget: "shot on target", shotOffTarget: "shot off target", xg: "illustrative xG",
+  passCompleted: "completed pass", passFailed: "lost pass", progressivePass: "progressive pass",
+  tackleWon: "tackle won", tackleLost: "tackle lost", interception: "interception", ballRecovery: "ball recovery", pressure: "pressure",
+  save: "save", savedXg: "xG saved", foul: "foul", yellow: "yellow", red: "red",
+};
+
+export const IMPACT_WEIGHT_DESCRIPTIONS = (Object.keys(IMPACT_WEIGHTS) as (keyof typeof IMPACT_WEIGHTS)[])
+  .map((key) => `${IMPACT_WEIGHT_LABELS[key]} ${IMPACT_WEIGHTS[key] >= 0 ? "+" : ""}${IMPACT_WEIGHTS[key]}${["xa", "xg", "savedXg"].includes(key) ? " per xG" : " per action"}`);
+
+/** Smoothly compress exceptional activity without hard-capping typical players. */
+export function impactRating(total: number): number {
+  return round(Math.min(IMPACT_RATING_MAX, Math.max(IMPACT_RATING_MIN, IMPACT_RATING_BASELINE + IMPACT_RATING_SPAN * Math.tanh(total / IMPACT_RATING_SCALE))), 1);
+}
 
 /**
  * Per-player figures for a period. Revisions are reconciled over the whole match first, so a correction made
@@ -188,9 +227,11 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
     const xa = createdShots.reduce((sum, shot) => sum + (shot.xg ?? 0), 0);
     const passes = own.filter((event) => event.type === "pass");
     const passesCompleted = passes.filter((pass) => pass.outcome === "complete").length;
-    const progressivePasses = passes.filter((pass) => pass.outcome === "complete" && pass.endX !== undefined && pass.endX - pass.x >= 15).length;
+    const progressivePasses = passes.filter(isProgressivePass).length;
     const tackles = own.filter((event) => event.type === "tackle");
-    const tacklesWon = tackles.filter((tackle) => tackle.outcome === "success" || tackle.outcome === "complete").length;
+    const tacklesWon = tackles.filter((tackle) => tackle.outcome === "success").length;
+    const interceptions = own.filter((event) => event.type === "interception").length;
+    const recoveries = own.filter((event) => event.type === "ball_recovery").length;
     const saves = own.filter((event) => event.type === "save");
     const savedXg = saves.reduce((sum, save) => sum + ((save.relatedEventId ? byId.get(save.relatedEventId)?.xg : undefined) ?? 0), 0);
     const fouls = own.filter((event) => event.type === "foul").length;
@@ -207,7 +248,7 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       { key: "scoring", label: "Scoring", value: goals * w.goal + (shotsOnTarget - goals) * w.shotOnTarget + (shots.length + unshotGoals.length - shotsOnTarget) * w.shotOffTarget + xg * w.xg },
       { key: "creating", label: "Chance creation", value: assists * w.assist + createdShots.length * w.keyPass + xa * w.xa },
       { key: "passing", label: "Passing", value: passesCompleted * w.passCompleted + (passes.length - passesCompleted) * w.passFailed + progressivePasses * w.progressivePass },
-      { key: "defending", label: "Defending", value: tacklesWon * w.tackleWon + (tackles.length - tacklesWon) * w.tackleLost + pressures * w.pressure },
+      { key: "defending", label: "Defending", value: tacklesWon * w.tackleWon + (tackles.length - tacklesWon) * w.tackleLost + interceptions * w.interception + recoveries * w.ballRecovery + pressures * w.pressure },
       { key: "goalkeeping", label: "Goalkeeping", value: saves.length * w.save + savedXg * w.savedXg },
       { key: "discipline", label: "Discipline", value: fouls * w.foul + yellowCards * w.yellow + redCards * w.red },
     ].map((component) => ({ ...component, value: round(component.value) })) as ImpactComponent[];
@@ -234,6 +275,8 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       touchesInBox: camera ? null : onBall.filter(inOpponentBox).length,
       tackles: tackles.length,
       tacklesWon,
+      interceptions,
+      ballRecoveries: recoveries,
       pressures,
       saves: saves.length,
       possessionLost: passes.length - passesCompleted,
@@ -242,7 +285,7 @@ export function analysePlayers(fixture: MatchFixture, uptoSecond = Number.POSITI
       redCards,
       averagePosition,
       touches,
-      impact: { rating: round(Math.min(10, Math.max(3, 6 + total)), 1), total, components },
+      impact: { rating: impactRating(total), total, components },
       involvementShare: teamActions[player.teamId] ? Math.round((own.length / teamActions[player.teamId]) * 100) : 0,
       avgPassDistanceM: passAggregate.avgPassDistanceM,
       avgPassDifficulty: passAggregate.avgPassDifficulty,

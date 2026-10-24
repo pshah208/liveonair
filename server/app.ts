@@ -7,6 +7,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 
+import { isMatchInProgress } from "../shared/platform.js";
 import type {
   AnalysisRequest,
   AppHealth,
@@ -28,6 +29,11 @@ import { generateMatch } from "./matchlab/generator.js";
 import { createPlatform, type Platform } from "./platform.js";
 import { createArchiveRouter } from "./routes/archive.js";
 import { createLiveRouter } from "./routes/live.js";
+import { createOverlayRouter } from "./routes/overlay.js";
+import { createFanMomentsRouter } from "./routes/fanMoments.js";
+import { createTrackingRouter } from "./routes/tracking.js";
+import { createStudioAuth, studioAuthRequired } from "./routes/studioAuth.js";
+import { createStreamTicketStore, type StreamTicketStore } from "./routes/streamTickets.js";
 import { createStudioRouter } from "./routes/studio.js";
 import { createA2aRouter } from "./a2a/index.js";
 import { getArchive } from "./archive/index.js";
@@ -68,6 +74,10 @@ type CreateAppOptions = {
   playerAnalyst?: PlayerAnalyst;
   engine?: EngineAdapter;
   platform?: Platform;
+  /** Undefined reads STUDIO_TOKEN. Empty string forces local-dev open mode. */
+  studioToken?: string;
+  /** Shared one-time tickets for the studio EventSource. Tests inject a clocked store. */
+  streamTickets?: StreamTicketStore;
   video?: { vision?: VisionAnalyzer; worker?: VideoWorker; run?: RunCommand; playerVision?: PlayerVisionAnalyzer; playerWorker?: PlayerCamWorker };
   staticDir?: string;
   logger?: (entry: { level: "error"; requestId: string; reason: string; path: string }) => void;
@@ -294,7 +304,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch }));
   const platform = options.platform ?? createPlatform();
 
   // Recap of the current live match, narrated from the live view so every correction applies.
@@ -309,7 +318,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       const body = (typeof request.body === "object" && request.body !== null ? request.body : {}) as Record<string, unknown>;
       const status = platform.live.status();
-      const atSecond = status.state === "running"
+      const atSecond = isMatchInProgress(status.state)
         ? Math.min(view.fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
         : view.fixture.durationSeconds;
       const parsed = parseNarrativeRequest({
@@ -361,7 +370,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const favoriteClubId = body.favoriteClubId ?? body.favouriteClubId;
       const favoritePlayerId = body.favoritePlayerId ?? body.favouritePlayerId;
       const status = platform.live.status();
-      if (status.state !== "running" && status.state !== "finished") {
+      if (!isMatchInProgress(status.state) && status.state !== "finished") {
         throw new HttpError(409, "Post-match storylines are available once a match is running or finished");
       }
       const view = platform.live.current();
@@ -371,7 +380,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const fixture = deepClone(view.fixture);
       assertKnownFavoritePlayer(fixture, favoritePlayerId);
       const phase = status.state === "finished" ? "postmatch" : "so_far";
-      const atSecond = status.state === "running"
+      const atSecond = isMatchInProgress(status.state)
         ? Math.min(fixture.durationSeconds, Math.max(0, Math.round(status.clockSecond)))
         : fixture.durationSeconds;
       const snapshot = analyzeFixture(fixture, {
@@ -428,7 +437,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const body = parseStrict(z.object({ language: z.enum(["en", "es", "fr", "pt"]).default("en"), period: z.enum(["full", "first", "second"]).default("full") }).strict(), request.body ?? {});
       const fixture = deepClone(view.fixture);
       const status = platform.live.status();
-      const clock = status.state === "running" ? Math.max(0, Math.round(status.clockSecond)) : fixture.durationSeconds;
+      const clock = isMatchInProgress(status.state) ? Math.max(0, Math.round(status.clockSecond)) : fixture.durationSeconds;
       response.json(await playerAnalyst.write(fixture, playerId, body.language, clock, body.period));
     } catch (error) {
       next(error);
@@ -476,8 +485,16 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights }));
-  app.use(createStudioRouter({ desk: platform.desk, live: platform.live }));
+  const studioToken = options.studioToken ?? process.env.STUDIO_TOKEN;
+  const streamTickets = options.streamTickets ?? createStreamTicketStore();
+  app.use(createStudioAuth(studioToken));
+  // Archive used to mount above this guard, so matchlab generate skipped the token check.
+  app.use(createArchiveRouter({ registry: { listFixtures, getFixture, registerFixture }, generateMatch, studioToken }));
+  app.use(createLiveRouter({ live: platform.live, desk: platform.desk, analyzeFixture, insights: platform.insights, studioToken, streamTickets }));
+  app.use(createTrackingRouter({ live: platform.live }));
+  app.use(createStudioRouter({ desk: platform.desk, live: platform.live, authRequired: studioAuthRequired(studioToken), studioToken, streamTickets }));
+  app.use(createOverlayRouter({ live: platform.live, desk: platform.desk }));
+  app.use(createFanMomentsRouter({ live: platform.live, desk: platform.desk }));
   app.use(createMcpRouter({
     live: platform.live, desk: platform.desk, analyzeFixture, archive: getArchive(),
     retrieval: createArchiveRetrievalFromEnv(), version, token: process.env.MCP_TOKEN || undefined,

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { HighlightReel } from "../shared/highlights.js";
 import type { MatchFixture } from "../shared/types.js";
-import { createReelModel, readPalette } from "./highlightRenderer.js";
+import { clipTitle, createReelModel, readPalette } from "./highlightRenderer.js";
 import { speechSupported, useHighlightCommentary } from "./narration.js";
 import { formatClock } from "./utils.js";
 import { VideoRecap } from "./VideoRecap.js";
@@ -49,7 +49,7 @@ export function LabHighlightReel({ lab, theme, onEdit, onClose }: { lab: LabHigh
             <li key={clip.id}>
               <button type="button" className={`clip-row${index === activeClip ? " is-active" : ""}`} onClick={() => setSeekRequest({ index, nonce: Date.now() })}>
                 <span className={`clip-row__kind clip-row__kind--${clip.kind}`}>{clip.label ?? clip.kind}</span>
-                <span className="clip-row__title">{clip.title}</span>
+                <span className="clip-row__title">{clipTitle(clip)}</span>
                 <span className="clip-row__caption">{clip.caption}</span>
                 <span className="clip-row__meta"><span className="mono">{formatClock(clip.startSecond)}–{formatClock(clip.endSecond)}</span></span>
               </button>

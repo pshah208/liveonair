@@ -18,6 +18,7 @@ import type { Language, MatchEvent, MatchFixture, TeamId } from "../shared/types
 import {
   completeWithSingleRetry,
   createBudget,
+  DEFAULT_HOURLY_LIMIT,
   getRemainingTime,
   LANGUAGE_NAME,
   parseJsonWithSchema,
@@ -223,7 +224,7 @@ function cacheKey(fixture: MatchFixture, request: HighlightCommentaryRequest, co
 export function createCommentator(options: CommentatorOptions): Commentator {
   const now = options.now ?? Date.now;
   const budget = createBudget(
-    options.maxRequestsPerHour ?? Number(process.env.AI_MAX_REQUESTS_PER_HOUR ?? 60),
+    options.maxRequestsPerHour ?? Number(process.env.AI_MAX_REQUESTS_PER_HOUR ?? DEFAULT_HOURLY_LIMIT),
     options.maxConcurrent ?? Number(process.env.AI_MAX_CONCURRENT ?? 2),
     now,
   );

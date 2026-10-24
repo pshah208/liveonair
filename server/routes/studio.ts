@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { ReviewStorylineRequest } from "../../shared/platform.js";
 import type { LiveService, StorylineDesk } from "../contracts.js";
 import { HttpError } from "../validation.js";
+import { requireStudioToken } from "./studioAuth.js";
+import { createStreamTicketStore, type StreamTicketStore } from "./streamTickets.js";
 
 const reviewSchema = z.object({
   decision: z.enum(["approve", "reject", "edit"]),
@@ -30,7 +32,15 @@ function parseReviewRequest(payload: unknown): ReviewStorylineRequest {
   return result.data;
 }
 
-export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveService }): Router {
+const emptyBody = z.object({}).strict();
+
+export function createStudioRouter(deps: {
+  desk: StorylineDesk;
+  live: LiveService;
+  authRequired?: boolean;
+  studioToken?: string;
+  streamTickets?: StreamTicketStore;
+}): Router {
   const router = express.Router();
   const reviewLimiter = rateLimit({
     windowMs: 60_000,
@@ -38,6 +48,36 @@ export function createStudioRouter(deps: { desk: StorylineDesk; live: LiveServic
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many storyline review requests" },
+  });
+
+  router.get("/api/studio/auth-required", (_request, response) => {
+    response.json({ required: Boolean(deps.authRequired) });
+  });
+
+  // After the public probe so Express's case-insensitive match, not a path string, is what requires the token.
+  router.use("/api/studio", requireStudioToken(deps.studioToken));
+  const streamTickets = deps.streamTickets ?? createStreamTicketStore();
+
+  router.post("/api/studio/stream-ticket", requireStudioToken(deps.studioToken), (request, response) => {
+    const parsed = emptyBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: "Request body must be an empty object" });
+      return;
+    }
+    if (!deps.studioToken?.trim()) {
+      response.setHeader("Cache-Control", "no-store");
+      response.json({ ticket: null, expiresInSeconds: 0 });
+      return;
+    }
+    const issued = streamTickets.issue();
+    const requestId = response.locals.requestId;
+    console.info(JSON.stringify({
+      event: "studio.stream_ticket.issued",
+      expiresInSeconds: issued.expiresInSeconds,
+      ...(typeof requestId === "string" ? { requestId } : {}),
+    }));
+    response.setHeader("Cache-Control", "no-store");
+    response.json({ ticket: issued.ticket, expiresInSeconds: issued.expiresInSeconds });
   });
 
   router.get("/api/studio/storylines", (_request, response) => {

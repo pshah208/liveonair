@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Language, MatchPeriod, Persona } from "../../shared/types.js";
 import type { LiveMessage } from "../../shared/platform.js";
+import { STUDIO_TOKEN_EVENT, fetchStudioStreamTicket, getStudioToken } from "../api.js";
 import { isLiveMessage } from "../liveMessage.js";
 
 export type LiveStreamState = {
@@ -25,11 +26,19 @@ type LiveStreamOptions = {
 
 export function useLiveStream({ enabled, role, persona, language, favoritePlayerId, favoriteClubId, period, onMessage }: LiveStreamOptions): LiveStreamState {
   const [state, setState] = useState<LiveStreamState>({ phase: enabled ? "connecting" : "idle", reconnectAttempt: 0 });
+  const [tokenVersion, setTokenVersion] = useState(0);
   const handlerRef = useRef(onMessage);
   const sourceRef = useRef<EventSource | null>(null);
   const timerRef = useRef<number | null>(null);
 
   handlerRef.current = onMessage;
+
+  useEffect(() => {
+    if (role !== "studio") return;
+    const onToken = () => setTokenVersion((value) => value + 1);
+    window.addEventListener(STUDIO_TOKEN_EVENT, onToken);
+    return () => window.removeEventListener(STUDIO_TOKEN_EVENT, onToken);
+  }, [role]);
 
   useEffect(() => {
     if (!enabled) {
@@ -45,8 +54,9 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
 
     let cancelled = false;
     let attempt = 0;
+    const abort = new AbortController();
 
-    const open = () => {
+    const open = async () => {
       if (cancelled) return;
       const params = new URLSearchParams({ role, persona, language });
       if (favoritePlayerId) params.set("favoritePlayerId", favoritePlayerId);
@@ -59,6 +69,32 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
         error: current.error
       }));
 
+      if (role === "studio") {
+        try {
+          const ticket = await fetchStudioStreamTicket(abort.signal);
+          if (cancelled) return;
+          // Refuse to put the long-lived producer token on the EventSource URL.
+          if (ticket && ticket !== getStudioToken()) params.set("ticket", ticket);
+        } catch (error) {
+          if (cancelled) return;
+          attempt += 1;
+          const delay = Math.min(15000, 1000 * 2 ** Math.min(attempt, 4));
+          const message = error instanceof Error ? error.message : "Could not open the studio stream.";
+          setState((current) => ({
+            phase: "reconnecting",
+            reconnectAttempt: attempt,
+            lastEventAt: current.lastEventAt,
+            error: message
+          }));
+          timerRef.current = window.setTimeout(() => {
+            timerRef.current = null;
+            void open();
+          }, delay);
+          return;
+        }
+      }
+
+      if (cancelled) return;
       const source = new EventSource(`/api/live/stream?${params.toString()}`);
       sourceRef.current = source;
 
@@ -94,14 +130,18 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
           lastEventAt: current.lastEventAt,
           error: current.error ?? "Live stream disconnected. Reconnecting…"
         }));
-        timerRef.current = window.setTimeout(open, delay);
+        timerRef.current = window.setTimeout(() => {
+          timerRef.current = null;
+          void open();
+        }, delay);
       };
     };
 
-    open();
+    void open();
 
     return () => {
       cancelled = true;
+      abort.abort();
       if (timerRef.current !== null) {
         window.clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -110,7 +150,7 @@ export function useLiveStream({ enabled, role, persona, language, favoritePlayer
       sourceRef.current = null;
       setState((current) => ({ ...current, phase: "closed" }));
     };
-  }, [enabled, favoriteClubId, favoritePlayerId, language, period, persona, role]);
+  }, [enabled, favoriteClubId, favoritePlayerId, language, period, persona, role, tokenVersion]);
 
   return state;
 }

@@ -376,7 +376,7 @@ export function PlayerCam() {
             <div className="footage__intake">
               <label className="checkbox">
                 <input type="checkbox" checked={attested} onChange={(event) => setAttested(event.target.checked)} />
-                <span>I filmed this clip myself or have a licence to use it, and the player has agreed to be featured. It contains no Premier League, broadcaster or other third-party footage.</span>
+                <span>I filmed this clip myself or have a licence to use it, and the player has agreed to be featured. It contains no professional league, broadcaster or other third-party footage.</span>
               </label>
               <label className={`button button--primary footage__file${attested && !unavailable ? "" : " is-disabled"}`}>
                 Choose video file

@@ -13,3 +13,5 @@ fabric/.secrets.local.json
 infra/*.json
 !infra/*.parameters.example.json
 tsx-shahpar/
+
+!infra/bicepconfig.json

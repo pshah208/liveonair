@@ -668,7 +668,7 @@ test("storyline budget reads the narrator AI settings", async () => {
     maxRequestsPerHour: 12,
     maxConcurrent: 1,
   });
-  assert.deepEqual(readAiBudget({}), { maxRequestsPerHour: 60, maxConcurrent: 2 });
+  assert.deepEqual(readAiBudget({}), { maxRequestsPerHour: 120, maxConcurrent: 2 });
 
   const engine = createPostMatchNarrator({
     completionClient: { createChatCompletion: async () => { throw new Error("model unavailable"); } },
