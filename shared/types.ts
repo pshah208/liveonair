@@ -154,6 +154,12 @@ export interface TeamStats {
   yellowCards: number;
   redCards: number;
   illustrativeXg: number;
+  /** Non-rescinded shots with outcome success/saved, plus non-rescinded goals with no linked shot. Absent on older snapshots. */
+  shotsOnTarget?: number;
+  /** Non-rescinded save events credited to the keeper's team. Absent on older snapshots. */
+  saves?: number;
+  /** Possession proxy: share of both teams' attempted passes, 0–100 (teams sum to 100); null when no passes. */
+  possessionPct?: number | null;
   /** Mean pass length in metres; null when unavailable (no passes or camera-frame coordinates). */
   avgPassDistanceM?: number | null;
   /** Completion % of long passes (> 30 m); null when none were attempted. */

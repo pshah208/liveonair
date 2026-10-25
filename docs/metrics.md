@@ -62,6 +62,14 @@ Storylines for a shot or goal store `insightId`. Withdrawal retracts linked stor
 
 These are synthetic/illustrative figures for hackathon demo data. They are not calibrated to licensed provider models.
 
+### Live stats: shots on target, saves, possession (pass share)
+
+Computed per team in `computeStats` (`server/engine.ts`) for the full match and for each half. Older snapshots without these fields still render; the rows are hidden.
+
+- **Shots on target** (`shotsOnTarget`, attacking team): each non-rescinded `shot` with outcome `success` or `saved` counts once. A non-rescinded `goal` adds one only when no non-rescinded shot is linked to it (the goal's `relatedEventId` is a shot id, or a shot's `relatedEventId` is the goal id). A goal and its paired shot are never double-counted; rescinded goals are excluded. Helper: `countShotsOnTarget`.
+- **Saves** (`saves`, keeper's team): count of non-rescinded `save` events by their `teamId`. Saves are not inferred from `shot` outcome `saved`.
+- **Possession (pass share, est.)** (`possessionPct`): `round(100 × team attempted passes / both teams' attempted passes)`; the other team gets the remainder, so the two sum to 100. `null` for both teams when neither has attempted a pass. Attempted passes are every `pass` event (complete and incomplete), the existing `passes` field. This is a proxy, not time on the ball. Helper: `passSharePossession`.
+
 ### Illustrative xG (location-only)
 
 - Module: `shared/xg.ts`
