@@ -198,11 +198,43 @@ function emptyStats(): TeamStats {
     fouls: 0,
     yellowCards: 0,
     redCards: 0,
-    illustrativeXg: 0
+    illustrativeXg: 0,
+    shotsOnTarget: 0,
+    saves: 0,
+    possessionPct: null
   };
 }
 
-function computeStats(activeEvents: MatchEvent[], metricOpts: MetricOptions = {}): { home: TeamStats; away: TeamStats; score: { home: number; away: number } } {
+/**
+ * Shots on target per team: each non-rescinded shot with outcome success/saved once, plus each non-rescinded
+ * goal that has no linked non-rescinded shot (via the goal's relatedEventId, or a shot whose relatedEventId is
+ * the goal). A goal and its paired shot are never double-counted; rescinded goals are excluded.
+ */
+export function countShotsOnTarget(events: MatchEvent[]): { home: number; away: number } {
+  const counts = { home: 0, away: 0 };
+  const liveShots = events.filter((evt) => evt.type === "shot" && !evt.rescinded);
+  const shotIds = new Set(liveShots.map((shot) => shot.id));
+  const shotLinkedGoalIds = new Set(liveShots.map((shot) => shot.relatedEventId).filter((id): id is string => Boolean(id)));
+  for (const shot of liveShots) {
+    if (shot.outcome === "success" || shot.outcome === "saved") counts[shot.teamId] += 1;
+  }
+  for (const goal of events) {
+    if (goal.type !== "goal" || goal.rescinded) continue;
+    const linked = (goal.relatedEventId !== undefined && shotIds.has(goal.relatedEventId)) || shotLinkedGoalIds.has(goal.id);
+    if (!linked) counts[goal.teamId] += 1;
+  }
+  return counts;
+}
+
+/** Possession proxy from attempted passes; integers that sum to 100, or null for both when no passes. */
+export function passSharePossession(homePasses: number, awayPasses: number): { home: number | null; away: number | null } {
+  const total = homePasses + awayPasses;
+  if (total <= 0) return { home: null, away: null };
+  const home = Math.round((100 * homePasses) / total);
+  return { home, away: 100 - home };
+}
+
+export function computeStats(activeEvents: MatchEvent[], metricOpts: MetricOptions = {}): { home: TeamStats; away: TeamStats; score: { home: number; away: number } } {
   const home = emptyStats();
   const away = emptyStats();
   for (const evt of activeEvents) {
@@ -226,7 +258,15 @@ function computeStats(activeEvents: MatchEvent[], metricOpts: MetricOptions = {}
     if (evt.type === "foul") teamStats.fouls += 1;
     if (evt.type === "yellow_card") teamStats.yellowCards += 1;
     if (evt.type === "red_card") teamStats.redCards += 1;
+    if (evt.type === "save" && !evt.rescinded) teamStats.saves = (teamStats.saves ?? 0) + 1;
   }
+  const onTarget = countShotsOnTarget(activeEvents);
+  home.shotsOnTarget = onTarget.home;
+  away.shotsOnTarget = onTarget.away;
+  // `passes` counts every pass event (complete and incomplete), i.e. attempted passes.
+  const possession = passSharePossession(home.passes, away.passes);
+  home.possessionPct = possession.home;
+  away.possessionPct = possession.away;
   for (const stats of [home, away]) {
     stats.passAccuracy = stats.passes > 0 ? Number(((stats.completedPasses / stats.passes) * 100).toFixed(2)) : 0;
     stats.illustrativeXg = Number(stats.illustrativeXg.toFixed(3));

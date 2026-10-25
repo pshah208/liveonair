@@ -1,8 +1,9 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ballRoute, buildBallPath, placeEvent, type BallPoint, type BallSegment } from "../shared/ballPath.js";
 import { difficultyBand, metricOptions, passDifficulty, shotSpeedKmh } from "../shared/metrics.js";
 import { eventsWithinTrackingHorizon } from "../shared/tracking.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
+import { PITCH_VIEWBOX, svgTranslate } from "./pitchGeometry.js";
 import { TrackingLayer } from "./TrackingLayer.js";
 import { labelize, teamTint } from "./utils.js";
 
@@ -22,13 +23,24 @@ function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
-/** Moves the ball marker along a list of points with requestAnimationFrame. */
+const ballTransform = (point: BallPoint) => svgTranslate(toX(point.x), toY(point.y));
+
+/**
+ * Moves the ball marker along a list of points with requestAnimationFrame. Each frame
+ * writes the marker's transform directly; React state only changes when an animation
+ * starts or ends, so the board does not re-render 60 times a second.
+ */
 function useBallMotion() {
   const [position, setPosition] = useState<BallPoint | null>(null);
   const [playing, setPlaying] = useState(false);
   const frame = useRef<number | null>(null);
   const positionRef = useRef<BallPoint | null>(null);
-  positionRef.current = position;
+  const nodeRef = useRef<SVGGElement | null>(null);
+
+  const place = (point: BallPoint | null) => {
+    positionRef.current = point;
+    if (point) nodeRef.current?.setAttribute("transform", ballTransform(point));
+  };
 
   function stop() {
     if (frame.current !== null) cancelAnimationFrame(frame.current);
@@ -36,15 +48,21 @@ function useBallMotion() {
     setPlaying(false);
   }
 
+  function settle(point: BallPoint | null) {
+    place(point);
+    setPosition(point);
+  }
+
   function animate(points: BallPoint[], hopMs = HOP_MS) {
     stop();
     const route = points.filter((point, index) => index === 0 || point.x !== points[index - 1]!.x || point.y !== points[index - 1]!.y);
     if (route.length < 2 || prefersReducedMotion()) {
-      setPosition(route[route.length - 1] ?? null);
+      settle(route[route.length - 1] ?? null);
       return;
     }
     const total = (route.length - 1) * hopMs;
     const started = performance.now();
+    settle(route[0]!);
     setPlaying(true);
     const step = (now: number) => {
       const progress = Math.min(1, Math.max(0, (now - started) / total));
@@ -54,16 +72,77 @@ function useBallMotion() {
       const eased = local < 0.5 ? 2 * local * local : 1 - (-2 * local + 2) ** 2 / 2;
       const from = route[index]!;
       const to = route[index + 1]!;
-      setPosition({ x: from.x + (to.x - from.x) * eased, y: from.y + (to.y - from.y) * eased });
+      place({ x: from.x + (to.x - from.x) * eased, y: from.y + (to.y - from.y) * eased });
       if (progress < 1) frame.current = requestAnimationFrame(step);
-      else { frame.current = null; setPlaying(false); }
+      else { frame.current = null; setPlaying(false); setPosition(positionRef.current); }
     };
     frame.current = requestAnimationFrame(step);
   }
 
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
-  return { position, positionRef, playing, animate, stop, setPosition };
+  return { position, positionRef, nodeRef, playing, animate, stop, setPosition: settle };
 }
+
+/** Shortens "Firstname Lastname" to "F. Lastname" for the event pill. */
+function shortName(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return parts.length < 2 ? name : `${parts[0]!.charAt(0)}. ${parts.slice(1).join(" ")}`;
+}
+
+/** Keeps the latest event and the one before it, so the pill can scroll the old one away. */
+function useEventTicker(latest: MatchEvent | undefined) {
+  const [ticker, setTicker] = useState<{ current?: MatchEvent; previous?: MatchEvent }>({ current: latest });
+  if (latest?.id !== ticker.current?.id || latest?.revision !== ticker.current?.revision) {
+    setTicker({ current: latest, previous: latest?.id !== ticker.current?.id ? ticker.current : ticker.previous });
+  }
+  return ticker;
+}
+
+/** Grass, markings and goals. Static, memoised and on its own compositor layer. */
+const PitchSurface = memo(function PitchSurface({ uid }: { uid: string }) {
+  const stripes = `pitch-stripes-${uid}`;
+  const vignette = `pitch-vignette-${uid}`;
+  const net = `pitch-net-${uid}`;
+  return (
+    <svg viewBox={PITCH_VIEWBOX} className="pitch pitch-plane pitch-surface" aria-hidden="true" focusable="false">
+      <defs>
+        <pattern id={stripes} patternUnits="userSpaceOnUse" x="0" y="0" width="10.5" height="80">
+          <rect width="5.25" height="80" fill="#3e8e35" />
+          <rect x="5.25" width="5.25" height="80" fill="#357f2e" />
+        </pattern>
+        <radialGradient id={vignette} cx="50%" cy="45%" r="70%">
+          <stop offset="55%" stopColor="#000" stopOpacity="0" />
+          <stop offset="100%" stopColor="#000" stopOpacity="0.32" />
+        </radialGradient>
+        <pattern id={net} patternUnits="userSpaceOnUse" width="0.6" height="0.6">
+          <path d="M0 0H0.6M0 0V0.6" stroke="#ffffff" strokeOpacity="0.55" strokeWidth="0.08" />
+        </pattern>
+      </defs>
+      <rect x="-6" y="-6" width="117" height="80" fill={`url(#${stripes})`} />
+      <rect x="-6" y="-6" width="117" height="80" fill={`url(#${vignette})`} />
+      <g className="pitch-lines">
+        <rect x="0" y="0" width="105" height="68" />
+        <path d="M52.5 0V68" />
+        <circle cx="52.5" cy="34" r="9.15" />
+        <rect x="0" y="13.84" width="16.5" height="40.32" />
+        <rect x="88.5" y="13.84" width="16.5" height="40.32" />
+        <rect x="0" y="24.84" width="5.5" height="18.32" />
+        <rect x="99.5" y="24.84" width="5.5" height="18.32" />
+        <path d="M16.5 26.69A9.15 9.15 0 0 1 16.5 41.31M88.5 26.69A9.15 9.15 0 0 0 88.5 41.31" />
+        <path d="M0 1A1 1 0 0 0 1 0M104 0A1 1 0 0 0 105 1M105 67A1 1 0 0 0 104 68M1 68A1 1 0 0 0 0 67" />
+      </g>
+      <g className="pitch-spots">
+        <circle cx="52.5" cy="34" r="0.35" />
+        <circle cx="11" cy="34" r="0.3" />
+        <circle cx="94" cy="34" r="0.3" />
+      </g>
+      {[{ x: -2.4 }, { x: 105 }].map(({ x }) => (
+        <rect key={x} x={x} y="30.34" width="2.4" height="7.32" fill={`url(#${net})`} className="pitch-goal" />
+      ))}
+      {[[0, 0], [105, 0], [0, 68], [105, 68]].map(([x, y]) => <circle key={`${x}-${y}`} cx={x} cy={y} r="0.45" className="pitch-flag" />)}
+    </svg>
+  );
+});
 
 function segmentStyle(segment: BallSegment, age: number, difficulty?: number) {
   const opacity = 0.12 + 0.88 * age * age;
@@ -101,6 +180,16 @@ export function Pitch({ fixture, events }: PitchProps) {
   // While the delayed tracking overlay is on, markers wait for the tracked play
   // to reach them; otherwise a goal marker would lead the shot by ~3 s.
   const [trackingHorizon, setTrackingHorizon] = useState<number | null>(null);
+  // Tracking frames arrive at 5 Hz and cover up to `speed` match seconds each wall second.
+  // Only commit a new horizon when it changes which events are visible, so the board
+  // re-renders when a marker is due, not on every frame (that is 30 renders/s at 30x).
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  const onHorizonChange = useCallback((horizon: number | null) => {
+    if (horizon === null) { setTrackingHorizon(null); return; }
+    const floored = Math.floor(horizon + 1e-6);
+    setTrackingHorizon((previous) => previous !== null && eventsWithinTrackingHorizon(eventsRef.current, previous).length === eventsWithinTrackingHorizon(eventsRef.current, floored).length ? previous : floored);
+  }, []);
   const visibleCount = useMemo(() => eventsWithinTrackingHorizon(events, trackingHorizon).length, [events, trackingHorizon]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const shown = useMemo(() => eventsWithinTrackingHorizon(events, trackingHorizon), [events, visibleCount]);
@@ -155,6 +244,17 @@ export function Pitch({ fixture, events }: PitchProps) {
   const ball = trackingActive ? null : motion.position;
   const ringEvent = trackingActive ? latestEvent : undefined;
   const ringSpot = ringEvent ? placeEvent(fixture, ringEvent) : null;
+  const ticker = useEventTicker(latestEvent);
+  const playerNames = useMemo(() => new Map([...fixture.home.players, ...fixture.away.players].map((player) => [player.id, shortName(player.name)])), [fixture]);
+  const pill = (event: MatchEvent, previous: boolean) => (
+    <div key={`${event.id}-${event.revision}`} className={previous ? "pitch-event-chip pitch-event-chip--previous" : "pitch-event-chip"} aria-hidden={previous ? "true" : undefined}>
+      <span className="pitch-event-chip__badge" style={{ background: teamTint(event.teamId) }} aria-hidden="true">{fixture[event.teamId].shortName}</span>
+      <span className="pitch-event-chip__text">
+        <strong>{sentenceCase(labelize(event.type))}{event.rescinded ? " · ruled out" : ""}</strong>
+        <span>{playerNames.get(event.playerId) ?? fixture[event.teamId].name} · {event.minute}'</span>
+      </span>
+    </div>
+  );
 
   return (
     <figure className="pitch-figure">
@@ -169,7 +269,11 @@ export function Pitch({ fixture, events }: PitchProps) {
         {mode === "ball" && !trackingActive && <button type="button" className="link-button" onClick={replay} disabled={route.length < 2 || motion.playing}>{motion.playing ? "Playing…" : "↻ Replay sequence"}</button>}
       </div>
       <div className="pitch-stack">
-        <svg viewBox="0 0 105 68" className="pitch" role="img" aria-label={`${fixture.title} ${mode === "ball" ? "ball movement" : "event board"}`}>
+        <div className="pitch-hoarding" aria-hidden="true">
+          {Array.from({ length: 4 }, (_, index) => <span key={index}>Live on Air</span>)}
+        </div>
+        <PitchSurface uid={uid} />
+        <svg viewBox={PITCH_VIEWBOX} className="pitch-plane pitch-marks" role="img" aria-label={`${fixture.title} ${mode === "ball" ? "ball movement" : "event board"}`}>
           <defs>
             {(["home", "away"] as const).map((team) => (
               <marker key={team} id={arrowId(team)} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">
@@ -186,14 +290,6 @@ export function Pitch({ fixture, events }: PitchProps) {
               <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
             </radialGradient>
           </defs>
-          <rect x="1" y="1" width="103" height="66" rx="3" fill="var(--cp-surface-soft)" stroke="var(--cp-border-strong)" strokeWidth="0.8" />
-          <path d="M52.5 1v66" stroke="var(--cp-border)" strokeWidth="0.6" />
-          <circle cx="52.5" cy="34" r="9.15" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-          <circle cx="52.5" cy="34" r="0.6" fill="var(--cp-border-strong)" />
-          <rect x="1" y="13.85" width="16.5" height="40.3" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-          <rect x="87.5" y="13.85" width="16.5" height="40.3" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-          <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
-          <rect x="98.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="var(--cp-border)" strokeWidth="0.6" />
 
           {trackingActive ? (
             <g className="pitch-tracking-latest">
@@ -228,13 +324,9 @@ export function Pitch({ fixture, events }: PitchProps) {
                   </g>
                 );
               })}
-              {latestTouch && (
-                <text x={Math.min(99, Math.max(8, toX(latestTouch.x)))} y={Math.max(4, toY(latestTouch.y) - 3)} className="pitch-label" textAnchor="middle">
-                  {latestTouch.minute}' {labelize(latestTouch.type)}
-                </text>
-              )}
               {ball && (
-                <g className="pitch-ball" transform={`translate(${toX(ball.x)} ${toY(ball.y)})`}>
+                <g ref={motion.nodeRef} className="pitch-ball" transform={ballTransform(ball)}>
+                  <ellipse cx="0.5" cy="0.7" rx="1.2" ry="0.7" fill="#000000" opacity="0.3" />
                   <circle r="3" fill={`url(#${glowId})`} />
                   <circle r="1.15" fill="#ffffff" stroke="#111114" strokeWidth="0.35" />
                   <path d="M-0.45 -0.2 0 -0.55 0.45 -0.2 0.28 0.38 -0.28 0.38z" fill="#111114" />
@@ -257,11 +349,6 @@ export function Pitch({ fixture, events }: PitchProps) {
                     {style.shape === "circle" && <circle cx={x} cy={y} r={active ? 2 : 1.35} fill={style.color} stroke={teamTint(event.teamId)} strokeWidth={active ? 0.65 : 0.45} className={active && !reducedMotion ? "pitch-pulse" : undefined} />}
                     {style.shape === "diamond" && <rect x={x - (active ? 1.7 : 1.25)} y={y - (active ? 1.7 : 1.25)} width={active ? 3.4 : 2.5} height={active ? 3.4 : 2.5} transform={`rotate(45 ${x} ${y})`} fill={style.color} stroke={teamTint(event.teamId)} strokeWidth={active ? 0.65 : 0.45} className={active && !reducedMotion ? "pitch-pulse" : undefined} />}
                     {style.shape === "square" && <rect x={x - (active ? 1.7 : 1.25)} y={y - (active ? 1.7 : 1.25)} width={active ? 3.4 : 2.5} height={active ? 3.4 : 2.5} fill={style.color} stroke={teamTint(event.teamId)} strokeWidth={active ? 0.65 : 0.45} className={active && !reducedMotion ? "pitch-pulse" : undefined} />}
-                    {active && (
-                      <text x={Math.min(99, Math.max(8, x))} y={Math.max(4, y - 3)} className="pitch-label" textAnchor="middle">
-                        {event.minute}' {labelize(event.type)}
-                      </text>
-                    )}
                   </g>
                 );
               })}
@@ -269,14 +356,12 @@ export function Pitch({ fixture, events }: PitchProps) {
           )}
         </svg>
         <div className="tracking-overlay">
-          <TrackingLayer fixture={fixture} onHorizonChange={setTrackingHorizon} />
+          <TrackingLayer fixture={fixture} onHorizonChange={onHorizonChange} />
         </div>
-        {ringEvent && (
-          <div className="pitch-event-chip" aria-label="Latest tracked event">
-            <i className="pitch-event-chip__dot" style={{ background: teamTint(ringEvent.teamId) }} aria-hidden="true" />
-            {ringEvent.minute}' {sentenceCase(labelize(ringEvent.type))} · {fixture[ringEvent.teamId].shortName}
-          </div>
-        )}
+        <div className="pitch-event-ticker" role="group" aria-label="Latest event">
+          {ticker.previous && pill(ticker.previous, true)}
+          {ticker.current && pill(ticker.current, false)}
+        </div>
       </div>
       <figcaption className="pitch-legend">
         <span><i className="swatch swatch--home" />{camera ? fixture.home.shortName : `${fixture.home.shortName} attacks →`}</span>

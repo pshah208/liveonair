@@ -256,3 +256,37 @@ test("a catch-up warmer that outlives a stop and restart of the same fixture nev
     await live.close();
   }
 });
+
+// Regression: frames were capped by the floored service clock (1 Hz ticker), so at 30x
+// the stream repeated one second for ~1 s and then jumped ~30 match seconds.
+test("tracking frames advance on every 5 Hz tick at 30x instead of once a second", async () => {
+  const fixture = truncatedFixture();
+  const scheduler = new StallScheduler();
+  const live = createLiveService({
+    transport: createLocalTransport(),
+    registry: registryFor(fixture),
+    generateMatch,
+    buildFeedPlan,
+    now: () => scheduler.now,
+    scheduler,
+  });
+  const seconds: number[] = [];
+  const response = fakeResponse((message) => {
+    if (message.type === "frame") seconds.push(message.frame.second);
+  });
+  try {
+    await live.start({ fixtureId: fixture.id, speed: 30 });
+    const stop = startTrackingStream({ live, response, scheduler, now: () => scheduler.now });
+    await scheduler.advance(2_000);
+    const from = seconds.length;
+    await scheduler.advance(3_000);
+    const window = seconds.slice(from);
+    assert.ok(window.length >= 12, `frames emitted: ${window.length}`);
+    const steps = window.slice(1).map((second, index) => second - window[index]!);
+    // 30x at 5 Hz is 6 match seconds per frame; an even cadence is what makes the dots glide.
+    assert.ok(steps.every((step) => step >= 4.8 && step <= 7.2), `even ~6 s steps, got ${window.join(",")}`);
+    stop();
+  } finally {
+    await live.close();
+  }
+});

@@ -336,7 +336,7 @@ const builtInFixtures: MatchFixture[] = [
     curatedEvents: [
       createEvent({ id: "r1-kickoff", atSecond: 0, type: "kickoff", teamId: "home", playerId: "home-p9", outcome: "none", x: 50, y: 50 }),
       createEvent({ id: "r1-shot-away-1", atSecond: 9 * 60 + 40, type: "shot", teamId: "away", playerId: "away-p11", outcome: "saved", x: 84, y: 49, xg: 0.22 }),
-      createEvent({ id: "r1-save-home-1", atSecond: 9 * 60 + 42, type: "save", teamId: "home", playerId: "home-p1", outcome: "success", x: 93, y: 50, relatedEventId: "r1-shot-away-1" }),
+      createEvent({ id: "r1-save-home-1", atSecond: 9 * 60 + 41, type: "save", teamId: "home", playerId: "home-p1", outcome: "success", x: 93, y: 50, relatedEventId: "r1-shot-away-1" }),
       createEvent({ id: "r1-shot-away-2", atSecond: 17 * 60 + 12, type: "shot", teamId: "away", playerId: "away-p11", outcome: "success", x: 88, y: 52, xg: 0.31 }),
       createEvent({ id: "r1-goal-away-1", atSecond: 17 * 60 + 13, type: "goal", teamId: "away", playerId: "away-p11", outcome: "success", x: 95, y: 51, relatedEventId: "r1-shot-away-2" }),
       createEvent({ id: "r1-corner-away-1", atSecond: 34 * 60 + 20, type: "corner", teamId: "away", playerId: "away-p8", outcome: "complete", x: 100, y: 3, endX: 86, endY: 44 }),

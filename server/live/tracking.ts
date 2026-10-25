@@ -182,22 +182,32 @@ export function startTrackingStream({
       sendStatus("paused", "Match paused.");
       return;
     }
-    if (holdingPause || !Number.isFinite(lastRawClock) || Math.abs(rawClock - lastRawClock) > 1e-6) {
-      holdingPause = false;
-      lastRawClock = rawClock;
-      baseClock = rawClock;
-      baseAt = now();
-    }
     const tickAt = now();
     const speed = Math.max(0, status.speed || 0);
+    const rewound = Number.isFinite(lastRawClock) && rawClock < lastRawClock - 1e-6;
+    if (holdingPause || !Number.isFinite(lastRawClock) || Math.abs(rawClock - lastRawClock) > 1e-6) {
+      // The service clock is floored and ticks once a wall second (30 match seconds at 30x).
+      // Keep projecting linearly between its ticks and re-anchor only on a real jump
+      // (resume, restart, seek); re-anchoring every tick makes the frame clock saw-tooth.
+      const projectedNow = baseClock + Math.max(0, (tickAt - baseAt) / 1000) * speed;
+      const drift = Math.abs(projectedNow - rawClock);
+      if (holdingPause || !Number.isFinite(lastRawClock) || rewound || drift > Math.max(1, speed) + 1e-6) {
+        baseClock = rawClock;
+        baseAt = tickAt;
+      }
+      holdingPause = false;
+      lastRawClock = rawClock;
+    }
     const elapsed = Math.max(0, (tickAt - baseAt) / 1000);
     const projectedSecond = Math.min(view.fixture.durationSeconds, baseClock + elapsed * speed);
     // view.clockSecond is the service's wall-clock ticker, not a record of what
     // has arrived: events land on their own publish timers and can trail it
     // when the event loop stalls. The received watermark is the only safe
     // horizon; a frame built past it would be cached with events missing.
+    // The floored ticker itself is not a cap: capping by it froze frames for a
+    // wall second and then jumped `speed` match seconds (glitchy board at 30x).
     const watermark = live.publishedThroughSecond?.() ?? rawClock;
-    const horizonSecond = Math.min(projectedSecond, rawClock, watermark);
+    const horizonSecond = Math.min(projectedSecond, rawClock + Math.max(1, speed), watermark);
     const delayedSecond = Math.max(0, Math.floor((horizonSecond - TRACKING_DELAY_SECONDS + 1e-6) * 5) / 5);
     // Until the first TRACKING_DELAY_SECONDS of events have arrived, any frame
     // (even t=0) would be simulated from an incomplete feed and then cached.
@@ -208,7 +218,7 @@ export function startTrackingStream({
     lastTickAt = tickAt;
     let frameSecond = status.state === "finished"
       ? Math.min(view.fixture.durationSeconds, finishedCap(watermark, view.fixture.durationSeconds), Math.max(delayedSecond, lastFrameSecond + drainStep))
-      : delayedSecond;
+      : rewound || delayedSecond >= lastFrameSecond ? delayedSecond : lastFrameSecond; // never step back after a re-anchor
     if (status.state === "finished" && frameSecond >= view.fixture.durationSeconds - 1e-6) frameSecond = view.fixture.durationSeconds;
     if (!readyToBuild(live, view.fixture, frameSecond)) return;
     const frame = buildTrackingFrame(view.fixture, frameSecond);

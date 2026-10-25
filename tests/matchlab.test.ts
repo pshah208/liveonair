@@ -5,7 +5,9 @@ import path from "node:path";
 
 import { buildFeedPlan } from "../server/matchlab/feed.js";
 import { generateMatch } from "../server/matchlab/generator.js";
-import { resetGeneratedFixturesForTests } from "../server/fixtures.js";
+import { getFixture, listFixtures, resetGeneratedFixturesForTests } from "../server/fixtures.js";
+import { computeStats } from "../server/engine.js";
+import { filterByPeriod, periodBoundary } from "../shared/periods.js";
 import type { MatchEvent, MatchFixture } from "../shared/types.js";
 
 function secondOf(event: MatchEvent): number {
@@ -434,4 +436,54 @@ test("generated fixtures keep spatial distributions realistic across scenario an
   assert.ok(middleThirdShare >= 0.30, `middle-third share ${middleThirdShare.toFixed(3)}`);
   assert.ok(medianDefensiveX >= 20 && medianDefensiveX <= 60, `defensive median x ${medianDefensiveX.toFixed(2)}`);
   assert.ok(continuityShare >= 0.70, `continuity share ${continuityShare.toFixed(3)}`);
+});
+
+const SAVE_SCENARIOS = ["comeback", "red_card", "set_piece", "late_winner", "goal_fest"] as const;
+const SAVE_SEEDS = [1, 2, 3, 4, 5] as const;
+
+function savedShotsBy(events: MatchEvent[], teamId: "home" | "away"): number {
+  return events.filter((event) => event.type === "shot" && !event.rescinded && event.outcome === "saved" && event.teamId === teamId).length;
+}
+
+test("each keeper's saves equal the opponent's saved shots, for the full match and each half", () => {
+  for (const scenario of SAVE_SCENARIOS) {
+    for (const seed of SAVE_SEEDS) {
+      const fixture = generateMatch({ scenario, seed });
+      const boundary = periodBoundary(fixture);
+      assert.ok(boundary.available, `${scenario}/${seed}: halves available`);
+      for (const period of ["full", "first", "second"] as const) {
+        const scoped = filterByPeriod(fixture.events, period, boundary);
+        const stats = computeStats(scoped);
+        for (const teamId of ["home", "away"] as const) {
+          const opponent = teamId === "home" ? "away" : "home";
+          assert.equal(stats[teamId].saves ?? 0, savedShotsBy(scoped, opponent), `${scenario}/${seed}/${period}: ${teamId} saves vs ${opponent} saved shots`);
+        }
+      }
+    }
+  }
+});
+
+test("every save links to exactly one opponent saved shot, credited to that team's goalkeeper", () => {
+  const generated = SAVE_SCENARIOS.flatMap((scenario) => SAVE_SEEDS.map((seed) => generateMatch({ scenario, seed })));
+  const scripted = listFixtures().map((summary) => getFixture(summary.id));
+  for (const fixture of [...generated, ...scripted]) {
+    const byId = new Map(fixture.events.map((event) => [event.id, event]));
+    const keepers = new Set([...fixture.home.players, ...fixture.away.players].filter((player) => player.position === "GK").map((player) => player.id));
+    const claimed = new Set<string>();
+    for (const save of fixture.events.filter((event) => event.type === "save" && !event.rescinded)) {
+      const label = `${fixture.id}: ${save.id}`;
+      const shot = save.relatedEventId ? byId.get(save.relatedEventId) : undefined;
+      assert.ok(shot, `${label} has no linked shot`);
+      assert.equal(shot!.type, "shot", label);
+      assert.ok(!shot!.rescinded && shot!.outcome === "saved", `${label} links to a shot that was not saved`);
+      assert.notEqual(shot!.teamId, save.teamId, `${label} belongs to the defending team`);
+      assert.ok(keepers.has(save.playerId), `${label} is credited to a goalkeeper`);
+      const gap = (save.minute * 60 + save.second) - (shot!.minute * 60 + shot!.second);
+      assert.ok(gap >= 0 && gap <= 1, `${label} comes 0-1 s after its shot (gap ${gap})`);
+      assert.ok(!claimed.has(shot!.id), `${label} duplicates a save for ${shot!.id}`);
+      claimed.add(shot!.id);
+    }
+    const unsaved = fixture.events.filter((event) => event.type === "shot" && !event.rescinded && event.outcome === "saved" && !claimed.has(event.id));
+    assert.deepEqual(unsaved.map((event) => event.id), [], `${fixture.id}: saved shots without a save`);
+  }
 });

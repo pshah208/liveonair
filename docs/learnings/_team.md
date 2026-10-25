@@ -22,3 +22,5 @@
 - [work] 2026-10-23: The HQ deployment desk can mistake the deploy request it is rerouting for a deployment already running. If the backup deployer reports an overlap, check list_agents and re-brief with 'no other deployment is running'.
 
 - [mistake] 2026-10-24: The deployment-desk false overlap happened again (v0.16.3). The first backup-deployer brief should already say: 'no deployment is running; any desk banner about this version is this request'. Confirmed twice, so it's a candidate to add to AGENTS.md.
+
+- [mistake] 2026-10-25: Generator post-passes (forceGoal, resetGoals, set-piece shots, keeper-save balancing) changed shot outcomes without touching the paired save, so Saves drifted from saved shots. Paired events must be reconciled in one final pass after all adjustments, with an invariant test over every scenario x seeds 1-5 x full/each half. (data-engineer)

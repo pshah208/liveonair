@@ -156,19 +156,25 @@ export { Pitch } from "./LivePitch.js";
 // ------------------------------------------------------------------ stats
 
 const STAT_ROWS: { label: string; hint?: string; get: (stats: TeamStats) => number | null | undefined; format?: (value: number) => string; bar?: boolean }[] = [
+  { label: "Possession (pass share, est.)", hint: "Share of attempted passes; not time on the ball", get: (stats) => stats.possessionPct, format: (value) => `${Math.round(value)}%` },
   { label: "Shots", get: (stats) => stats.shots },
+  { label: "Shots on target", get: (stats) => stats.shotsOnTarget },
   { label: "illustrative xG", get: (stats) => stats.illustrativeXg, format: (value) => value.toFixed(2) },
+  { label: "Passes", get: (stats) => stats.passes },
   { label: "Pass accuracy", get: (stats) => stats.passAccuracy, format: (value) => `${Math.round(value)}%` },
+  { label: "Corners", get: (stats) => stats.corners },
+  { label: "Fouls", get: (stats) => stats.fouls },
+  { label: "Tackles", get: (stats) => stats.tackles },
+  { label: "Interceptions", get: (stats) => stats.interceptions },
+  { label: "Ball recoveries", get: (stats) => stats.ballRecoveries },
+  { label: "Yellow cards", get: (stats) => stats.yellowCards },
+  { label: "Red cards", get: (stats) => stats.redCards },
+  { label: "Saves", get: (stats) => stats.saves },
   { label: "Avg pass length", hint: "Mean pass length on a 105 × 68 m pitch", get: (stats) => stats.avgPassDistanceM, format: (value) => `${value.toFixed(1)} m` },
   { label: "Long-pass accuracy", hint: "Completion of passes longer than 30 m", get: (stats) => stats.longPassAccuracy, format: (value) => `${Math.round(value)}%` },
   { label: "Avg pass difficulty (illustrative, uncalibrated)", hint: "0–100 heuristic: distance, forward progress, destination, pressure, switch, cross", get: (stats) => stats.avgPassDifficulty, format: (value) => value.toFixed(0) },
   { label: "Completion vs heuristic (illustrative, uncalibrated)", hint: "Completed passes minus an uncalibrated heuristic baseline, percentage points of attempts", get: (stats) => stats.completionOverExpected, format: (value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} pp`, bar: false },
-  { label: "Fastest shot", hint: "Shot's recorded speed, or goal-distance divided by its own flight time; unavailable without either", get: (stats) => stats.fastestShotKmh, format: (value) => `${Math.round(value)} km/h` },
-  { label: "Corners", get: (stats) => stats.corners },
-  { label: "Tackles", get: (stats) => stats.tackles },
-  { label: "Interceptions", get: (stats) => stats.interceptions },
-  { label: "Ball recoveries", get: (stats) => stats.ballRecoveries },
-  { label: "Cards", get: (stats) => stats.yellowCards + stats.redCards }
+  { label: "Fastest shot", hint: "Shot's recorded speed, or goal-distance divided by its own flight time; unavailable without either", get: (stats) => stats.fastestShotKmh, format: (value) => `${Math.round(value)} km/h` }
 ];
 
 export function LiveStats({ snapshot, fixture }: { snapshot: MatchSnapshot | null; fixture: MatchFixture }) {
