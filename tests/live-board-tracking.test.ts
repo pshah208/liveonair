@@ -251,3 +251,9 @@ test("tracking dot colours keep >= 3:1 contrast on the pitch in both themes", ()
     }
   }
 });
+
+test("pitch-side advertising boards carry the Live on Air brand", () => {
+  const pitch = read("src/LivePitch.tsx");
+  assert.match(pitch, /<span key=\{index\}>Live on Air<\/span>/);
+  assert.doesNotMatch(pitch, />MatchLens</);
+});

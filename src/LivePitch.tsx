@@ -270,7 +270,7 @@ export function Pitch({ fixture, events }: PitchProps) {
       </div>
       <div className="pitch-stack">
         <div className="pitch-hoarding" aria-hidden="true">
-          {Array.from({ length: 4 }, (_, index) => <span key={index}>MatchLens</span>)}
+          {Array.from({ length: 4 }, (_, index) => <span key={index}>Live on Air</span>)}
         </div>
         <PitchSurface uid={uid} />
         <svg viewBox={PITCH_VIEWBOX} className="pitch-plane pitch-marks" role="img" aria-label={`${fixture.title} ${mode === "ball" ? "ball movement" : "event board"}`}>
