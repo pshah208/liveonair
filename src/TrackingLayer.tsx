@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { TRACKING_DELAY_SECONDS, TRACKING_PITCH_WIDTH_M, type TrackingFrame, isTrackingStreamMessage, trackingMarkerHorizon } from "../shared/tracking.js";
 import type { MatchFixture } from "../shared/types.js";
 import { PITCH_VIEWBOX, svgTranslate } from "./pitchGeometry.js";
-import { TRACKING_LERP_MS, type TrailPoint, crowdedPlayerIds, interpolateFrame, pushTrail, shouldSnap } from "./trackingRender.js";
+import { TRACKING_SNAP_DISTANCE_M, type Playout, type TrailPoint, addPlayoutFrame, createPlayout, crowdedPlayerIds, pushTrail, samplePlayout } from "./trackingRender.js";
 
 type TrackingLayerProps = {
   fixture: MatchFixture;
@@ -37,9 +37,13 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
   const playerNodes = useRef(new Map<string, SVGGElement>());
   const ballNode = useRef<SVGGElement | null>(null);
   const trailNode = useRef<SVGPolylineElement | null>(null);
+  const playoutRef = useRef<Playout>(createPlayout());
+  const kickRef = useRef<(() => void) | null>(null);
 
   const enabled = manualEnabled ?? connected;
-  const horizonSecond = enabled && sourceFrame ? trackingMarkerHorizon(sourceFrame.second) : null;
+  // Markers wait for the play actually on screen (the playout clock), not the newest buffered frame.
+  const shownSecond = sourceFrame ? (reduced ? sourceFrame.second : playoutRef.current.clock ?? sourceFrame.second) : null;
+  const horizonSecond = enabled && shownSecond !== null ? trackingMarkerHorizon(shownSecond) : null;
   const goalkeeperIds = useMemo(() => new Set(
     [...fixture.home.players, ...fixture.away.players].filter((player) => player.position.toUpperCase() === "GK").map((player) => player.id),
   ), [fixture]);
@@ -63,6 +67,7 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
       rafRef.current = null;
       drawnRef.current = null;
       trailRef.current = [];
+      playoutRef.current = createPlayout();
       setSourceFrame(null);
     };
     reset();
@@ -89,6 +94,8 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
           setConnected(true);
           // The strip already says "Synthetic tracking"; a live stream needs no extra status text.
           setStatusText("");
+          addPlayoutFrame(playoutRef.current, payload.frame, performance.now());
+          kickRef.current?.();
           setSourceFrame(payload.frame);
         }
       } catch {
@@ -111,41 +118,63 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
     };
   }, [fixture.id]);
 
-  // Interpolate dot positions with requestAnimationFrame: lerp from what is drawn now
-  // to the latest 5 Hz frame over TRACKING_LERP_MS; snap on big jumps and under reduced motion.
+  // Reduced motion: no playout, positions update at most about once a second and never glide.
   // Layout effect: newly mounted dots get a position before the browser paints them.
   useLayoutEffect(() => {
     if (!sourceFrame) return;
-    const draw = (frame: TrackingFrame, at: number, restartTrail: boolean) => {
-      drawnRef.current = frame;
-      trailRef.current = reduced ? [] : restartTrail ? [{ ...frame.ball, at }] : pushTrail(trailRef.current, { ...frame.ball, at });
-      paint(frame, trailRef.current);
-    };
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
     const now = performance.now();
     const from = drawnRef.current;
     if (reduced) {
       if (!from || now - reducedGateRef.current >= REDUCED_MOTION_GATE_MS) {
         reducedGateRef.current = now;
-        draw(sourceFrame, now, true);
+        drawnRef.current = sourceFrame;
+        trailRef.current = [];
+        paint(sourceFrame, trailRef.current);
       } else paint(from, trailRef.current);
       return;
     }
-    if (shouldSnap(from, sourceFrame, reduced)) {
-      draw(sourceFrame, now, true);
-      return;
-    }
-    draw(interpolateFrame(from!, sourceFrame, 0), now, false);
-    const start = now;
-    const step = (time: number) => {
-      const t = Math.min(1, Math.max(0, (time - start) / TRACKING_LERP_MS));
-      draw(interpolateFrame(from!, sourceFrame, t), time, false);
-      rafRef.current = t < 1 ? requestAnimationFrame(step) : null;
-    };
-    rafRef.current = requestAnimationFrame(step);
+    if (from) paint(from, trailRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFrame, reduced]);
+
+  // One continuous requestAnimationFrame loop samples the playout buffer, so motion
+  // never restarts per network frame (that showed as stutter whenever a frame was late).
+  // It idles after a second without new motion and is kicked again by the next frame.
+  useEffect(() => {
+    if (reduced || !enabled) return;
+    let lastClock: number | null = null;
+    let idleSince: number | null = null;
+    const step = (time: number) => {
+      const frame = samplePlayout(playoutRef.current, time);
+      const clock = playoutRef.current.clock;
+      if (frame && clock !== lastClock) {
+        lastClock = clock;
+        idleSince = null;
+        const previous = drawnRef.current;
+        drawnRef.current = frame;
+        const jumped = !previous || Math.hypot(frame.ball.x - previous.ball.x, frame.ball.y - previous.ball.y) > TRACKING_SNAP_DISTANCE_M;
+        trailRef.current = jumped ? [{ ...frame.ball, at: time }] : pushTrail(trailRef.current, { ...frame.ball, at: time });
+        paint(frame, trailRef.current);
+      } else {
+        idleSince ??= time;
+        if (time - idleSince > 1000) {
+          rafRef.current = null;
+          return;
+        }
+      }
+      rafRef.current = requestAnimationFrame(step);
+    };
+    kickRef.current = () => {
+      if (rafRef.current === null) rafRef.current = requestAnimationFrame(step);
+    };
+    kickRef.current();
+    return () => {
+      kickRef.current = null;
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, reduced]);
 
   // Turning the overlay back on mounts fresh nodes: place them where play currently is.
   useLayoutEffect(() => {

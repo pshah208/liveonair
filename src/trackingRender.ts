@@ -1,7 +1,5 @@
 import type { TrackingFrame, TrackingPlayer } from "../shared/tracking.js";
 
-/** Frames arrive at 5 Hz; glide each dot from the previous frame to the latest over one frame interval. */
-export const TRACKING_LERP_MS = 200;
 /** A jump larger than this (seek, resume, restart) snaps instead of gliding across the pitch. */
 export const TRACKING_SNAP_DISTANCE_M = 15;
 /** Shirt numbers are dropped when another dot is closer than this, so badges never overlap. */
@@ -74,4 +72,77 @@ export function crowdedPlayerIds(
 /** Appends a ball position and drops points older than the trail window. */
 export function pushTrail(trail: TrailPoint[], point: TrailPoint, windowMs = TRACKING_BALL_TRAIL_MS): TrailPoint[] {
   return [...trail, point].filter((entry) => point.at - entry.at <= windowMs);
+}
+
+/**
+ * Playout buffer: frames are drawn about this much wall time behind the newest one,
+ * on a clock that advances at the measured stream rate (match seconds per wall second).
+ * Late or bunched SSE frames then never freeze or jump the dots, at 1x or 60x.
+ */
+export const PLAYOUT_DELAY_MS = 350;
+/** A gap this long between buffered frames (seek, late join) is cut, not glided across. */
+export const PLAYOUT_MAX_GLIDE_SECONDS = 15;
+const PLAYOUT_MAX_FRAMES = 48;
+
+export type Playout = {
+  frames: TrackingFrame[];
+  /** Match second currently drawn; null until the first sample. */
+  clock: number | null;
+  /** Estimated match seconds per wall second. */
+  rate: number;
+  last: { second: number; at: number } | null;
+  sampledAt: number | null;
+};
+
+export function createPlayout(): Playout {
+  return { frames: [], clock: null, rate: 0, last: null, sampledAt: null };
+}
+
+/** Adds a received frame (mutates `state`). Duplicates are dropped; a rewind or new fixture restarts the buffer. */
+export function addPlayoutFrame(state: Playout, frame: TrackingFrame, at: number): Playout {
+  const latest = state.frames[state.frames.length - 1];
+  if (latest && (frame.fixtureId !== latest.fixtureId || frame.second < latest.second - 1e-6)) {
+    Object.assign(state, createPlayout());
+  } else if (latest && frame.second <= latest.second + 1e-6) {
+    return state;
+  }
+  if (state.last) {
+    const wall = (at - state.last.at) / 1000;
+    // Skip the estimate across long silences (pause, tab in background): it is not the stream rate.
+    if (wall > 0.05 && wall < 1.5) {
+      const instant = (frame.second - state.last.second) / wall;
+      state.rate = Math.min(120, Math.max(0, state.rate === 0 ? instant : state.rate + (instant - state.rate) * 0.25));
+    }
+  }
+  state.last = { second: frame.second, at };
+  state.frames.push(frame);
+  if (state.frames.length > PLAYOUT_MAX_FRAMES) state.frames.splice(0, state.frames.length - PLAYOUT_MAX_FRAMES);
+  return state;
+}
+
+/** Advances the playout clock to wall time `at` and returns the interpolated frame (mutates `state`). */
+export function samplePlayout(state: Playout, at: number): TrackingFrame | null {
+  const frames = state.frames;
+  if (frames.length === 0) return null;
+  const first = frames[0]!;
+  const latest = frames[frames.length - 1]!;
+  const dt = state.sampledAt === null ? 0 : Math.max(0, Math.min(0.25, (at - state.sampledAt) / 1000));
+  state.sampledAt = at;
+  const target = latest.second - (PLAYOUT_DELAY_MS / 1000) * state.rate;
+  if (state.clock === null || Math.abs(target - state.clock) > Math.max(2, state.rate * 1.5)) {
+    state.clock = target;
+  } else {
+    // Run at the stream rate and ease gently toward the target, so jitter never shows as a jump.
+    state.clock += dt * state.rate + (target - state.clock) * Math.min(1, dt * 1.5);
+  }
+  state.clock = Math.min(latest.second, Math.max(first.second, state.clock));
+  if (frames.length === 1 || state.clock >= latest.second) return latest;
+  let index = 0;
+  while (index < frames.length - 2 && frames[index + 1]!.second < state.clock) index += 1;
+  const from = frames[index]!;
+  const to = frames[index + 1]!;
+  const span = to.second - from.second;
+  const t = span <= 0 ? 1 : Math.min(1, Math.max(0, (state.clock - from.second) / span));
+  if (span > PLAYOUT_MAX_GLIDE_SECONDS) return t < 0.5 ? from : to;
+  return interpolateFrame(from, to, t);
 }

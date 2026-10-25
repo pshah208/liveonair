@@ -180,9 +180,16 @@ export function Pitch({ fixture, events }: PitchProps) {
   // While the delayed tracking overlay is on, markers wait for the tracked play
   // to reach them; otherwise a goal marker would lead the shot by ~3 s.
   const [trackingHorizon, setTrackingHorizon] = useState<number | null>(null);
-  // Tracking frames arrive at 5 Hz; flooring the horizon to whole seconds re-renders the
-  // board at most once a second (event clocks are whole seconds, so the same events show).
-  const onHorizonChange = useCallback((horizon: number | null) => setTrackingHorizon(horizon === null ? null : Math.floor(horizon + 1e-6)), []);
+  // Tracking frames arrive at 5 Hz and cover up to `speed` match seconds each wall second.
+  // Only commit a new horizon when it changes which events are visible, so the board
+  // re-renders when a marker is due, not on every frame (that is 30 renders/s at 30x).
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  const onHorizonChange = useCallback((horizon: number | null) => {
+    if (horizon === null) { setTrackingHorizon(null); return; }
+    const floored = Math.floor(horizon + 1e-6);
+    setTrackingHorizon((previous) => previous !== null && eventsWithinTrackingHorizon(eventsRef.current, previous).length === eventsWithinTrackingHorizon(eventsRef.current, floored).length ? previous : floored);
+  }, []);
   const visibleCount = useMemo(() => eventsWithinTrackingHorizon(events, trackingHorizon).length, [events, trackingHorizon]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const shown = useMemo(() => eventsWithinTrackingHorizon(events, trackingHorizon), [events, visibleCount]);

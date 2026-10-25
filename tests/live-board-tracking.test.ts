@@ -5,12 +5,16 @@ import test from "node:test";
 import type { TrackingFrame } from "../shared/tracking.js";
 import { PITCH_VIEWBOX } from "../src/pitchGeometry.js";
 import {
-  TRACKING_LERP_MS,
+  PLAYOUT_DELAY_MS,
+  PLAYOUT_MAX_GLIDE_SECONDS,
   TRACKING_SNAP_DISTANCE_M,
+  addPlayoutFrame,
+  createPlayout,
   crowdedPlayerIds,
   interpolateFrame,
   maxDisplacement,
   pushTrail,
+  samplePlayout,
   shouldSnap,
 } from "../src/trackingRender.js";
 
@@ -49,17 +53,57 @@ test("tracking header strip names the source once", () => {
   assert.equal(src.match(/className="tracking-overlay__controls"/g)?.length, 1);
 });
 
-test("tracking dots interpolate with requestAnimationFrame and honour reduced motion", () => {
+test("tracking dots play out of a buffer on one requestAnimationFrame loop and honour reduced motion", () => {
   const src = read("src/TrackingLayer.tsx");
   assert.match(src, /requestAnimationFrame\(step\)/);
-  assert.match(src, /interpolateFrame\(from!, sourceFrame, t\)/);
-  assert.match(src, /TRACKING_LERP_MS/);
+  assert.match(src, /samplePlayout\(playoutRef\.current, time\)/);
+  assert.match(src, /addPlayoutFrame\(playoutRef\.current, payload\.frame, performance\.now\(\)\)/);
   assert.match(src, /prefers-reduced-motion: reduce/);
   assert.match(src, /if \(reduced\) \{/);
-  assert.match(src, /shouldSnap\(from, sourceFrame, reduced\)/);
+  assert.match(src, /if \(reduced \|\| !enabled\) return;/);
   assert.match(src, /role="img" aria-label=\{`Synthetic tracking/);
   const css = read("src/board.css");
   assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{\s*\.pitch-event-ring \{\s*animation: pitch-event-ring-fade 2s/);
+});
+
+// Regression: at the default 30x the stream repeated one frame for ~1 s and then jumped
+// ~30 match seconds; the client glided 200 ms, froze, then snapped (dots teleported).
+test("playout runs continuously between frames and never freezes on a late frame", () => {
+  const playout = createPlayout();
+  // 30x: one frame every 200 ms wall, 6 match seconds apart.
+  for (let i = 0; i < 6; i += 1) addPlayoutFrame(playout, frame(100 + 6 * i, 10 + 6 * i), i * 200);
+  assert.ok(Math.abs(playout.rate - 30) < 1e-6, `rate ${playout.rate}`);
+  const seconds: number[] = [];
+  // No frame arrives during these 300 ms (a late frame): the clock keeps running smoothly.
+  for (let at = 1000; at <= 1300; at += 16) {
+    samplePlayout(playout, at);
+    seconds.push(playout.clock!);
+  }
+  for (let i = 1; i < seconds.length; i += 1) {
+    const step = seconds[i]! - seconds[i - 1]!;
+    assert.ok(step > 0, `clock advanced at sample ${i}`);
+    assert.ok(step < 1.5, `no jump at sample ${i}: ${step}`);
+  }
+  // Interpolated between two buffered frames, not snapped to either.
+  const drawn = samplePlayout(playout, 1316)!;
+  assert.ok(drawn.ball.x > 10 && drawn.ball.x < 40);
+  // Duplicates are ignored; a rewind or a different fixture restarts the buffer.
+  addPlayoutFrame(playout, frame(130, 40), 1320);
+  assert.equal(playout.frames.length, 6);
+  addPlayoutFrame(playout, frame(5, 0), 1400);
+  assert.deepEqual(playout.frames.map((f) => f.second), [5]);
+  assert.equal(playout.clock, null);
+});
+
+test("playout cuts across a seek instead of gliding over it", () => {
+  const playout = createPlayout();
+  addPlayoutFrame(playout, frame(10, 10), 0);
+  addPlayoutFrame(playout, frame(10 + PLAYOUT_MAX_GLIDE_SECONDS + 5, 90), 200);
+  playout.clock = 10.5;
+  playout.sampledAt = 200;
+  const drawn = samplePlayout(playout, 200)!;
+  assert.ok(drawn.ball.x === 10 || drawn.ball.x === 90);
+  assert.ok(PLAYOUT_DELAY_MS > 200, "buffer covers at least one 5 Hz frame interval");
 });
 
 test("interpolation lerps between frames and snaps on big jumps or reduced motion", () => {
@@ -67,7 +111,6 @@ test("interpolation lerps between frames and snaps on big jumps or reduced motio
   const b = frame(2, 54, [["h1", 12, 14]]);
   const mid = interpolateFrame(a, b, 0.5);
   assert.deepEqual([mid.ball.x, mid.players[0]!.x, mid.players[0]!.y], [52, 11, 12]);
-  assert.equal(TRACKING_LERP_MS, 200);
   assert.equal(shouldSnap(a, b, false), false);
   assert.equal(shouldSnap(a, b, true), true, "reduced motion never glides");
   assert.equal(shouldSnap(null, b, false), true);
@@ -119,8 +162,6 @@ test("animation frames move SVG nodes directly instead of re-rendering React", (
   const step = layer.slice(layer.indexOf("const step = (time: number) =>"), layer.indexOf("rafRef.current = requestAnimationFrame(step);"));
   assert.ok(step.length > 0 && layer.indexOf("const step = (time: number) =>") > 0);
   assert.doesNotMatch(step, /\bset[A-Z]\w*\(/, "no React state updates inside the tracking rAF step");
-  const draw = layer.slice(layer.indexOf("const draw = (frame: TrackingFrame"), layer.indexOf("if (rafRef.current !== null) cancelAnimationFrame", layer.indexOf("const draw = (frame: TrackingFrame")));
-  assert.doesNotMatch(draw, /\bset[A-Z]\w*\(/);
   assert.match(layer, /setAttribute\("transform", svgTranslate\(player\.x, flipY\(player\.y\)\)\)/);
   assert.doesNotMatch(layer, /useState<TrackingView/);
 
@@ -131,10 +172,22 @@ test("animation frames move SVG nodes directly instead of re-rendering React", (
   assert.match(pitch, /nodeRef\.current\?\.setAttribute\("transform", ballTransform\(point\)\)/);
 });
 
-test("tracking horizon re-renders the board at most once a second", () => {
+test("tracking horizon re-renders the board only when it changes which events are visible", () => {
   const pitch = read("src/LivePitch.tsx");
-  assert.match(pitch, /setTrackingHorizon\(horizon === null \? null : Math\.floor\(horizon \+ 1e-6\)\)/);
+  assert.match(pitch, /const floored = Math\.floor\(horizon \+ 1e-6\);/);
+  assert.match(pitch, /eventsWithinTrackingHorizon\(eventsRef\.current, previous\)\.length === eventsWithinTrackingHorizon\(eventsRef\.current, floored\)\.length \? previous : floored/);
   assert.match(pitch, /onHorizonChange=\{onHorizonChange\}/);
+  // Markers follow the play drawn on screen, not the newest buffered frame.
+  assert.match(read("src/TrackingLayer.tsx"), /playoutRef\.current\.clock \?\? sourceFrame\.second/);
+});
+
+// Regression: the server capped frames by the service clock, which is floored and ticks
+// once a wall second, so at 30x frames froze for a second and then jumped 30 match seconds.
+test("tracking stream is not capped by the once-a-second service clock", () => {
+  const server = read("server/live/tracking.ts");
+  assert.doesNotMatch(server, /Math\.min\(projectedSecond, rawClock, watermark\)/);
+  assert.match(server, /Math\.min\(projectedSecond, rawClock \+ Math\.max\(1, speed\), watermark\)/);
+  assert.match(server, /rewound \|\| delayedSecond >= lastFrameSecond \? delayedSecond : lastFrameSecond/);
 });
 
 test("static pitch surface is memoised and no infinite SVG animation repaints the board", () => {
