@@ -1131,31 +1131,86 @@ function applyScenarioAdjustments(
   return sortEventsStable(adjusted);
 }
 
+const HALFTIME_SECOND = 45 * 60;
+
+/** A save lands a second after its shot, but never crosses the half-time boundary or the final whistle. */
+function saveSecondFor(shot: MatchEvent): number {
+  const shotSecond = eventAtSecond(shot);
+  if (shotSecond === HALFTIME_SECOND) return shotSecond;
+  return Math.min(MAX_MATCH_SECOND, shotSecond + 1);
+}
+
+function isSavedShot(event: MatchEvent): boolean {
+  return event.type === "shot" && !event.rescinded && event.outcome === "saved";
+}
+
+function keeperSaveForShot(shot: MatchEvent, id: string, home: Team, away: Team): MatchEvent {
+  const teamId = otherTeam(shot.teamId);
+  return createEvent({
+    id,
+    atSecond: saveSecondFor(shot),
+    type: "save",
+    teamId,
+    playerId: firstByRole(teamId === "home" ? home : away, "GK", 0),
+    outcome: "success",
+    x: clampCoord(Math.min(97, shot.x + 8)),
+    y: clampCoord(50 + (shot.y - 50) * 0.3),
+    relatedEventId: shot.id,
+  });
+}
+
+/**
+ * Enforces one save per saved shot. Scenario adjustments turn saved shots into goals (leaving their save behind)
+ * and add or reset shots as "saved" without a save, so the Saves stat drifted from shots on target.
+ * - A save is kept only when it links to a non-rescinded opponent shot with outcome "saved" that no earlier save
+ *   claimed; its clock is re-aligned to the shot when the shot was moved.
+ * - Every saved shot without a save gets one, credited to the defending goalkeeper.
+ */
+function reconcileSaves(events: MatchEvent[], home: Team, away: Team): MatchEvent[] {
+  const shotsById = new Map(events.filter((event) => event.type === "shot").map((event) => [event.id, event]));
+  const claimed = new Set<string>();
+  const reconciled: MatchEvent[] = [];
+  for (const event of events) {
+    if (event.type !== "save") {
+      reconciled.push(event);
+      continue;
+    }
+    const shot = event.relatedEventId ? shotsById.get(event.relatedEventId) : undefined;
+    if (event.rescinded || !shot || !isSavedShot(shot) || shot.teamId === event.teamId || claimed.has(shot.id)) continue;
+    claimed.add(shot.id);
+    const shotSecond = eventAtSecond(shot);
+    const saveSecond = eventAtSecond(event);
+    const aligned = saveSecond >= shotSecond && saveSecond <= shotSecond + 1
+      && (saveSecond <= HALFTIME_SECOND) === (shotSecond <= HALFTIME_SECOND);
+    reconciled.push(aligned ? event : { ...event, ...forSecond(saveSecondFor(shot)) });
+  }
+  for (const shot of shotsById.values()) {
+    if (!isSavedShot(shot) || claimed.has(shot.id)) continue;
+    claimed.add(shot.id);
+    reconciled.push(keeperSaveForShot(shot, `${shot.id}-save`, home, away));
+  }
+  return reconciled;
+}
+
+/**
+ * Keeper ratings are earned from actual saves (see player-stats tests), so each keeper gets at least one save and at
+ * most MAX_KEEPER_SAVES_PER_MATCH. A minimum save is made by turning an existing non-goal opponent shot into a saved
+ * shot; capped saves turn their shot into a block. Either way each save stays paired with exactly one saved shot.
+ */
 function ensureKeeperSaves(events: MatchEvent[], fixtureId: string, home: Team, away: Team): MatchEvent[] {
-  const balanced = [...events];
+  const balanced = reconcileSaves(events, home, away);
   for (const teamId of ["home", "away"] as const) {
-    const keeperTeam = teamId === "home" ? home : away;
     const opponentId = otherTeam(teamId);
-    const keeperId = firstByRole(keeperTeam, "GK", 0);
     const hasSave = balanced.some((event) => event.type === "save" && event.teamId === teamId && !event.rescinded);
     if (hasSave) continue;
 
-    const candidate = balanced
-      .filter((event) => event.type === "shot" && event.teamId === opponentId && event.outcome !== "success")
-      .find((shot) => !balanced.some((event) => event.type === "save" && event.relatedEventId === shot.id));
+    // After reconciliation a keeper without saves faces no saved shots, so any non-goal shot is free to convert.
+    const candidate = balanced.find((event) => (
+      event.type === "shot" && event.teamId === opponentId && !event.rescinded && event.outcome !== "success"
+    ));
     if (!candidate) continue;
     candidate.outcome = "saved";
-    balanced.push(createEvent({
-      id: `${fixtureId}-save-balance-${teamId}`,
-      atSecond: Math.min(MAX_MATCH_SECOND, eventAtSecond(candidate) + 1),
-      type: "save",
-      teamId,
-      playerId: keeperId,
-      outcome: "success",
-      x: clampCoord(Math.min(97, candidate.x + 8)),
-      y: clampCoord(50 + (candidate.y - 50) * 0.3),
-      relatedEventId: candidate.id,
-    }));
+    balanced.push(keeperSaveForShot(candidate, `${fixtureId}-save-balance-${teamId}`, home, away));
   }
   for (const teamId of ["home", "away"] as const) {
     const saves = balanced
