@@ -21,6 +21,13 @@ function sourceFiles(dir: string): string[] {
 
 // ---- cut surfaces -------------------------------------------------------
 
+test("Fan View shows Social Media Posts during the match, not only after full time", () => {
+  const fan = read("src/FanPage.tsx");
+  assert.match(fan, /<PressBoxSection /);
+  assert.doesNotMatch(fan, /finished && \(\s*<section[^>]*>\s*<h2[^>]*>[^<]*<\/h2>\s*<PressBoxSection/);
+  assert.doesNotMatch(fan, /afterWhistleTitle/);
+});
+
 test("VAR Desk is gone from the app shell and its page is deleted", () => {
   assert.equal(existsSync(new URL("../src/VarDeskPage.tsx", import.meta.url)), false);
   const app = read("src/App.tsx");

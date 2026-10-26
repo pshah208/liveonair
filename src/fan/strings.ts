@@ -46,6 +46,5 @@ export const FAN_TEXT = {
   momentumTitle: "Momentum",
   momentumEyebrow: "Illustrative",
   momentumSponsor: "Momentum segment presented by Northwind Sports (fictional sponsor)",
-  afterWhistleTitle: "After the whistle",
   storyTitle: "The story of the match",
 } as const;

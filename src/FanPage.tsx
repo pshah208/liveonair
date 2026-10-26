@@ -362,6 +362,7 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
           <Panel eyebrow={scopedTitle("My match", period)} title={focus.playerId || focus.teamId ? "Your moments first" : "Key moments"}>
             <FanFeed fixture={fixture} focus={focus} period={period} players={players} />
           </Panel>
+          <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
         </div>
 
         <div className="desk-col">
@@ -394,13 +395,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
           </section>
         </div>
       </div>
-
-      {finished && (
-        <section className="fan-p2-whistle" aria-labelledby="fan-whistle-title">
-          <h2 id="fan-whistle-title" className="fan-p2-section__title">{FAN_TEXT.afterWhistleTitle}</h2>
-          <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
-        </section>
-      )}
 
       <p className="subtle-text fan-footnote">Fan View is a read-only view of the match on the Studio Desk. It only shows producer-approved stories; the agents' drafts and traces stay in the studio.</p>
     </main>
