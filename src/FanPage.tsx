@@ -354,6 +354,9 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
               favorite={favoritePlayer} hasFavorite={Boolean(prefs.favoritePlayer)} savedName={prefs.favoritePlayer?.name} language={prefs.language}
               onPickFavorite={(player) => updatePrefs({ favoritePlayer: favoritePlayerOf(player) })} />
           </div>
+          <div className="fan-top__social">
+            <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
+          </div>
         </div>
       </div>
 
@@ -362,7 +365,6 @@ export function FanPage({ context, theme, onOpenStudio }: FanPageProps) {
           <Panel eyebrow={scopedTitle("My match", period)} title={focus.playerId || focus.teamId ? "Your moments first" : "Key moments"}>
             <FanFeed fixture={fixture} focus={focus} period={period} players={players} />
           </Panel>
-          <PressBoxSection fixture={fixture} uptoSecond={uptoSecond} clockSecond={clockSecond} focusTeamId={focus.teamId} />
         </div>
 
         <div className="desk-col">

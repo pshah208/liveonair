@@ -24,6 +24,7 @@ function sourceFiles(dir: string): string[] {
 test("Fan View shows Social Media Posts during the match, not only after full time", () => {
   const fan = read("src/FanPage.tsx");
   assert.match(fan, /<PressBoxSection /);
+  assert.ok(fan.indexOf("<PressBoxSection ") > fan.indexOf("<PlayerCardSection "), "Social Media Posts sit below the Player Card");
   assert.doesNotMatch(fan, /finished && \(\s*<section[^>]*>\s*<h2[^>]*>[^<]*<\/h2>\s*<PressBoxSection/);
   assert.doesNotMatch(fan, /afterWhistleTitle/);
 });
