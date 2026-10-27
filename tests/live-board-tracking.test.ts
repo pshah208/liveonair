@@ -45,6 +45,14 @@ test("live board hides arrows, path and the event-board ball while tracking is o
   assert.doesNotMatch(trackingBranch, /<text|markerEnd|strokeDasharray/);
 });
 
+test("ball movement keeps its route by default; tracking only auto-enables on the event board", () => {
+  assert.match(read("src/LivePitch.tsx"), /<TrackingLayer [^>]*autoEnable=\{mode !== "ball"\}/);
+  const layer = read("src/TrackingLayer.tsx");
+  assert.match(layer, /const enabled = manualEnabled \?\? \(autoEnable && connected\);/);
+  // Switching view drops a manual toggle so each view starts from its own default.
+  assert.match(layer, /if \(autoEnableSeen !== autoEnable\) \{\s*setAutoEnableSeen\(autoEnable\);\s*setManualEnabled\(null\);/);
+});
+
 test("tracking header strip names the source once", () => {
   const src = read("src/TrackingLayer.tsx");
   assert.equal(src.match(/>Synthetic tracking</g)?.length, 1);

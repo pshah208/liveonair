@@ -356,7 +356,7 @@ export function Pitch({ fixture, events }: PitchProps) {
           )}
         </svg>
         <div className="tracking-overlay">
-          <TrackingLayer fixture={fixture} onHorizonChange={onHorizonChange} />
+          <TrackingLayer fixture={fixture} onHorizonChange={onHorizonChange} autoEnable={mode !== "ball"} />
         </div>
         <div className="pitch-event-ticker" role="group" aria-label="Latest event">
           {ticker.previous && pill(ticker.previous, true)}

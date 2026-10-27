@@ -9,6 +9,8 @@ type TrackingLayerProps = {
   fixture: MatchFixture;
   /** Latest tracked second (+ one step) while the overlay is shown, null when hidden. */
   onHorizonChange?: (horizonSecond: number | null) => void;
+  /** Turn the overlay on by itself once frames arrive. Off on Ball movement so the route stays visible. Default true. */
+  autoEnable?: boolean;
 };
 
 const DOT_RADIUS_M = 1.05;
@@ -22,7 +24,7 @@ function reducedMotionNow(): boolean {
 
 const flipY = (y: number) => TRACKING_PITCH_WIDTH_M - y;
 
-export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) {
+export function TrackingLayer({ fixture, onHorizonChange, autoEnable = true }: TrackingLayerProps) {
   const [statusText, setStatusText] = useState("Connecting…");
   const [connected, setConnected] = useState(false);
   const [sourceFrame, setSourceFrame] = useState<TrackingFrame | null>(null);
@@ -40,7 +42,13 @@ export function TrackingLayer({ fixture, onHorizonChange }: TrackingLayerProps) 
   const playoutRef = useRef<Playout>(createPlayout());
   const kickRef = useRef<(() => void) | null>(null);
 
-  const enabled = manualEnabled ?? connected;
+  // Each board view starts from its own default; a manual toggle lasts until the view changes.
+  const [autoEnableSeen, setAutoEnableSeen] = useState(autoEnable);
+  if (autoEnableSeen !== autoEnable) {
+    setAutoEnableSeen(autoEnable);
+    setManualEnabled(null);
+  }
+  const enabled = manualEnabled ?? (autoEnable && connected);
   // Markers wait for the play actually on screen (the playout clock), not the newest buffered frame.
   const shownSecond = sourceFrame ? (reduced ? sourceFrame.second : playoutRef.current.clock ?? sourceFrame.second) : null;
   const horizonSecond = enabled && shownSecond !== null ? trackingMarkerHorizon(shownSecond) : null;

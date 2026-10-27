@@ -728,8 +728,8 @@ a.storyline-chip:hover { text-decoration: underline; }
   .fan-top { grid-template-columns: 1fr; }
   .fan-top__col { display: contents; }
   .fan-top__board { order: 1; }
-  .fan-top__social { order: 2; }
-  .fan-top__player { order: 3; }
+  .fan-top__player { order: 2; }
+  .fan-top__social { order: 3; }
   .fan-top__rest { order: 4; }
 }
 @media (max-width: 480px) {
