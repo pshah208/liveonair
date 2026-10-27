@@ -1,6 +1,7 @@
 # ML and vision engineer learnings
 
 ## Active
+- [work] 2026-10-26 With fabric secrets present, the deploy.ps1 -UseExistingInfrastructure -PreviewOnly what-if (v0-16-10-c4884c9) is not image-only. It also shows Delete ingress.exposedPort, ingress.traffic and runningStatus, a redacted "Modify secrets", and the Startup/Liveness probes swapped by array index. A brief that says "stop on any delete" therefore always stops on the bicep path. Releases since rev 0000017 used ACR build plus containerapp update --image instead. Get the user to choose the path before the what-if.
 - [work] 2026-10-26 v0.16.9 shipped as rev liveonair--0000027 (image matchlens:v0-16-9-156098c, ACR run ch1h, about 2.5 min). Right after the update returned Succeeded, the new revision was still "Activating" with health "None", and /api/health kept serving 0.16.8 for about 1 min. Poll until the revision is Healthy before probing health or the bundle. A SHA-256 match between the live and local bundles is stronger evidence than a grep count.
 - [mistake] 2026-10-26 The deployment desk reported the same false overlap again (Gilfoyle supposedly deploying 0.16.9). list_agents showed this run was the only one. Before acting on a desk overlap, check list_agents together with the container app provisioningState and the latest ACR run.
 - [work] 2026-10-26 In Fan View on mobile, `.fan-top__col { display: contents }` removes the column wrappers, so the CSS `order` values on `.fan-top__*` children set the stacking. Review the DOM move and the media-query order together (from the qa-reviewer gate).
